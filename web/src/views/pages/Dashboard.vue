@@ -41,21 +41,20 @@
 import { computed, ref } from "vue";
 import { ElMessage } from "element-plus";
 import { ApiClient } from "../../lib/api";
-import { loadSettings } from "../../lib/settings";
+import { settingsState } from "../../lib/settingsStore";
 
 const loading = ref(false);
 const error = ref<string>("");
 const healthOk = ref(false);
 const metricsPreview = ref("");
 
-const settings = loadSettings();
-const client = new ApiClient(settings.baseUrl, settings.adminToken);
-const effectiveBaseUrl = computed(() => settings.baseUrl?.trim() || window.location.origin);
+const effectiveBaseUrl = computed(() => settingsState.baseUrl?.trim() || window.location.origin);
 
 async function reload() {
   loading.value = true;
   error.value = "";
   try {
+    const client = new ApiClient(settingsState.baseUrl, settingsState.adminToken);
     const h = await client.healthz();
     healthOk.value = !!h.ok;
     const metrics = await client.metricsText();
@@ -96,4 +95,3 @@ reload();
   color: #6b7280;
 }
 </style>
-

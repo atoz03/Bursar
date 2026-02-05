@@ -50,7 +50,7 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { ApiClient } from "../../lib/api";
-import { loadSettings } from "../../lib/settings";
+import { settingsState } from "../../lib/settingsStore";
 
 type UserRow = { username: string; balance: number; status: string };
 
@@ -63,8 +63,6 @@ const rechargeLoading = ref(false);
 const rechargeUser = ref("");
 const rechargeAmount = ref(100);
 const rechargeMethod = ref("admin");
-
-const settings = loadSettings();
 
 function toUserRow(u: any): UserRow {
   return {
@@ -79,7 +77,7 @@ async function reload() {
   error.value = "";
   rows.value = [];
   try {
-    const client = new ApiClient(settings.baseUrl, settings.adminToken);
+    const client = new ApiClient(settingsState.baseUrl, settingsState.adminToken);
     const r = await client.adminUsers();
     rows.value = (r.users ?? []).map(toUserRow);
   } catch (e: any) {
@@ -100,7 +98,7 @@ async function doRecharge() {
   rechargeLoading.value = true;
   error.value = "";
   try {
-    const client = new ApiClient(settings.baseUrl, settings.adminToken);
+    const client = new ApiClient(settingsState.baseUrl, settingsState.adminToken);
     await client.adminRecharge(rechargeUser.value, rechargeAmount.value, rechargeMethod.value);
     rechargeVisible.value = false;
     await reload();
@@ -130,4 +128,3 @@ reload();
   color: #6b7280;
 }
 </style>
-

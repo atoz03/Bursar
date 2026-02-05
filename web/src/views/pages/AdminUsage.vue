@@ -48,14 +48,13 @@
 import { ref } from "vue";
 import { ElMessage } from "element-plus";
 import { ApiClient, type UsageRecord } from "../../lib/api";
-import { loadSettings } from "../../lib/settings";
+import { settingsState } from "../../lib/settingsStore";
 
 const loading = ref(false);
 const exporting = ref(false);
 const error = ref("");
 const records = ref<UsageRecord[]>([]);
 
-const settings = loadSettings();
 const username = ref("");
 const limit = ref(200);
 const from = ref("");
@@ -66,7 +65,7 @@ async function reload() {
   error.value = "";
   records.value = [];
   try {
-    const client = new ApiClient(settings.baseUrl, settings.adminToken);
+    const client = new ApiClient(settingsState.baseUrl, settingsState.adminToken);
     const r = await client.adminUsage(username.value, limit.value);
     records.value = r.records ?? [];
   } catch (e: any) {
@@ -80,7 +79,7 @@ async function exportCSV() {
   exporting.value = true;
   error.value = "";
   try {
-    const client = new ApiClient(settings.baseUrl, settings.adminToken);
+    const client = new ApiClient(settingsState.baseUrl, settingsState.adminToken);
     const blob = await client.adminExportUsageCSV({
       username: username.value,
       from: from.value,
@@ -122,4 +121,3 @@ reload();
   color: #6b7280;
 }
 </style>
-

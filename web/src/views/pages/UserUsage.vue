@@ -39,14 +39,13 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { ApiClient, type UsageRecord } from "../../lib/api";
-import { loadSettings, saveSettings } from "../../lib/settings";
+import { setDefaultUsername, settingsState } from "../../lib/settingsStore";
 
 const loading = ref(false);
 const error = ref("");
 const records = ref<UsageRecord[]>([]);
 
-const settings = loadSettings();
-const username = ref(settings.defaultUsername ?? "");
+const username = ref(settingsState.defaultUsername ?? "");
 const limit = ref(200);
 
 async function query() {
@@ -54,10 +53,10 @@ async function query() {
   error.value = "";
   records.value = [];
   try {
-    const client = new ApiClient(settings.baseUrl, settings.adminToken);
+    const client = new ApiClient(settingsState.baseUrl, settingsState.adminToken);
     const r = await client.userUsage(username.value.trim(), limit.value);
     records.value = r.records ?? [];
-    saveSettings({ ...settings, defaultUsername: username.value.trim() });
+    setDefaultUsername(username.value.trim());
   } catch (e: any) {
     error.value = e?.body ? `${e.message}\n${e.body}` : (e?.message ?? String(e));
   } finally {
@@ -82,4 +81,3 @@ async function query() {
   color: #6b7280;
 }
 </style>
-

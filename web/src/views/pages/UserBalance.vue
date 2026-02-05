@@ -33,14 +33,13 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { ApiClient, type BalanceResp } from "../../lib/api";
-import { loadSettings, saveSettings } from "../../lib/settings";
+import { setDefaultUsername, settingsState } from "../../lib/settingsStore";
 
 const loading = ref(false);
 const error = ref("");
 const resp = ref<BalanceResp | null>(null);
 
-const settings = loadSettings();
-const username = ref(settings.defaultUsername ?? "");
+const username = ref(settingsState.defaultUsername ?? "");
 
 function tagType(status: string) {
   if (status === "normal") return "success";
@@ -55,10 +54,10 @@ async function query() {
   error.value = "";
   resp.value = null;
   try {
-    const client = new ApiClient(settings.baseUrl, settings.adminToken);
+    const client = new ApiClient(settingsState.baseUrl, settingsState.adminToken);
     const r = await client.userBalance(username.value.trim());
     resp.value = r;
-    saveSettings({ ...settings, defaultUsername: username.value.trim() });
+    setDefaultUsername(username.value.trim());
   } catch (e: any) {
     error.value = e?.body ? `${e.message}\n${e.body}` : (e?.message ?? String(e));
   } finally {
@@ -83,4 +82,3 @@ async function query() {
   color: #6b7280;
 }
 </style>
-

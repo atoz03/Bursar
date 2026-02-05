@@ -32,20 +32,18 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { ApiClient, type NodeStatus } from "../../lib/api";
-import { loadSettings } from "../../lib/settings";
+import { settingsState } from "../../lib/settingsStore";
 
 const loading = ref(false);
 const error = ref("");
 const rows = ref<NodeStatus[]>([]);
-
-const settings = loadSettings();
 
 async function reload() {
   loading.value = true;
   error.value = "";
   rows.value = [];
   try {
-    const client = new ApiClient(settings.baseUrl, settings.adminToken);
+    const client = new ApiClient(settingsState.baseUrl, settingsState.adminToken);
     const r = await client.adminNodes(200);
     rows.value = r.nodes ?? [];
   } catch (e: any) {
@@ -74,4 +72,3 @@ reload();
   color: #6b7280;
 }
 </style>
-

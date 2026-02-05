@@ -47,7 +47,7 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { ApiClient } from "../../lib/api";
-import { loadSettings } from "../../lib/settings";
+import { settingsState } from "../../lib/settingsStore";
 
 type PriceRow = { model: string; price: number };
 
@@ -59,8 +59,6 @@ const editVisible = ref(false);
 const editLoading = ref(false);
 const editModel = ref("");
 const editPrice = ref(0.1);
-
-const settings = loadSettings();
 
 function toRow(p: any): PriceRow {
   return {
@@ -74,7 +72,7 @@ async function reload() {
   error.value = "";
   rows.value = [];
   try {
-    const client = new ApiClient(settings.baseUrl, settings.adminToken);
+    const client = new ApiClient(settingsState.baseUrl, settingsState.adminToken);
     const r = await client.adminPrices();
     rows.value = (r.prices ?? []).map(toRow).sort((a, b) => a.model.localeCompare(b.model));
   } catch (e: any) {
@@ -94,7 +92,7 @@ async function save() {
   editLoading.value = true;
   error.value = "";
   try {
-    const client = new ApiClient(settings.baseUrl, settings.adminToken);
+    const client = new ApiClient(settingsState.baseUrl, settingsState.adminToken);
     await client.adminSetPrice(editModel.value.trim(), editPrice.value);
     editVisible.value = false;
     await reload();
@@ -124,4 +122,3 @@ reload();
   color: #6b7280;
 }
 </style>
-
