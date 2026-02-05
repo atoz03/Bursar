@@ -16,6 +16,10 @@ python train.py
 - `limited`：限制启动新的 GPU 任务（通过 Bash Hook 拦截）；同时可能被限制 CPU 使用
 - `blocked`：欠费状态，超过宽限期后 GPU 进程会被终止；同时强限制 CPU 使用
 
+提示：
+- 当系统需要通知你时，节点可能会在你的家目录写入提示文件：`~/.gpu_notice`
+- 当系统对你施加 CPU 限制时，节点可能会在你的家目录写入：`~/.cpu_quota`（用于自助确认）
+
 ## 3. Bash Hook（GPU 任务启动前检查）
 
 管理员会在你的 `~/.bashrc` 中加入：
@@ -39,3 +43,12 @@ Hook 的策略是“尽量不误伤”：
 CONTROLLER_URL=http://controller:8000 balance-query
 ```
 
+## 5. 常见问题
+
+1) 我能登录但跑不了 GPU 任务
+- 可能处于 `limited/blocked` 状态（余额不足/欠费）
+- 可先查询余额，再联系管理员充值
+
+2) 控制器不可达怎么办
+- Hook 会尽量不误伤：只有当本地存在 `~/.gpu_blocked` 标记时才会阻止
+- 若你确认自己应当可用但仍被阻止，请联系管理员排障

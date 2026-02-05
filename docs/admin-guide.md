@@ -1,5 +1,7 @@
 # 管理员指南（部署与运营）
 
+建议先阅读：`docs/runbook.md`（一步步上线运行手册）。
+
 ## 1. 组件清单
 
 - 控制器：`controller/`（建议部署在中转机/控制节点）
@@ -52,3 +54,4 @@ Agent 每次上报携带 `report_id`（随机 128bit），控制器写入 `metri
 - `scripts/deploy_controller.sh`：部署控制器（示例）
 - `scripts/deploy_hook.sh`：部署 Hook 到所有用户（示例）
 - `scripts/check_status.sh`：接口自检（示例）
+- `scripts/node_prereq_check.sh`：计算节点前置检查（systemd/cgroup/GPU）
