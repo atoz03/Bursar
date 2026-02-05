@@ -12,7 +12,7 @@
   - systemd 可用（推荐）
   - 或 cgroup v2（`/sys/fs/cgroup/.../cpu.max`）
   - 或 cgroup v1 cpu controller（`cpu.cfs_*` + `tasks`）
- - 节点建议执行：`scripts/node_prereq_check.sh`（不修改系统）
+- 节点建议执行：`scripts/node_prereq_check.sh`（不修改系统）
 
 ## 2. 数据库
 
@@ -25,7 +25,7 @@
 ## 3. 安全与隔离（最低要求）
 
 - 控制器仅对内网开放，或经网关 ACL 保护
-- `agent_token` 与 `admin_token` 已更换为强随机值，并安全保存
+- `agent_token`、`admin_token`、`auth_secret` 已更换为强随机值，并安全保存
 - 管理员接口不要暴露到公网
 - 余额查询接口默认不鉴权（为了 Hook 低侵入），建议仅内网可达或通过网关保护
 
@@ -35,6 +35,10 @@
 - `GET /healthz` 返回 `{"ok":true}`
 - `GET /metrics` 有输出（便于上线后观测）
 - `GET /api/admin/nodes` 可看到节点上报（上线后用于判断离线节点）
+
+1.1) Web 登录
+- 已执行 `POST /api/admin/bootstrap` 初始化管理员账号（只允许一次）
+- 浏览器可访问 `/login` 并登录进入管理页 `/`
 
 2) Agent 上报与幂等
 - 观察控制器日志与数据库 `metric_reports` 行数增长

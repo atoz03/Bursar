@@ -48,10 +48,16 @@ function trimSlashRight(v: string): string {
 }
 
 export class ApiClient {
+  private readonly adminToken: string;
+  private csrfToken: string;
+
   constructor(
     private readonly baseUrl: string,
     private readonly opts: { adminToken?: string; csrfToken?: string } = {},
-  ) {}
+  ) {
+    this.adminToken = this.opts.adminToken?.trim() ?? "";
+    this.csrfToken = this.opts.csrfToken?.trim() ?? "";
+  }
 
   private url(path: string): string {
     const base = this.baseUrl?.trim() ? trimSlashRight(this.baseUrl.trim()) : window.location.origin;
@@ -59,15 +65,13 @@ export class ApiClient {
   }
 
   private adminHeaders(): Record<string, string> {
-    const tok = this.opts.adminToken?.trim();
-    if (!tok) return {};
-    return { Authorization: `Bearer ${tok}` };
+    if (!this.adminToken) return {};
+    return { Authorization: `Bearer ${this.adminToken}` };
   }
 
   private csrfHeaders(): Record<string, string> {
-    const t = this.opts.csrfToken?.trim();
-    if (!t) return {};
-    return { "X-CSRF-Token": t };
+    if (!this.csrfToken) return {};
+    return { "X-CSRF-Token": this.csrfToken };
   }
 
   private async readText(res: Response): Promise<string> {
@@ -88,14 +92,34 @@ export class ApiClient {
   }
 
   private async postJson<T>(path: string, body: unknown, headers: Record<string, string> = {}): Promise<T> {
-    const res = await fetch(this.url(path), {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...this.csrfHeaders(), ...headers },
-      body: JSON.stringify(body),
-      credentials: "include",
-    });
+    const doReq = async (): Promise<Response> => {
+      return await fetch(this.url(path), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...this.csrfHeaders(), ...headers },
+        body: JSON.stringify(body),
+        credentials: "include",
+      });
+    };
+
+    let res = await doReq();
     if (!res.ok) {
       const text = await this.readText(res);
+
+      // Web 登录会话下：可能是 CSRF token 过期（服务端会返回 csrf_required）。
+      // 仅在“未使用 Bearer admin_token”时尝试刷新一次 CSRF。
+      if (res.status === 403 && !this.adminToken && text.includes("csrf_required")) {
+        try {
+          const me = await this.authMe();
+          if (me.authenticated && me.csrf_token) {
+            this.csrfToken = me.csrf_token;
+            res = await doReq();
+            if (res.ok) return (await res.json()) as T;
+          }
+        } catch {
+          // 忽略刷新失败，走原始错误输出
+        }
+      }
+
       throw { message: `请求失败：${res.status}`, status: res.status, body: text } satisfies ApiError;
     }
     return (await res.json()) as T;

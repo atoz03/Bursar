@@ -150,20 +150,22 @@ cd gpu-ops
 - 你需要在能访问 git 的机器打包代码并传到控制节点（共享盘/手工上传/rsync/scp）
 - 传完后在控制节点解压并进入目录
 
-## 1. 生成并保存 Token（必须）
+## 1. 生成并保存密钥/Token（必须）
 
-控制器有两类 token：
+控制器有两类 token + 一个会话签名密钥：
 - `agent_token`：Agent 上报鉴权（`X-Agent-Token`）
 - `admin_token`：管理员接口鉴权（`Authorization: Bearer ...`）
+- `auth_secret`：Web 登录会话签名密钥（用于 cookie，会话启用时必填）
 
 建议在控制节点生成：
 
 ```bash
 openssl rand -hex 32
 openssl rand -hex 32
+openssl rand -hex 32
 ```
 
-把这两个值写入控制器配置文件（见下一节），并妥善保存。
+把这三个值写入控制器配置文件（见下一节），并妥善保存。
 
 ## 2. 配置 PostgreSQL
 
@@ -220,6 +222,11 @@ export GOARCH=arm64
 scripts/build_linux.sh
 ```
 
+方式 B（独立构建机）额外说明：
+- 你需要把 `bin/controller` 复制到控制节点（例如 `/opt/gpu-controller/controller`）
+- 你需要把 `bin/node-agent` 复制到每台计算节点（例如 `/usr/local/bin/node-agent`）
+- 复制前同样先 `ssh <host> 'echo ok'` 验证可登录，再选择 `scp/rsync/共享盘/手工上传`
+
 ### 3.2 构建前端（Vue3，必须）
 
 控制器会自动托管 `web/dist/`。请在构建机执行：
@@ -247,14 +254,21 @@ sudo cp -a web/dist/. /opt/gpu-controller/web/dist/
 ssh <user>@<controller-host> 'echo ok'
 ```
 
+首次连接如果出现 “The authenticity of host ...” 指纹提示，请先核对指纹（向机房/云平台/资产系统确认），再输入 `yes` 继续。
+
 若你没有 SSH key，需要先配置（示例）：
 ```bash
 ssh-keygen -t ed25519 -C "gpuops-deploy"
 ssh-copy-id <user>@<controller-host>
 ```
 
+注意：
+- 不要把你的私钥（`id_ed25519`）复制到服务器；只复制公钥（`id_ed25519.pub`）。
+- 如果你不想配置免密，也可以直接使用密码登录：`ssh`/`scp` 会提示输入密码（适合临时操作，不适合自动化）。
+
 确认可登录后再复制（示例，二选一）：
 ```bash
+ssh <user>@<controller-host> 'sudo mkdir -p /opt/gpu-controller/web/dist'
 scp -r web/dist <user>@<controller-host>:/opt/gpu-controller/web/dist
 ```
 或：
@@ -293,6 +307,14 @@ sudo systemctl enable gpu-controller
 sudo systemctl restart gpu-controller
 ```
 
+如果你是“方式 B（独立构建机）”，可参考（在构建机执行；避免直接 scp 到系统目录）：
+
+```bash
+ssh <user>@<controller-host> 'sudo mkdir -p /opt/gpu-controller'
+scp bin/controller <user>@<controller-host>:/tmp/controller
+ssh <user>@<controller-host> 'sudo cp /tmp/controller /opt/gpu-controller/controller && sudo chmod +x /opt/gpu-controller/controller'
+```
+
 ### 3.5 验证控制器
 
 ```bash
@@ -329,13 +351,15 @@ curl -fsS -H "Authorization: Bearer <admin_token>" \
 你必须先确认能登录节点（密码或密钥均可）：
 
 ```bash
-ssh root@node01 'echo ok'
+ssh <node-user>@node01 'echo ok'
 ```
 
-确认能登录后，再选择一种复制方式（示例）：
+首次连接如果出现指纹提示，同样需要先核对指纹再确认。
+
+确认能登录后，再选择一种复制方式（示例；不要求你能 root 直登，只要有 sudo 即可）：
 ```bash
-scp bin/node-agent root@node01:/usr/local/bin/node-agent
-ssh root@node01 "chmod +x /usr/local/bin/node-agent"
+scp bin/node-agent <node-user>@node01:/tmp/node-agent
+ssh <node-user>@node01 "sudo cp /tmp/node-agent /usr/local/bin/node-agent && sudo chmod +x /usr/local/bin/node-agent"
 ```
 
 如果你没有 SSH key，请先用 `ssh-copy-id` 或让管理员开通访问（不要继续往下做）。
@@ -347,8 +371,8 @@ ssh root@node01 "chmod +x /usr/local/bin/node-agent"
 同样先确认能登录，再复制：
 
 ```bash
-scp systemd/gpu-node-agent.service root@node01:/etc/systemd/system/gpu-node-agent.service
-ssh root@node01 "systemctl daemon-reload"
+scp systemd/gpu-node-agent.service <node-user>@node01:/tmp/gpu-node-agent.service
+ssh <node-user>@node01 "sudo cp /tmp/gpu-node-agent.service /etc/systemd/system/gpu-node-agent.service && sudo systemctl daemon-reload"
 ```
 
 最简单做法：编辑 `/etc/systemd/system/gpu-node-agent.service`，设置：
@@ -359,7 +383,7 @@ ssh root@node01 "systemctl daemon-reload"
 启动：
 
 ```bash
-ssh root@node01 "systemctl enable gpu-node-agent && systemctl restart gpu-node-agent"
+ssh <node-user>@node01 "sudo systemctl enable gpu-node-agent && sudo systemctl restart gpu-node-agent"
 ```
 
 ### 4.3 验证 Agent 上报
@@ -443,3 +467,52 @@ curl -fsS -H "Authorization: Bearer <admin_token>" \
 3) 没有 GPU 记录
 - 节点是否存在 `nvidia-smi`
 - `nvidia-smi --query-compute-apps=pid,gpu_name --format=csv,noheader` 是否有输出
+
+## 9. 回归命令（上线自检，建议照抄执行）
+
+控制节点（controller）自检：
+
+```bash
+sudo systemctl status gpu-controller --no-pager
+curl -fsS http://<controller-ip>:8000/healthz
+curl -fsS http://<controller-ip>:8000/metrics | head -n 30
+curl -fsS -I http://<controller-ip>:8000/ | head -n 5
+```
+
+验证“初始化管理员账号”是否已做过：
+
+```bash
+curl -fsS -H "Authorization: Bearer <admin_token>" \
+  -H "Content-Type: application/json" \
+  -X POST http://<controller-ip>:8000/api/admin/bootstrap \
+  -d '{"username":"admin","password":"ChangeMe_123456"}' || true
+```
+
+如果返回 `already_bootstrapped`，说明已初始化过；这属于正常情况。
+
+验证 Web 登录 + 会话是否工作（控制节点或任意能访问控制器的机器）：
+
+```bash
+curl -fsS -c /tmp/gpuops.cookies -b /tmp/gpuops.cookies \
+  -H "Content-Type: application/json" \
+  -X POST http://<controller-ip>:8000/api/auth/login \
+  -d '{"username":"admin","password":"ChangeMe_123456"}'
+
+curl -fsS -c /tmp/gpuops.cookies -b /tmp/gpuops.cookies \
+  http://<controller-ip>:8000/api/auth/me
+
+curl -fsS -c /tmp/gpuops.cookies -b /tmp/gpuops.cookies \
+  http://<controller-ip>:8000/api/admin/nodes
+```
+
+计算节点（node-agent）自检：
+
+```bash
+sudo systemctl status gpu-node-agent --no-pager
+sudo journalctl -u gpu-node-agent -n 200 --no-pager
+```
+
+CPU 限流自检（按环境二选一）：
+- systemd（推荐）：`systemctl show user-<uid>.slice -p CPUQuota`
+- cgroup v2：检查 `cat /sys/fs/cgroup/user.slice/user-<uid>.slice/cpu.max`
+- cgroup v1：检查 `cat <cpu挂载点>/gpuops/user-<uid>/cpu.cfs_quota_us`

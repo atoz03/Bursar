@@ -17,10 +17,25 @@
 - `database_dsn`：PostgreSQL 连接串
 - `agent_token`：保护 `/api/metrics`，防止伪造上报
 - `admin_token`：保护管理员接口与充值
+- `auth_secret`：Web 登录会话签名密钥（启用会话时必填，建议强随机）
+- `session_hours`：Web 登录会话有效期（小时；0 表示禁用会话，仅保留 Bearer admin_token）
 - `cpu_price_per_core_minute`：CPU 单价（核分钟）
 - `enable_cpu_control`：是否启用 CPU 限流动作
 - `cpu_limit_percent_limited / cpu_limit_percent_blocked`：CPU 限流百分比（0 表示解除限制）
 - `kill_grace_period_seconds`：欠费 kill 宽限期（秒）
+
+## 2.1 Web 管理端登录（上线必做）
+
+1) 用 `admin_token` 初始化管理员账号（只允许一次）：
+- `POST /api/admin/bootstrap`
+
+2) 浏览器访问：
+- `/login` 登录
+- `/` 进入管理页
+
+说明：
+- Web 管理端不需要粘贴 token；使用 HttpOnly cookie 会话。
+- cookie 会话访问管理员接口时，非 GET 需要 `X-CSRF-Token`（前端已自动处理；脚本调用见 `docs/api-reference.md`）。
 
 ## 3. CPU 控制兼容性（重点）
 
