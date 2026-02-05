@@ -40,6 +40,9 @@ go run . --config ../config/controller.yaml
 curl -s http://127.0.0.1:8000/healthz
 ```
 
+监控指标：
+- `http://127.0.0.1:8000/metrics`
+
 Web 管理页（最小可用）：
 - 浏览器打开 `http://127.0.0.1:8000/`（需要手动填管理员 token 才能调用管理员接口）
 
@@ -84,6 +87,13 @@ NODE_ID=dev-node01 CONTROLLER_URL=http://127.0.0.1:8000 AGENT_TOKEN=dev-agent-to
 ```bash
 go test ./controller/... ./node-agent/...
 ```
+
+## 构建与部署（生产）
+
+- 构建 Linux 二进制：`scripts/build_linux.sh`（输出到 `bin/`，可配 `GOARCH=arm64`）
+- 部署控制器：`scripts/deploy_controller.sh`（示例）
+- 部署 Agent：`scripts/deploy_agent.sh`（示例）
+- 部署 Hook：`scripts/deploy_hook.sh`（示例）
 
 ## 目录结构
 

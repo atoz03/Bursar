@@ -38,6 +38,12 @@ func (q *Queue) Snapshot() []QueueItem {
 	return out
 }
 
+func (q *Queue) Len() int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return len(q.items)
+}
+
 func estimateWaitMinutes(position int) int {
 	// 简单估算：每个排队项按 10 分钟计算。后续可改成基于历史分配/作业时长的预测。
 	if position <= 0 {

@@ -17,10 +17,11 @@ type Server struct {
 	cfg   Config
 	store *Store
 	queue *Queue
+	metr  *controllerMetrics
 }
 
 func NewServer(cfg Config, store *Store) *Server {
-	return &Server{cfg: cfg, store: store, queue: NewQueue()}
+	return &Server{cfg: cfg, store: store, queue: NewQueue(), metr: &controllerMetrics{}}
 }
 
 func (s *Server) Router() *gin.Engine {
@@ -29,6 +30,10 @@ func (s *Server) Router() *gin.Engine {
 
 	r.GET("/healthz", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+	r.GET("/metrics", func(c *gin.Context) {
+		c.Header("Content-Type", "text/plain; charset=utf-8")
+		c.String(http.StatusOK, s.metr.render(s.queue.Len()))
 	})
 
 	api := r.Group("/api")
@@ -314,6 +319,7 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 		cost float64
 	}
 	userAgg := make(map[string]*agg)
+	usageRecords := 0
 
 	var actions []Action
 	duplicate := false
@@ -353,6 +359,7 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 			if err := s.store.InsertUsageRecordTx(ctx, tx, data.NodeID, reportTS, proc, cost); err != nil {
 				return err
 			}
+			usageRecords++
 
 			a := userAgg[proc.Username]
 			if a == nil {
@@ -400,8 +407,10 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 		return nil, err
 	}
 	if duplicate {
+		s.metr.observeReport(now, true, 0, nil)
 		return []Action{}, nil
 	}
+	s.metr.observeReport(now, false, usageRecords, actions)
 	return actions, nil
 }
 

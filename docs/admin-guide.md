@@ -47,7 +47,8 @@ Agent 每次上报携带 `report_id`（随机 128bit），控制器写入 `metri
 
 ## 6. 常用脚本
 
+- `scripts/build_linux.sh`：构建 Linux 二进制（输出到 `bin/`）
 - `scripts/deploy_agent.sh`：批量部署 Agent（示例）
+- `scripts/deploy_controller.sh`：部署控制器（示例）
 - `scripts/deploy_hook.sh`：部署 Hook 到所有用户（示例）
 - `scripts/check_status.sh`：接口自检（示例）
-

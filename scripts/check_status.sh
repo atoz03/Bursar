@@ -9,6 +9,10 @@ ADMIN_TOKEN="${ADMIN_TOKEN:-dev-admin-token}"
 echo "==> healthz"
 curl -fsS "${CONTROLLER_URL}/healthz" && echo
 
+echo "==> metrics"
+curl -fsS "${CONTROLLER_URL}/metrics" | head -n 20
+echo
+
 echo "==> prices"
 curl -fsS -H "Authorization: Bearer ${ADMIN_TOKEN}" "${CONTROLLER_URL}/api/admin/prices" && echo
 

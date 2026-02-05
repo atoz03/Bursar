@@ -14,6 +14,12 @@
 
 返回 `{"ok":true}`。
 
+## 监控指标
+
+### `GET /metrics`
+
+返回控制器内置的最小监控指标（Prometheus 文本格式子集），用于快速接入 Prometheus 抓取与上线自检。
+
 ## Agent 上报
 
 ### `POST /api/metrics`
