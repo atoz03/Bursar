@@ -11,7 +11,7 @@ agent_token: "dev-agent-token"
 admin_token: "dev-admin-token"
 
 # Web 登录会话签名密钥（用于 cookie）。建议上线时替换为强随机值。
-auth_secret: "dev-auth-secret"
+auth_secret: "76e96e86a6fa28441d219e0761687286e661b94f26dec6db1360af34fd36ed72"
 
 # 余额阈值
 warning_threshold: 100
