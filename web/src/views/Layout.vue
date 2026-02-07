@@ -26,11 +26,15 @@
         <el-menu :default-active="activePath" router class="menu">
           <el-menu-item index="/user/balance" class="menu-item-custom">
             <el-icon><User /></el-icon>
-            <span>用户余额</span>
+            <span>积分查询</span>
           </el-menu-item>
           <el-menu-item index="/user/usage" class="menu-item-custom">
             <el-icon><Tickets /></el-icon>
             <span>用户用量</span>
+          </el-menu-item>
+          <el-menu-item index="/user/register" class="menu-item-custom">
+            <el-icon><EditPen /></el-icon>
+            <span>用户注册</span>
           </el-menu-item>
         </el-menu>
       </div>
@@ -53,6 +57,10 @@
           <el-menu-item index="/admin/usage" class="menu-item-custom">
             <el-icon><Document /></el-icon>
             <span>使用记录</span>
+          </el-menu-item>
+          <el-menu-item index="/admin/requests" class="menu-item-custom">
+            <el-icon><EditPen /></el-icon>
+            <span>注册审核</span>
           </el-menu-item>
           <el-menu-item index="/admin/queue" class="menu-item-custom">
             <el-icon><Timer /></el-icon>
@@ -123,7 +131,8 @@ import {
   UserFilled,
   Connection,
   Check,
-  SwitchButton
+  SwitchButton,
+  EditPen
 } from "@element-plus/icons-vue";
 
 const route = useRoute();
