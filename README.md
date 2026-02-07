@@ -13,6 +13,31 @@
 如果你所在网络无法访问 `proxy.golang.org` / `golang.org`，建议临时使用国内 Go Proxy：
 
 ```bash
+# Go Ubuntu配置
+set -e
+
+# 1) 下载 Go 1.22.5（清华不行就自动换阿里/腾讯）
+cd /tmp
+rm -f go.tgz
+wget -O go.tgz https://mirrors.tuna.tsinghua.edu.cn/golang/go1.22.5.linux-amd64.tar.gz \
+|| wget -O go.tgz https://mirrors.aliyun.com/golang/go1.22.5.linux-amd64.tar.gz \
+|| wget -O go.tgz https://mirrors.cloud.tencent.com/golang/go1.22.5.linux-amd64.tar.gz
+
+# 2) 安装到 /usr/local/go
+sudo rm -rf /usr/local/go
+sudo tar -C /usr/local -xzf /tmp/go.tgz
+
+# 3) 配 PATH（系统级 + 当前 shell 立即生效）
+echo 'export PATH=/usr/local/go/bin:$PATH' | sudo tee /etc/profile.d/go.sh >/dev/null
+export PATH=/usr/local/go/bin:$PATH
+grep -q '/usr/local/go/bin' ~/.bashrc || echo 'export PATH=/usr/local/go/bin:$PATH' >> ~/.bashrc
+source ~/.bashrc
+hash -r
+
+# 4) 验证
+which go
+go version
+
 export GOPROXY=https://goproxy.cn,direct
 export GOSUMDB=off
 ```
@@ -21,46 +46,15 @@ export GOSUMDB=off
 
 ```bash
 cd /Volumes/disk/gpu-ops
-docker compose up -d
+export POSTGRES_IMAGE="docker.m.daocloud.io/library/postgres:18.1"
+docker-compose up -d
+
+# check是否成功
+docker-compose ps -a
+docker-compose logs --tail=200 postgres
 ```
 
 默认会创建数据库 `gpuops`，用户名/密码均为 `gpuops`，端口 `5432`。
-
-补充说明：
-- 建议优先使用 `docker compose ...`（不加 `sudo`）。如果必须使用 `sudo`，请确保全程一致（`sudo docker ...` / `sudo docker compose ...`），避免因为 Docker 上下文/环境差异导致行为不一致。
-- 如果你所在网络无法直接访问 Docker Hub，可通过环境变量替换镜像来源（例如公司内网镜像仓库/镜像加速器）：
-
-```bash
-export POSTGRES_IMAGE="postgres:18.1"       # 也可以改成你的镜像仓库地址（或镜像代理域名）
-docker compose up -d --pull missing        # 可选：always / missing / never
-```
-
-示例：使用 Docker Hub 镜像加速/代理（不同网络可用性不同，建议逐个 `docker pull` 验证）：
-
-```bash
-export POSTGRES_IMAGE="docker.m.daocloud.io/library/postgres:18.1"
-docker compose up -d --pull missing
-```
-
-常见排障（遇到 “Pulled 但 No such image” 这类现象时）：
-
-```bash
-docker compose pull postgres
-docker image ls postgres
-docker image ls | grep -E "postgres\\s+18\\.1|docker\\.io/library/postgres:18\\.1" || true
-docker image inspect postgres:18.1 >/dev/null
-docker context show
-docker version
-```
-
-如果你遇到类似 `x509: certificate is valid for *.facebook.com ... not registry-1.docker.io`：
-- 通常是网络/代理/DNS 劫持导致你连到的不是 Docker Hub 的真实服务。
-- 建议优先使用镜像加速/代理（如上），或检查本机 `HTTPS_PROXY/HTTP_PROXY`、`/etc/hosts`、DNS 配置。
-
-如果 `docker compose pull` 或 `docker pull postgres:18.1` 本身失败，请优先检查：
-- 代理/镜像加速器/私有仓库配置（`/etc/docker/daemon.json` 的 `registry-mirrors` 等）
-- 磁盘空间（`df -h`、`docker system df`）
-- Docker 守护进程状态（如 `systemctl status docker` / `systemctl restart docker`）
 
 ### 2) 启动控制器
 
@@ -73,7 +67,25 @@ go run . --config ../config/controller.yaml
 （可选但推荐）构建前端，让控制器托管完整 Web 管理端：
 
 ```bash
+# 1) 清理旧 node（可选但建议）
+sudo apt remove -y nodejs npm || true
+sudo apt remove -y libnode-dev
+
+# 2) 装 Node 20（NodeSource）
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+
+# 3) 验证
+node -v
+npm -v
+
+# 4) 用 corepack 安装 pnpm
+sudo corepack enable
+corepack prepare pnpm@9.15.2 --activate
+pnpm -v
+
 cd web
+pnpm config set registry https://registry.npmmirror.com
 pnpm install
 pnpm build
 ```
