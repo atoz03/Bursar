@@ -7,7 +7,7 @@
 - Agent 上报：`X-Agent-Token: <token>`
 - 管理员接口：`Authorization: Bearer <adminToken>`
 - Web 登录：`POST /api/auth/login` 后由控制器下发 HttpOnly cookie（同站点请求自动携带）
-- 用户余额查询：默认不鉴权（用于 Bash Hook）；部署到生产前建议放到内网并增加网关/ACL
+- 用户积分/余额查询：默认不鉴权（用于 Bash Hook）；部署到生产前建议放到内网并增加网关/ACL
 
 CSRF 说明（Web 登录场景）：
 - 通过 cookie 会话访问管理员接口时，非 GET 请求需要携带 `X-CSRF-Token`（从 `GET /api/auth/me` 返回的 `csrf_token` 获取）
@@ -123,7 +123,7 @@ CSRF 说明（Web 登录场景）：
 返回：
 
 ```json
-{"records":[{"node_id":"node01","username":"alice","timestamp":"2026-02-05T16:00:00Z","cpu_percent":120.5,"memory_mb":2048,"gpu_usage":"[]","cost":0.6}]}
+{"records":[{"node_id":"60000","username":"alice","timestamp":"2026-02-05T16:00:00Z","cpu_percent":120.5,"memory_mb":2048,"gpu_usage":"[]","cost":0.6}]}
 ```
 
 ### `POST /api/users/:username/recharge`（管理员）
