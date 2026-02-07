@@ -175,6 +175,64 @@ openssl rand -hex 32
 postgres://gpuops:gpuops@127.0.0.1:5432/gpuops?sslmode=disable
 ```
 
+### 2.1 （可选，试点/开发）用 docker compose 临时启动 PostgreSQL
+
+说明：
+- **生产环境**建议使用独立 PostgreSQL（或云数据库/主备），并做好备份与监控。
+- 如果你只是先在控制节点做试点验证，可以直接用本仓库根目录的 `docker-compose.yml` 启动一个 PostgreSQL。
+
+前置条件：
+- 已安装 Docker 与 Compose v2（命令形态为 `docker compose ...`）。
+
+启动（在仓库根目录执行）：
+
+```bash
+cd gpu-ops
+docker compose up -d
+docker compose ps
+docker compose logs -f postgres
+```
+
+默认会创建数据库 `gpuops`，用户名/密码均为 `gpuops`，端口 `5432`。
+
+如果你所在网络无法直接访问 Docker Hub，或需要走公司内网镜像仓库/镜像加速器，可通过环境变量覆盖镜像来源（见 `docker-compose.yml`）：
+
+```bash
+export POSTGRES_IMAGE="postgres:15"         # 也可以改成你的镜像仓库地址
+docker compose up -d --pull missing        # 可选：always / missing / never
+```
+
+注意（非常常见的坑）：
+- **优先不要加 `sudo`**。如果必须使用 `sudo`，请保证全程一致（`sudo docker ...` / `sudo docker compose ...`），避免因为 Docker 上下文/环境变量/HOME 不同导致行为不一致。
+- 如果你用 `sudo` 但又想保留 `POSTGRES_IMAGE` 等环境变量，请用 `sudo -E`（或把变量写入 compose 的 `.env` 文件）。
+
+遇到 “Pulled 但 No such image” 这类现象时的排障命令（把输出保存下来便于定位）：
+
+```bash
+docker context show
+docker version
+docker compose version
+docker compose pull postgres
+docker image ls postgres
+docker image inspect postgres:15 >/dev/null
+```
+
+如果你使用了 `sudo`，请把上述命令再用 `sudo` 运行一遍并对比差异：
+
+```bash
+sudo docker context show
+sudo docker version
+sudo docker compose version
+sudo docker compose pull postgres
+sudo docker image ls postgres
+sudo docker image inspect postgres:15 >/dev/null
+```
+
+如果 `docker pull` 本身失败，优先检查：
+- 代理/镜像加速器/私有仓库配置（如 `/etc/docker/daemon.json` 的 `registry-mirrors` 等）
+- 磁盘空间（`df -h`、`docker system df`）
+- Docker 守护进程状态（`systemctl status docker`、`journalctl -u docker -n 200 --no-pager`）
+
 建议做两件事：
 1) 确认数据库可从控制器机器访问
 2) 规划数据保留策略（`usage_records` 会持续增长）

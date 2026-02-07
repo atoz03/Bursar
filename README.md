@@ -26,6 +26,31 @@ docker compose up -d
 
 默认会创建数据库 `gpuops`，用户名/密码均为 `gpuops`，端口 `5432`。
 
+补充说明：
+- 建议优先使用 `docker compose ...`（不加 `sudo`）。如果必须使用 `sudo`，请确保全程一致（`sudo docker ...` / `sudo docker compose ...`），避免因为 Docker 上下文/环境差异导致行为不一致。
+- 如果你所在网络无法直接访问 Docker Hub，可通过环境变量替换镜像来源（例如公司内网镜像仓库/镜像加速器）：
+
+```bash
+export POSTGRES_IMAGE="postgres:15"         # 也可以改成你的镜像仓库地址
+docker compose up -d --pull missing        # 可选：always / missing / never
+```
+
+常见排障（遇到 “Pulled 但 No such image” 这类现象时）：
+
+```bash
+docker compose pull postgres
+docker image ls postgres
+docker image ls | grep -E "postgres\\s+15|docker\\.io/library/postgres:15" || true
+docker image inspect postgres:15 >/dev/null
+docker context show
+docker version
+```
+
+如果 `docker compose pull` 或 `docker pull postgres:15` 本身失败，请优先检查：
+- 代理/镜像加速器/私有仓库配置（`/etc/docker/daemon.json` 的 `registry-mirrors` 等）
+- 磁盘空间（`df -h`、`docker system df`）
+- Docker 守护进程状态（如 `systemctl status docker` / `systemctl restart docker`）
+
 ### 2) 启动控制器
 
 ```bash
@@ -33,6 +58,16 @@ cd controller
 go test ./...
 go run . --config ../config/controller.yaml
 ```
+
+（可选但推荐）构建前端，让控制器托管完整 Web 管理端：
+
+```bash
+cd web
+pnpm install
+pnpm build
+```
+
+注意：控制器启动时才会探测 `web/dist/`，因此建议先构建前端再启动控制器；如果你是启动后才构建，请重启控制器。
 
 健康检查：
 
