@@ -1119,6 +1119,18 @@ func (s *Server) maybeServeWeb(r *gin.Engine) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not_found"})
 			return
 		}
+
+		// 优先直出 dist 根目录下的静态文件（如 /logo.svg、/favicon.ico、/manifest.webmanifest）。
+		// 否则浏览器请求图标会被回退到 index.html，导致标签页图标不生效。
+		reqPath := strings.TrimPrefix(c.Request.URL.Path, "/")
+		if reqPath != "" && !strings.Contains(reqPath, "..") {
+			fp := filepath.Join(webDir, filepath.FromSlash(reqPath))
+			if info, err := os.Stat(fp); err == nil && !info.IsDir() {
+				c.File(fp)
+				return
+			}
+		}
+
 		c.File(filepath.Join(webDir, "index.html"))
 	})
 }
