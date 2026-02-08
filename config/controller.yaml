@@ -5,10 +5,10 @@ listen_addr: "127.0.0.1:8000"
 database_dsn: "postgres://gpuops:gpuops@127.0.0.1:5432/gpuops?sslmode=disable"
 
 # Agent 上报鉴权（header: X-Agent-Token）
-agent_token: "dev-agent-token"
+agent_token: "<replace-with-agent-token>"
 
 # 管理员鉴权（header: Authorization: Bearer <token>）
-admin_token: "dev-admin-token"
+admin_token: "<replace-with-admin-token>"
 
 # Web 登录会话签名密钥（用于 cookie）。建议上线时替换为强随机值。
 auth_secret: "<replace-with-auth-secret>"
