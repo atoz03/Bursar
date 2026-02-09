@@ -4,7 +4,7 @@
       <template #header>
         <div class="head">
           <h2>用户注册</h2>
-          <p>请填写完整身份信息，注册后可登录并查看个人余额和用量。</p>
+          <p>请填写完整身份信息，注册后可登录并查看个人积分和用量。</p>
         </div>
       </template>
 
@@ -13,22 +13,22 @@
 
       <el-form label-position="top">
         <el-row :gutter="12">
-          <el-col :span="12"><el-form-item label="邮箱"><el-input v-model="form.email" /></el-form-item></el-col>
-          <el-col :span="12"><el-form-item label="用户名"><el-input v-model="form.username" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="邮箱 *" required><el-input v-model="form.email" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="用户名 *" required><el-input v-model="form.username" /></el-form-item></el-col>
         </el-row>
         <el-row :gutter="12">
-          <el-col :span="12"><el-form-item label="密码"><el-input v-model="form.password" type="password" show-password /></el-form-item></el-col>
-          <el-col :span="12"><el-form-item label="确认密码"><el-input v-model="confirmPassword" type="password" show-password /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="密码 *" required><el-input v-model="form.password" type="password" show-password /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="确认密码 *" required><el-input v-model="confirmPassword" type="password" show-password /></el-form-item></el-col>
         </el-row>
         <el-row :gutter="12">
-          <el-col :span="12"><el-form-item label="实际姓名"><el-input v-model="form.real_name" /></el-form-item></el-col>
-          <el-col :span="12"><el-form-item label="学号"><el-input v-model="form.student_id" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="实际姓名 *" required><el-input v-model="form.real_name" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="学号 *" required><el-input v-model="form.student_id" /></el-form-item></el-col>
         </el-row>
         <el-row :gutter="12">
-          <el-col :span="12"><el-form-item label="导师"><el-input v-model="form.advisor" /></el-form-item></el-col>
-          <el-col :span="12"><el-form-item label="预计毕业年份"><el-input-number v-model="form.expected_graduation_year" :min="2020" :max="2200" style="width: 100%" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="导师 *" required><el-input v-model="form.advisor" /></el-form-item></el-col>
+          <el-col :span="12"><el-form-item label="预计毕业年份 *" required><el-input-number v-model="form.expected_graduation_year" :min="2020" :max="2200" style="width: 100%" /></el-form-item></el-col>
         </el-row>
-        <el-form-item label="电话"><el-input v-model="form.phone" /></el-form-item>
+        <el-form-item label="电话 *" required><el-input v-model="form.phone" /></el-form-item>
       </el-form>
 
       <el-button type="primary" :loading="loading" @click="submit" style="width: 100%">提交注册</el-button>
@@ -73,7 +73,7 @@ async function submit() {
     await client.authRegister({ ...form });
     success.value = "注册成功，请返回登录";
   } catch (e: any) {
-    error.value = e?.body ? `${e.message}\n${e.body}` : (e?.message ?? String(e));
+    error.value = e?.message ?? String(e);
   } finally {
     loading.value = false;
   }

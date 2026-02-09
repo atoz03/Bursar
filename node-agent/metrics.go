@@ -40,6 +40,7 @@ func (a *NodeAgent) CollectMetrics(ctx context.Context) (*MetricsData, error) {
 		metrics.NetRxBytes = ioStats[0].BytesRecv
 		metrics.NetTxBytes = ioStats[0].BytesSent
 	}
+	metrics.SSHUsers = a.getSSHUsers(ctx)
 
 	// CPU 计费需要观察 CPU-only 进程，因此进行一次全量扫描；
 	// 为控制开销，只上报「占用 CPU 超过阈值」或「使用 GPU」的进程。

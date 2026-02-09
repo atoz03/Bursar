@@ -17,6 +17,7 @@ type sessionPayload struct {
 	Role     string `json:"r"`
 	ExpUnix  int64  `json:"exp"`
 	Nonce    string `json:"n"`
+	Perms    uint32 `json:"p,omitempty"` // bit0:view_board bit1:view_nodes bit2:review_requests
 }
 
 func newNonce() string {

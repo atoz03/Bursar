@@ -58,7 +58,7 @@
         </div>
         <div class="stat-content">
           <div class="stat-value">{{ totalCost.toFixed(2) }}</div>
-          <div class="stat-label">总成本</div>
+          <div class="stat-label">总积分消耗</div>
         </div>
       </div>
     </div>
@@ -122,7 +122,7 @@
           </template>
         </el-table-column>
 
-        <el-table-column prop="cost_total" label="当次成本" width="120" align="right">
+        <el-table-column prop="cost_total" label="当次积分" width="120" align="right">
           <template #default="{ row }">
             <div class="cost-cell">
               <el-icon color="var(--warning-color)"><Coin /></el-icon>
@@ -157,11 +157,31 @@
           <template #default="{ row }">{{ (row.net_tx_mb_month || 0).toFixed(2) }}</template>
         </el-table-column>
 
+        <el-table-column label="SSH在线数" width="110" align="center">
+          <template #default="{ row }">
+            <el-tag :type="(row.ssh_active_count || 0) > 0 ? 'warning' : 'info'" effect="plain">
+              {{ row.ssh_active_count || 0 }}
+            </el-tag>
+          </template>
+        </el-table-column>
+
         <el-table-column prop="last_report_id" label="Report ID" min-width="200">
           <template #default="{ row }">
             <el-text type="info" size="small" style="font-family: monospace">
               {{ row.last_report_id }}
             </el-text>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="190" fixed="right">
+          <template #default="{ row }">
+            <el-button
+              size="small"
+              type="danger"
+              :loading="disconnectingNodeId === row.node_id"
+              @click="disconnectAllSSH(row)"
+            >
+              清除SSH状态
+            </el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -171,6 +191,7 @@
 
 <script setup lang="ts">
 import { ref, computed } from "vue";
+import { ElMessage, ElMessageBox } from "element-plus";
 import { ApiClient, type NodeStatus } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
@@ -180,6 +201,7 @@ import dayjs from "dayjs";
 const loading = ref(false);
 const error = ref("");
 const rows = ref<NodeStatus[]>([]);
+const disconnectingNodeId = ref("");
 
 const totalGpuProcesses = computed(() => rows.value.reduce((sum, node) => sum + node.gpu_process_count, 0));
 const totalCpuProcesses = computed(() => rows.value.reduce((sum, node) => sum + node.cpu_process_count, 0));
@@ -199,9 +221,35 @@ async function reload() {
     const r = await client.adminNodes(200);
     rows.value = r.nodes ?? [];
   } catch (e: any) {
-    error.value = e?.body ? `${e.message}\n${e.body}` : (e?.message ?? String(e));
+    error.value = e?.message ?? String(e);
   } finally {
     loading.value = false;
+  }
+}
+
+async function disconnectAllSSH(row: NodeStatus) {
+  const count = row.ssh_active_count || 0;
+  const nodeId = row.node_id;
+  try {
+    await ElMessageBox.confirm(
+      `确认清除节点 ${nodeId} 的 SSH 状态吗？\n当前检测到 SSH 登录用户数：${count}\n执行后将强制断开会话，用户需重新连接。`,
+      "二次确认",
+      { type: "warning", confirmButtonText: "确认执行", cancelButtonText: "取消" },
+    );
+  } catch {
+    return;
+  }
+  disconnectingNodeId.value = nodeId;
+  error.value = "";
+  try {
+    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+    const r = await client.adminDisconnectNodeSSH(nodeId);
+    ElMessage.success(r.message || "已下发清理指令");
+    await reload();
+  } catch (e: any) {
+    error.value = e?.message ?? String(e);
+  } finally {
+    disconnectingNodeId.value = "";
   }
 }
 

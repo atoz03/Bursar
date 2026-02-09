@@ -4,7 +4,7 @@
       <div class="row">
         <div>
           <div class="title">价格配置</div>
-          <div class="sub">需要管理员登录：GET/POST /api/admin/prices（CPU 使用模型名 CPU_CORE）</div>
+          <div class="sub">需要管理员登录：GET/POST /api/admin/prices（CPU 使用模型名 CPU_CORE，单位：积分）</div>
         </div>
         <div class="row">
           <el-button :loading="loading" type="primary" @click="reload">刷新</el-button>
@@ -18,7 +18,7 @@
 
       <el-table :data="rows" stripe height="520">
         <el-table-column prop="model" label="模型关键词" width="260" />
-        <el-table-column prop="price" label="元/分钟" width="160" />
+        <el-table-column prop="price" label="积分/分钟" width="160" />
         <el-table-column label="操作" width="200">
           <template #default="{ row }">
             <el-button size="small" @click="openEdit(row.model, row.price)">编辑</el-button>
@@ -27,12 +27,12 @@
       </el-table>
     </el-space>
 
-    <el-dialog v-model="editVisible" title="设置价格" width="420px">
+    <el-dialog v-model="editVisible" title="设置积分单价" width="420px">
       <el-form label-width="110px">
         <el-form-item label="模型关键词">
           <el-input v-model="editModel" placeholder="例如 RTX 3090 / A100 / CPU_CORE" />
         </el-form-item>
-        <el-form-item label="元/分钟">
+        <el-form-item label="积分/分钟">
           <el-input-number v-model="editPrice" :min="0" :max="1000" :step="0.01" :precision="4" />
         </el-form-item>
       </el-form>

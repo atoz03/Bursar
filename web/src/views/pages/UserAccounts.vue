@@ -12,7 +12,7 @@
     <el-table :data="rows" stripe>
       <el-table-column prop="node_id" label="机器编号" width="140" />
       <el-table-column prop="local_username" label="机器用户名" width="180" />
-      <el-table-column prop="billing_username" label="计费账号" width="180" />
+      <el-table-column prop="billing_username" label="系统账号" width="180" />
       <el-table-column prop="updated_at" label="更新时间" min-width="180" />
       <el-table-column label="操作" width="220">
         <template #default="{ row }">
@@ -45,7 +45,7 @@ async function reload() {
     const r = await client.userAccounts();
     rows.value = r.accounts ?? [];
   } catch (e: any) {
-    error.value = e?.body ? `${e.message}\n${e.body}` : (e?.message ?? String(e));
+    error.value = e?.message ?? String(e);
   } finally {
     loading.value = false;
   }
@@ -78,7 +78,7 @@ async function add() {
     localUsername.value = "";
     await reload();
   } catch (e: any) {
-    error.value = e?.body ? `${e.message}\n${e.body}` : (e?.message ?? String(e));
+    error.value = e?.message ?? String(e);
   }
 }
 
@@ -89,7 +89,7 @@ async function remove(row: UserNodeAccount) {
     await client.userDeleteAccount(row.node_id, row.local_username);
     await reload();
   } catch (e: any) {
-    error.value = e?.body ? `${e.message}\n${e.body}` : (e?.message ?? String(e));
+    error.value = e?.message ?? String(e);
   }
 }
 

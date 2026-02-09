@@ -13,6 +13,7 @@ type MetricsData struct {
 	GPUCount        int           `json:"gpu_count,omitempty"`
 	NetRxBytes      uint64        `json:"net_rx_bytes,omitempty"`
 	NetTxBytes      uint64        `json:"net_tx_bytes,omitempty"`
+	SSHUsers        []string      `json:"ssh_users,omitempty"`
 	Users           []UserProcess `json:"users"`
 }
 

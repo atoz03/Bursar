@@ -1,5 +1,5 @@
 # 控制器配置示例（开发环境）
-listen_addr: "127.0.0.1:8000"
+listen_addr: "0.0.0.0:8000"
 
 # PostgreSQL DSN
 database_dsn: "postgres://gpuops:gpuops@127.0.0.1:5432/gpuops?sslmode=disable"

@@ -20,6 +20,14 @@ else
   SUDO=""
 fi
 
+run_root_env_bash() {
+  if [[ -n "${SUDO}" ]]; then
+    ${SUDO} -E bash -
+  else
+    bash -
+  fi
+}
+
 require_ubuntu_2204() {
   if [[ ! -f /etc/os-release ]]; then
     echo "无法识别系统：缺少 /etc/os-release" >&2
@@ -96,7 +104,7 @@ install_node_and_pnpm() {
     return 0
   fi
   echo "[4/6] 安装 Node.js ${NODE_MAJOR}.x 与 pnpm ${PNPM_VERSION}..."
-  curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | ${SUDO} -E bash -
+  curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | run_root_env_bash
   ${SUDO} apt-get install -y nodejs
   ${SUDO} corepack enable
   corepack prepare "pnpm@${PNPM_VERSION}" --activate
@@ -111,13 +119,20 @@ install_docker() {
     return 0
   fi
   echo "[5/6] 安装 Docker..."
-  ${SUDO} apt-get install -y docker.io docker-compose-plugin
+  ${SUDO} apt-get install -y docker.io
+  if ${SUDO} apt-get install -y docker-compose-plugin; then
+    :
+  else
+    echo "docker-compose-plugin 不可用，回退安装 docker-compose..."
+    ${SUDO} apt-get install -y docker-compose || true
+  fi
   ${SUDO} systemctl enable docker >/dev/null 2>&1 || true
   ${SUDO} systemctl start docker >/dev/null 2>&1 || true
   if getent group docker >/dev/null 2>&1; then
     ${SUDO} usermod -aG docker "${USER}" || true
   fi
   docker --version || true
+  docker compose version 2>/dev/null || docker-compose --version 2>/dev/null || true
 }
 
 summary() {

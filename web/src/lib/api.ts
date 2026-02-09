@@ -4,10 +4,36 @@ export type ApiError = {
   body?: string;
 };
 
+function normalizeServerError(status: number, bodyText: string): ApiError {
+  const text = (bodyText ?? "").trim();
+  let serverMsg = "";
+  if (text) {
+    try {
+      const j = JSON.parse(text);
+      serverMsg = String(j?.error ?? j?.message ?? "").trim();
+    } catch {
+      serverMsg = text;
+    }
+  }
+  const m: Record<string, string> = {
+    unauthorized: "未授权，请重新登录后重试",
+    csrf_required: "登录状态已过期，请刷新页面后重试",
+    invalid_credentials: "用户名或密码错误",
+    session_disabled: "当前未启用登录会话",
+    not_found: "请求的资源不存在",
+    forbidden: "当前账号没有权限执行该操作",
+  };
+  const msg = m[serverMsg] || serverMsg || `请求失败（状态码 ${status}）`;
+  return { message: msg, status };
+}
+
 export type AuthMeResp = {
   authenticated: boolean;
   username?: string;
   role?: string;
+  can_view_board?: boolean;
+  can_view_nodes?: boolean;
+  can_review_requests?: boolean;
   expires_at?: string;
   csrf_token?: string;
 };
@@ -32,6 +58,9 @@ export type BalanceResp = {
 export type UsageRecord = {
   node_id: string;
   username: string;
+  local_username?: string;
+  billing_username?: string;
+  registered?: boolean;
   timestamp: string;
   pid?: number;
   cpu_percent: number;
@@ -85,6 +114,7 @@ export type NodeStatus = {
   gpu_process_count: number;
   cpu_process_count: number;
   usage_records_count: number;
+  ssh_active_count?: number;
   cost_total: number;
   updated_at: string;
 };
@@ -105,11 +135,29 @@ export type SSHWhitelistEntry = {
   updated_at: string;
 };
 
+export type SSHBlacklistEntry = {
+  node_id: string;
+  local_username: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SSHExemptionEntry = {
+  node_id: string;
+  local_username: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+};
+
 export type PriceRow = { Model?: string; Price?: number; model?: string; price?: number };
 
 export type RegistryResolveResp = {
   registered: boolean;
   billing_username?: string;
+  blacklisted?: boolean;
+  exempted?: boolean;
 };
 
 export type UserRequest = {
@@ -122,6 +170,92 @@ export type UserRequest = {
   status: "pending" | "approved" | "rejected" | string;
   reviewed_by?: string;
   reviewed_at?: string;
+  created_at: string;
+  updated_at: string;
+  apply_count_by_billing?: number;
+  duplicate_flag?: boolean;
+  duplicate_reason?: string;
+};
+
+export type Announcement = {
+  announcement_id: number;
+  title: string;
+  content: string;
+  pinned: boolean;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AdminUserDetail = {
+  username: string;
+  role: string;
+  can_view_board: boolean;
+  can_view_nodes: boolean;
+  can_review_requests: boolean;
+  email: string;
+  student_id: string;
+  real_name: string;
+  advisor: string;
+  expected_graduation_year: number;
+  phone: string;
+  balance: number;
+  status: string;
+  usage_records: number;
+  total_cost: number;
+  last_usage_at: string;
+  node_accounts: UserNodeAccount[];
+};
+
+export type ProfileChangeRequest = {
+  request_id: number;
+  billing_username: string;
+  old_username: string;
+  old_email: string;
+  old_student_id: string;
+  new_username: string;
+  new_email: string;
+  new_student_id: string;
+  reason: string;
+  status: "pending" | "approved" | "rejected" | string;
+  reviewed_by?: string;
+  reviewed_at?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PlatformUsageUserSummary = {
+  platform_username: string;
+  usage_records: number;
+  gpu_process_records: number;
+  cpu_process_records: number;
+  total_cpu_percent: number;
+  total_memory_mb: number;
+  total_cost: number;
+};
+
+export type PlatformUsageNodeDetail = {
+  node_id: string;
+  cpu_model: string;
+  cpu_count: number;
+  gpu_model: string;
+  gpu_count: number;
+  last_seen_at: string;
+  usage_records: number;
+  total_cpu_percent: number;
+  total_memory_mb: number;
+  total_cost: number;
+  last_usage_at: string;
+};
+
+export type PowerUser = {
+  username: string;
+  can_view_board: boolean;
+  can_view_nodes: boolean;
+  can_review_requests: boolean;
+  created_by: string;
+  updated_by: string;
+  last_login_at?: string;
   created_at: string;
   updated_at: string;
 };
@@ -169,7 +303,7 @@ export class ApiClient {
     const res = await fetch(this.url(path), { headers, credentials: "include" });
     if (!res.ok) {
       const text = await this.readText(res);
-      throw { message: `请求失败：${res.status}`, status: res.status, body: text } satisfies ApiError;
+      throw normalizeServerError(res.status, text);
     }
     return (await res.json()) as T;
   }
@@ -203,7 +337,7 @@ export class ApiClient {
         }
       }
 
-      throw { message: `请求失败：${res.status}`, status: res.status, body: text } satisfies ApiError;
+      throw normalizeServerError(res.status, text);
     }
     return (await res.json()) as T;
   }
@@ -216,7 +350,7 @@ export class ApiClient {
     const res = await fetch(this.url("/metrics"), { credentials: "include" });
     if (!res.ok) {
       const text = await this.readText(res);
-      throw { message: `请求失败：${res.status}`, status: res.status, body: text } satisfies ApiError;
+      throw normalizeServerError(res.status, text);
     }
     return await res.text();
   }
@@ -261,6 +395,10 @@ export class ApiClient {
     return await this.postJson("/api/auth/logout", {});
   }
 
+  async announcements(limit = 20): Promise<{ announcements: Announcement[] }> {
+    return await this.getJson(`/api/announcements?limit=${limit}`);
+  }
+
   async userBalance(username: string): Promise<BalanceResp> {
     return await this.getJson(`/api/users/${encodeURIComponent(username)}/balance`);
   }
@@ -271,6 +409,23 @@ export class ApiClient {
 
   async userMe(): Promise<UserProfile> {
     return await this.getJson("/api/user/me");
+  }
+
+  async userUpdateProfile(payload: {
+    email: string;
+    username: string;
+    student_id: string;
+    real_name: string;
+    advisor: string;
+    expected_graduation_year: number;
+    phone: string;
+    change_reason: string;
+  }): Promise<{ ok: boolean; profile_updated: boolean; request_submitted: boolean; message: string }> {
+    return await this.postJson("/api/user/me/profile", payload);
+  }
+
+  async userProfileChangeRequests(limit: number): Promise<{ requests: ProfileChangeRequest[] }> {
+    return await this.getJson(`/api/user/me/profile-change-requests?limit=${limit}`);
   }
 
   async userMyBalance(): Promise<BalanceResp> {
@@ -303,7 +458,7 @@ export class ApiClient {
     });
     if (!res.ok) {
       const text = await this.readText(res);
-      throw { message: `请求失败：${res.status}`, status: res.status, body: text } satisfies ApiError;
+      throw normalizeServerError(res.status, text);
     }
     return (await res.json()) as { ok: boolean };
   }
@@ -317,7 +472,7 @@ export class ApiClient {
     });
     if (!res.ok) {
       const text = await this.readText(res);
-      throw { message: `请求失败：${res.status}`, status: res.status, body: text } satisfies ApiError;
+      throw normalizeServerError(res.status, text);
     }
     return (await res.json()) as { ok: boolean };
   }
@@ -362,6 +517,10 @@ export class ApiClient {
     return await this.getJson("/api/admin/users", this.adminHeaders());
   }
 
+  async adminUsersDetails(limit = 1000): Promise<{ users: AdminUserDetail[] }> {
+    return await this.getJson(`/api/admin/users/details?limit=${limit}`, this.adminHeaders());
+  }
+
   async adminPrices(): Promise<{ prices: Array<{ Model?: string; Price?: number; model?: string; price?: number }> }> {
     return await this.getJson("/api/admin/prices", this.adminHeaders());
   }
@@ -382,15 +541,21 @@ export class ApiClient {
     );
   }
 
-  async adminUsage(username: string, limit: number): Promise<{ records: UsageRecord[] }> {
+  async adminUsage(params: { billingUsername?: string; localUsername?: string; unregisteredOnly?: boolean; limit: number }): Promise<{ records: UsageRecord[] }> {
     const q = new URLSearchParams();
-    if (username.trim()) q.set("username", username.trim());
-    q.set("limit", String(limit));
+    if ((params.billingUsername ?? "").trim()) q.set("billing_username", (params.billingUsername ?? "").trim());
+    if ((params.localUsername ?? "").trim()) q.set("local_username", (params.localUsername ?? "").trim());
+    if (params.unregisteredOnly) q.set("unregistered_only", "1");
+    q.set("limit", String(params.limit));
     return await this.getJson(`/api/admin/usage?${q.toString()}`, this.adminHeaders());
   }
 
   async adminNodes(limit: number): Promise<{ nodes: NodeStatus[] }> {
     return await this.getJson(`/api/admin/nodes?limit=${limit}`, this.adminHeaders());
+  }
+
+  async adminDisconnectNodeSSH(nodeId: string): Promise<{ ok: boolean; node_id: string; ssh_active_count: number; message: string }> {
+    return await this.postJson(`/api/admin/nodes/${encodeURIComponent(nodeId)}/ssh/disconnect-all`, {}, this.adminHeaders());
   }
 
   async adminRequests(params: { status?: string; limit?: number }): Promise<{ requests: UserRequest[] }> {
@@ -406,6 +571,43 @@ export class ApiClient {
 
   async adminRejectRequest(requestId: number): Promise<{ ok: boolean; request: UserRequest }> {
     return await this.postJson(`/api/admin/requests/${requestId}/reject`, {}, this.adminHeaders());
+  }
+
+  async adminBatchReview(requestIds: number[], newStatus: "approved" | "rejected"): Promise<{ ok: boolean; ok_count: number; fail_count: number; fail_items: Array<{request_id:number;error:string}> }> {
+    return await this.postJson(`/api/admin/requests/batch-review`, { request_ids: requestIds, new_status: newStatus }, this.adminHeaders());
+  }
+
+  async adminProfileChangeRequests(params: { status?: string; username?: string; limit?: number }): Promise<{ requests: ProfileChangeRequest[] }> {
+    const q = new URLSearchParams();
+    if (params.status?.trim()) q.set("status", params.status.trim());
+    if (params.username?.trim()) q.set("username", params.username.trim());
+    q.set("limit", String(params.limit ?? 500));
+    return await this.getJson(`/api/admin/profile-change-requests?${q.toString()}`, this.adminHeaders());
+  }
+
+  async adminApproveProfileChange(requestId: number): Promise<{ ok: boolean; request: ProfileChangeRequest }> {
+    return await this.postJson(`/api/admin/profile-change-requests/${requestId}/approve`, {}, this.adminHeaders());
+  }
+
+  async adminRejectProfileChange(requestId: number): Promise<{ ok: boolean; request: ProfileChangeRequest }> {
+    return await this.postJson(`/api/admin/profile-change-requests/${requestId}/reject`, {}, this.adminHeaders());
+  }
+
+  async adminCreateAnnouncement(payload: { title: string; content: string; pinned: boolean }): Promise<{ ok: boolean }> {
+    return await this.postJson(`/api/admin/announcements`, payload, this.adminHeaders());
+  }
+
+  async adminDeleteAnnouncement(id: number): Promise<{ ok: boolean }> {
+    const res = await fetch(this.url(`/api/admin/announcements/${id}`), {
+      method: "DELETE",
+      headers: { ...this.adminHeaders(), ...this.csrfHeaders() },
+      credentials: "include",
+    });
+    if (!res.ok) {
+      const text = await this.readText(res);
+      throw normalizeServerError(res.status, text);
+    }
+    return (await res.json()) as { ok: boolean };
   }
 
   async adminQueue(): Promise<{ queue: Array<{ username: string; gpu_type: string; count: number; timestamp: string }> }> {
@@ -424,7 +626,7 @@ export class ApiClient {
     });
     if (!res.ok) {
       const text = await this.readText(res);
-      throw { message: `请求失败：${res.status}`, status: res.status, body: text } satisfies ApiError;
+      throw normalizeServerError(res.status, text);
     }
     return await res.blob();
   }
@@ -456,8 +658,10 @@ export class ApiClient {
     return await this.postJson("/api/admin/mail/test", { username }, this.adminHeaders());
   }
 
-  async adminAccounts(billingUsername: string): Promise<{ accounts: UserNodeAccount[] }> {
-    return await this.getJson(`/api/admin/accounts?billing_username=${encodeURIComponent(billingUsername)}`, this.adminHeaders());
+  async adminAccounts(billingUsername = ""): Promise<{ accounts: UserNodeAccount[] }> {
+    const q = new URLSearchParams();
+    if (billingUsername.trim()) q.set("billing_username", billingUsername.trim());
+    return await this.getJson(`/api/admin/accounts?${q.toString()}`, this.adminHeaders());
   }
 
   async adminUpsertAccount(payload: { billing_username: string; node_id: string; local_username: string }): Promise<{ ok: boolean }> {
@@ -480,7 +684,7 @@ export class ApiClient {
     });
     if (!res.ok) {
       const text = await this.readText(res);
-      throw { message: `请求失败：${res.status}`, status: res.status, body: text } satisfies ApiError;
+      throw normalizeServerError(res.status, text);
     }
     return (await res.json()) as { ok: boolean };
   }
@@ -494,7 +698,7 @@ export class ApiClient {
     });
     if (!res.ok) {
       const text = await this.readText(res);
-      throw { message: `请求失败：${res.status}`, status: res.status, body: text } satisfies ApiError;
+      throw normalizeServerError(res.status, text);
     }
     return (await res.json()) as { ok: boolean };
   }
@@ -505,8 +709,8 @@ export class ApiClient {
     return await this.getJson(`/api/admin/whitelist?${q.toString()}`, this.adminHeaders());
   }
 
-  async adminUpsertWhitelist(nodeId: string, usernames: string[]): Promise<{ ok: boolean }> {
-    return await this.postJson("/api/admin/whitelist", { node_id: nodeId, usernames }, this.adminHeaders());
+  async adminUpsertWhitelist(nodeId: string, usernames: string[], billingUsernames: string[] = []): Promise<{ ok: boolean }> {
+    return await this.postJson("/api/admin/whitelist", { node_id: nodeId, usernames, billing_usernames: billingUsernames }, this.adminHeaders());
   }
 
   async adminDeleteWhitelist(nodeId: string, localUsername: string): Promise<{ ok: boolean }> {
@@ -518,7 +722,99 @@ export class ApiClient {
     });
     if (!res.ok) {
       const text = await this.readText(res);
-      throw { message: `请求失败：${res.status}`, status: res.status, body: text } satisfies ApiError;
+      throw normalizeServerError(res.status, text);
+    }
+    return (await res.json()) as { ok: boolean };
+  }
+
+  async adminBlacklist(nodeId = ""): Promise<{ entries: SSHBlacklistEntry[] }> {
+    const q = new URLSearchParams();
+    if (nodeId) q.set("node_id", nodeId);
+    return await this.getJson(`/api/admin/blacklist?${q.toString()}`, this.adminHeaders());
+  }
+
+  async adminUpsertBlacklist(nodeId: string, usernames: string[], billingUsernames: string[] = []): Promise<{ ok: boolean }> {
+    return await this.postJson("/api/admin/blacklist", { node_id: nodeId, usernames, billing_usernames: billingUsernames }, this.adminHeaders());
+  }
+
+  async adminDeleteBlacklist(nodeId: string, localUsername: string): Promise<{ ok: boolean }> {
+    const q = new URLSearchParams({ node_id: nodeId, local_username: localUsername });
+    const res = await fetch(this.url(`/api/admin/blacklist?${q.toString()}`), {
+      method: "DELETE",
+      headers: { ...this.adminHeaders(), ...this.csrfHeaders() },
+      credentials: "include",
+    });
+    if (!res.ok) {
+      const text = await this.readText(res);
+      throw normalizeServerError(res.status, text);
+    }
+    return (await res.json()) as { ok: boolean };
+  }
+
+  async adminExemptions(nodeId = ""): Promise<{ entries: SSHExemptionEntry[] }> {
+    const q = new URLSearchParams();
+    if (nodeId) q.set("node_id", nodeId);
+    return await this.getJson(`/api/admin/exemptions?${q.toString()}`, this.adminHeaders());
+  }
+
+  async adminUpsertExemptions(nodeId: string, usernames: string[], billingUsernames: string[] = []): Promise<{ ok: boolean }> {
+    return await this.postJson("/api/admin/exemptions", { node_id: nodeId, usernames, billing_usernames: billingUsernames }, this.adminHeaders());
+  }
+
+  async adminDeleteExemptions(nodeId: string, localUsername: string): Promise<{ ok: boolean }> {
+    const q = new URLSearchParams({ node_id: nodeId, local_username: localUsername });
+    const res = await fetch(this.url(`/api/admin/exemptions?${q.toString()}`), {
+      method: "DELETE",
+      headers: { ...this.adminHeaders(), ...this.csrfHeaders() },
+      credentials: "include",
+    });
+    if (!res.ok) {
+      const text = await this.readText(res);
+      throw normalizeServerError(res.status, text);
+    }
+    return (await res.json()) as { ok: boolean };
+  }
+
+  async adminPowerUsers(limit = 1000): Promise<{ users: PowerUser[] }> {
+    return await this.getJson(`/api/admin/power-users?limit=${limit}`, this.adminHeaders());
+  }
+
+  async adminCreatePowerUser(payload: {
+    username: string;
+    password: string;
+    can_view_board: boolean;
+    can_view_nodes: boolean;
+    can_review_requests: boolean;
+  }): Promise<{ ok: boolean }> {
+    return await this.postJson("/api/admin/power-users", payload, this.adminHeaders());
+  }
+
+  async adminUpdatePowerUserPermissions(
+    username: string,
+    payload: { can_view_board: boolean; can_view_nodes: boolean; can_review_requests: boolean },
+  ): Promise<{ ok: boolean }> {
+    const res = await fetch(this.url(`/api/admin/power-users/${encodeURIComponent(username)}/permissions`), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...this.adminHeaders(), ...this.csrfHeaders() },
+      credentials: "include",
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const text = await this.readText(res);
+      throw normalizeServerError(res.status, text);
+    }
+    return (await res.json()) as { ok: boolean };
+  }
+
+  async adminDeletePowerUser(username: string): Promise<{ ok: boolean }> {
+    const res = await fetch(this.url(`/api/admin/power-users/${encodeURIComponent(username)}`), {
+      method: "DELETE",
+      headers: { ...this.adminHeaders(), ...this.csrfHeaders() },
+      credentials: "include",
+    });
+    if (!res.ok) {
+      const text = await this.readText(res);
+      throw normalizeServerError(res.status, text);
     }
     return (await res.json()) as { ok: boolean };
   }
@@ -529,6 +825,22 @@ export class ApiClient {
     if (params.to) q.set("to", params.to);
     q.set("limit", String(params.limit ?? 1000));
     return await this.getJson(`/api/admin/stats/users?${q.toString()}`, this.adminHeaders());
+  }
+
+  async adminStatsPlatformUsers(params: { from?: string; to?: string; limit?: number }): Promise<{ from: string; to: string; rows: PlatformUsageUserSummary[] }> {
+    const q = new URLSearchParams();
+    if (params.from) q.set("from", params.from);
+    if (params.to) q.set("to", params.to);
+    q.set("limit", String(params.limit ?? 1000));
+    return await this.getJson(`/api/admin/stats/platform-users?${q.toString()}`, this.adminHeaders());
+  }
+
+  async adminStatsPlatformUserNodes(username: string, params: { from?: string; to?: string; limit?: number }): Promise<{ from: string; to: string; username: string; rows: PlatformUsageNodeDetail[] }> {
+    const q = new URLSearchParams();
+    if (params.from) q.set("from", params.from);
+    if (params.to) q.set("to", params.to);
+    q.set("limit", String(params.limit ?? 2000));
+    return await this.getJson(`/api/admin/stats/platform-users/${encodeURIComponent(username)}/nodes?${q.toString()}`, this.adminHeaders());
   }
 
   async adminStatsMonthly(params: { from?: string; to?: string; limit?: number }): Promise<{ from: string; to: string; rows: UsageMonthlySummary[] }> {

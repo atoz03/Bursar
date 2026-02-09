@@ -75,11 +75,14 @@ func (s *Server) handleAuthMe(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"authenticated": true,
-		"username":      p.Username,
-		"role":          p.Role,
-		"expires_at":    time.Unix(p.ExpUnix, 0).UTC().Format(time.RFC3339),
-		"csrf_token":    p.Nonce,
+		"authenticated":       true,
+		"username":            p.Username,
+		"role":                p.Role,
+		"can_view_board":      (p.Perms & 1) != 0,
+		"can_view_nodes":      (p.Perms & 2) != 0,
+		"can_review_requests": (p.Perms & 4) != 0,
+		"expires_at":          time.Unix(p.ExpUnix, 0).UTC().Format(time.RFC3339),
+		"csrf_token":          p.Nonce,
 	})
 }
 
@@ -106,17 +109,38 @@ func (s *Server) handleAuthLogin(c *gin.Context) {
 		return
 	}
 	role := "admin"
+	perms := uint32(1 | 2 | 4)
 	if !ok {
-		ok, err = s.store.VerifyUserPassword(c.Request.Context(), req.Username, req.Password)
+		power, okPower, err := s.store.VerifyPowerUserPassword(c.Request.Context(), req.Username, req.Password)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		if !ok {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_credentials"})
-			return
+		if okPower {
+			role = "power_user"
+			perms = 0
+			if power.CanViewBoard {
+				perms |= 1
+			}
+			if power.CanViewNodes {
+				perms |= 2
+			}
+			if power.CanReviewRequests {
+				perms |= 4
+			}
+		} else {
+			ok, err = s.store.VerifyUserPassword(c.Request.Context(), req.Username, req.Password)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			if !ok {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_credentials"})
+				return
+			}
+			role = "user"
+			perms = 0
 		}
-		role = "user"
 	}
 
 	secret := strings.TrimSpace(s.cfg.AuthSecret)
@@ -126,6 +150,7 @@ func (s *Server) handleAuthLogin(c *gin.Context) {
 		Role:     role,
 		ExpUnix:  exp,
 		Nonce:    newNonce(),
+		Perms:    perms,
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -261,6 +286,8 @@ func (s *Server) handleAuthChangePassword(c *gin.Context) {
 	var err error
 	if roleStr == "admin" {
 		err = s.store.UpdateAdminPassword(c.Request.Context(), userStr, req.CurrentPassword, req.NewPassword)
+	} else if roleStr == "power_user" {
+		err = fmt.Errorf("高级用户不允许在网页修改账号信息")
 	} else {
 		err = s.store.UpdateUserPassword(c.Request.Context(), userStr, req.CurrentPassword, req.NewPassword)
 	}

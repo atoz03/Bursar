@@ -13,6 +13,7 @@ AGENT_BIN="${AGENT_BIN:-./node-agent/node-agent}"
 CONTROLLER_URL="${CONTROLLER_URL:-http://controller:8000}"
 AGENT_TOKEN="${AGENT_TOKEN:-}"
 NODES="${NODES:-}"
+ACTION_POLL_INTERVAL_SECONDS="${ACTION_POLL_INTERVAL_SECONDS:-1}"
 
 # SSH 连接
 SSH_USER="${SSH_USER:-root}"
@@ -22,10 +23,15 @@ SSH_OPTS="${SSH_OPTS:--o StrictHostKeyChecking=no}"
 INSTALL_PREREQS="${INSTALL_PREREQS:-1}"   # 1: 安装运行依赖
 INSTALL_GO="${INSTALL_GO:-0}"             # 1: 额外安装 Go
 GO_VERSION="${GO_VERSION:-1.22.5}"
+SET_GO_PROXY="${SET_GO_PROXY:-1}"
+REMOTE_GOPROXY="${REMOTE_GOPROXY:-https://goproxy.cn,direct}"
+REMOTE_GOSUMDB="${REMOTE_GOSUMDB:-sum.golang.google.cn}"
 
 ENABLE_SSH_GUARD="${ENABLE_SSH_GUARD:-0}"
-SSH_GUARD_EXCLUDE_USERS="${SSH_GUARD_EXCLUDE_USERS:-root gpuops xqt}"
+SSH_GUARD_EXCLUDE_USERS="${SSH_GUARD_EXCLUDE_USERS:-root xqt}"
 SSH_GUARD_FAIL_OPEN="${SSH_GUARD_FAIL_OPEN:-1}"
+SSH_GUARD_SYNC_INTERVAL="${SSH_GUARD_SYNC_INTERVAL:-3s}"
+SSH_GUARD_ENFORCE_INTERVAL="${SSH_GUARD_ENFORCE_INTERVAL:-3s}"
 
 if [[ -z "${NODES}" ]]; then
   echo "请设置环境变量 NODES，例如：" >&2
@@ -85,6 +91,20 @@ ln -sf /usr/local/go/bin/go /usr/local/bin/go
 go version
 '"
   fi
+
+  if [[ "${SET_GO_PROXY}" == "1" ]]; then
+    echo "==> [${target}] 配置 Go 模块源（GOPROXY/GOSUMDB）"
+    ssh ${SSH_OPTS} "${target}" "${REMOTE_SUDO} bash -lc '
+set -euo pipefail
+if command -v go >/dev/null 2>&1; then
+  go env -w GOPROXY=\"${REMOTE_GOPROXY}\"
+  go env -w GOSUMDB=\"${REMOTE_GOSUMDB}\"
+  go env -w GO111MODULE=on
+  echo \"GOPROXY=$(go env GOPROXY)\"
+  echo \"GOSUMDB=$(go env GOSUMDB)\"
+fi
+'"
+  fi
 }
 
 for item in ${NODES}; do
@@ -116,6 +136,7 @@ User=root
 Environment=NODE_ID=${node_id}
 Environment=CONTROLLER_URL=${CONTROLLER_URL}
 Environment=AGENT_TOKEN=${AGENT_TOKEN}
+Environment=ACTION_POLL_INTERVAL_SECONDS=${ACTION_POLL_INTERVAL_SECONDS}
 ExecStart=/usr/local/bin/node-agent
 Restart=always
 
@@ -135,6 +156,8 @@ NODE_ID=\"${node_id}\"
 EXCLUDE_USERS=\"${SSH_GUARD_EXCLUDE_USERS}\"
 FAIL_OPEN=\"${SSH_GUARD_FAIL_OPEN}\"
 ALLOWLIST_FILE=\"/var/lib/gpu-cluster/registered_users.txt\"
+DENYLIST_FILE=\"/var/lib/gpu-cluster/blocked_users.txt\"
+EXEMPT_FILE=\"/var/lib/gpu-cluster/exempt_users.txt\"
 CONF'"
 
     ssh ${SSH_OPTS} "${target}" "${REMOTE_SUDO} bash -lc 'cat > /opt/gpu-cluster/sync_registered_users.sh <<\"EOF2\"
@@ -149,6 +172,8 @@ fi
 CONTROLLER_URL=\"${CONTROLLER_URL:-}\"
 NODE_ID=\"${NODE_ID:-}\"
 ALLOWLIST_FILE=\"${ALLOWLIST_FILE:-/var/lib/gpu-cluster/registered_users.txt}\"
+DENYLIST_FILE=\"${DENYLIST_FILE:-/var/lib/gpu-cluster/blocked_users.txt}\"
+EXEMPT_FILE=\"${EXEMPT_FILE:-/var/lib/gpu-cluster/exempt_users.txt}\"
 
 if [[ -z \"${CONTROLLER_URL}\" || -z \"${NODE_ID}\" ]]; then
   echo \"missing CONTROLLER_URL/NODE_ID\" >&2
@@ -156,11 +181,21 @@ if [[ -z \"${CONTROLLER_URL}\" || -z \"${NODE_ID}\" ]]; then
 fi
 
 tmp=\"${ALLOWLIST_FILE}.tmp\"
+tmp_deny=\"${DENYLIST_FILE}.tmp\"
+tmp_exempt=\"${EXEMPT_FILE}.tmp\"
 mkdir -p \"$(dirname \"${ALLOWLIST_FILE}\")\"
+mkdir -p \"$(dirname \"${DENYLIST_FILE}\")\"
+mkdir -p \"$(dirname \"${EXEMPT_FILE}\")\"
 
 curl -fsS \"${CONTROLLER_URL}/api/registry/nodes/${NODE_ID}/users.txt\" -o \"${tmp}\"
 mv \"${tmp}\" \"${ALLOWLIST_FILE}\"
 chmod 0644 \"${ALLOWLIST_FILE}\"
+curl -fsS \"${CONTROLLER_URL}/api/registry/nodes/${NODE_ID}/blocked.txt\" -o \"${tmp_deny}\"
+mv \"${tmp_deny}\" \"${DENYLIST_FILE}\"
+chmod 0644 \"${DENYLIST_FILE}\"
+curl -fsS \"${CONTROLLER_URL}/api/registry/nodes/${NODE_ID}/exempt.txt\" -o \"${tmp_exempt}\"
+mv \"${tmp_exempt}\" \"${EXEMPT_FILE}\"
+chmod 0644 \"${EXEMPT_FILE}\"
 EOF2'"
     ssh ${SSH_OPTS} "${target}" "${REMOTE_SUDO} chmod +x /opt/gpu-cluster/sync_registered_users.sh"
 
@@ -179,6 +214,10 @@ if [[ -z \"${user}\" ]]; then
 fi
 
 EXCLUDE_USERS=\"${EXCLUDE_USERS:-root}\"
+EXEMPT_FILE=\"${EXEMPT_FILE:-/var/lib/gpu-cluster/exempt_users.txt}\"
+if [[ -f \"${EXEMPT_FILE}\" ]] && grep -Fxq \"${user}\" \"${EXEMPT_FILE}\"; then
+  exit 0
+fi
 for u in ${EXCLUDE_USERS}; do
   if [[ \"${user}\" == \"${u}\" ]]; then
     exit 0
@@ -189,11 +228,36 @@ CONTROLLER_URL=\"${CONTROLLER_URL:-}\"
 NODE_ID=\"${NODE_ID:-}\"
 FAIL_OPEN=\"${FAIL_OPEN:-1}\"
 ALLOWLIST_FILE=\"${ALLOWLIST_FILE:-/var/lib/gpu-cluster/registered_users.txt}\"
+DENYLIST_FILE=\"${DENYLIST_FILE:-/var/lib/gpu-cluster/blocked_users.txt}\"
+EXEMPT_FILE=\"${EXEMPT_FILE:-/var/lib/gpu-cluster/exempt_users.txt}\"
 
 if [[ -z \"${NODE_ID}\" ]]; then
   exit 0
 fi
 
+resp=\"\"
+if [[ -n \"${CONTROLLER_URL}\" ]]; then
+  # 优先实时校验：保证白名单撤销立即生效
+  resp=\"$(curl -fsS --max-time 2 \"${CONTROLLER_URL}/api/registry/resolve?node_id=${NODE_ID}&local_username=${user}\" 2>/dev/null || true)\"
+  if echo \"${resp}\" | grep -q '\"registered\":true'; then
+    exit 0
+  fi
+  if [[ -n \"${resp}\" ]]; then
+    exit 1
+  fi
+fi
+
+# 控制器不可达时回退本地缓存
+if [[ -f \"${EXEMPT_FILE}\" ]]; then
+  if grep -Fxq \"${user}\" \"${EXEMPT_FILE}\"; then
+    exit 0
+  fi
+fi
+if [[ -f \"${DENYLIST_FILE}\" ]]; then
+  if grep -Fxq \"${user}\" \"${DENYLIST_FILE}\"; then
+    exit 1
+  fi
+fi
 if [[ -f \"${ALLOWLIST_FILE}\" ]]; then
   if grep -Fxq \"${user}\" \"${ALLOWLIST_FILE}\"; then
     exit 0
@@ -201,28 +265,96 @@ if [[ -f \"${ALLOWLIST_FILE}\" ]]; then
   exit 1
 fi
 
-if [[ -z \"${CONTROLLER_URL}\" ]]; then
-  if [[ \"${FAIL_OPEN}\" == \"1\" ]]; then
-    exit 0
-  fi
-  exit 1
-fi
-
-resp=\"$(curl -fsS \"${CONTROLLER_URL}/api/registry/resolve?node_id=${NODE_ID}&local_username=${user}\" 2>/dev/null || true)\"
-if echo \"${resp}\" | grep -q '\"registered\":true'; then
-  exit 0
-fi
-
-if [[ \"${FAIL_OPEN}\" == \"1\" && -z \"${resp}\" ]]; then
+if [[ \"${FAIL_OPEN}\" == \"1\" ]]; then
   exit 0
 fi
 exit 1
 EOF2'"
     ssh ${SSH_OPTS} "${target}" "${REMOTE_SUDO} chmod +x /opt/gpu-cluster/ssh_login_check.sh"
+    ssh ${SSH_OPTS} "${target}" "${REMOTE_SUDO} touch /var/log/gpu-ssh-guard.log || true"
+    ssh ${SSH_OPTS} "${target}" "${REMOTE_SUDO} chmod 0644 /var/log/gpu-ssh-guard.log || true"
+
+    ssh ${SSH_OPTS} "${target}" "${REMOTE_SUDO} bash -lc 'cat > /opt/gpu-cluster/enforce_ssh_sessions.sh <<\"EOF2\"
+#!/bin/bash
+set -euo pipefail
+
+CONF=\"/etc/gpu-cluster/ssh_guard.conf\"
+if [[ -f \"${CONF}\" ]]; then
+  source \"${CONF}\"
+fi
+
+CONTROLLER_URL=\"${CONTROLLER_URL:-}\"
+NODE_ID=\"${NODE_ID:-}\"
+FAIL_OPEN=\"${FAIL_OPEN:-1}\"
+EXCLUDE_USERS=\"${EXCLUDE_USERS:-root}\"
+ALLOWLIST_FILE=\"${ALLOWLIST_FILE:-/var/lib/gpu-cluster/registered_users.txt}\"
+DENYLIST_FILE=\"${DENYLIST_FILE:-/var/lib/gpu-cluster/blocked_users.txt}\"
+EXEMPT_FILE=\"${EXEMPT_FILE:-/var/lib/gpu-cluster/exempt_users.txt}\"
+
+if [[ -z \"${NODE_ID}\" ]]; then
+  exit 0
+fi
+
+is_excluded() {
+  local u=\"$1\"
+  if [[ -f \"${EXEMPT_FILE}\" ]] && grep -Fxq \"${u}\" \"${EXEMPT_FILE}\"; then
+    return 0
+  fi
+  for x in ${EXCLUDE_USERS}; do
+    if [[ \"${u}\" == \"${x}\" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+check_allowed() {
+  local u=\"$1\"
+  if [[ -n \"${CONTROLLER_URL}\" ]]; then
+    local resp
+    resp=\"$(curl -fsS --max-time 2 \"${CONTROLLER_URL}/api/registry/resolve?node_id=${NODE_ID}&local_username=${u}\" 2>/dev/null || true)\"
+    if [[ -n \"${resp}\" ]]; then
+      if echo \"${resp}\" | grep -q '\"registered\":true'; then
+        return 0
+      fi
+      return 1
+    fi
+  fi
+  if [[ -f \"${EXEMPT_FILE}\" ]] && grep -Fxq \"${u}\" \"${EXEMPT_FILE}\"; then
+    return 0
+  fi
+  if [[ -f \"${DENYLIST_FILE}\" ]] && grep -Fxq \"${u}\" \"${DENYLIST_FILE}\"; then
+    return 1
+  fi
+  if [[ -f \"${ALLOWLIST_FILE}\" ]] && grep -Fxq \"${u}\" \"${ALLOWLIST_FILE}\"; then
+    return 0
+  fi
+  if [[ \"${FAIL_OPEN}\" == \"1\" ]]; then
+    return 0
+  fi
+  return 1
+}
+
+while read -r user tty _; do
+  user=\"$(echo \"${user}\" | xargs)\"
+  tty=\"$(echo \"${tty}\" | xargs)\"
+  if [[ -z \"${user}\" || -z \"${tty}\" ]]; then
+    continue
+  fi
+  if is_excluded \"${user}\"; then
+    continue
+  fi
+  if ! check_allowed \"${user}\"; then
+    pkill -KILL -t \"${tty}\" >/dev/null 2>&1 || true
+    pkill -KILL -f \"^sshd: ${user}@\" >/dev/null 2>&1 || true
+  fi
+done < <(who)
+EOF2'"
+    ssh ${SSH_OPTS} "${target}" "${REMOTE_SUDO} chmod +x /opt/gpu-cluster/enforce_ssh_sessions.sh"
 
     ssh ${SSH_OPTS} "${target}" "${REMOTE_SUDO} bash -lc 'cat > /etc/systemd/system/gpu-ssh-guard-sync.service <<\"EOF2\"
 [Unit]
-Description=GPU SSH Guard Allowlist Sync
+Description=GPU SSH Guard List Sync
 After=network-online.target
 Wants=network-online.target
 
@@ -233,18 +365,42 @@ EOF2'"
 
     ssh ${SSH_OPTS} "${target}" "${REMOTE_SUDO} bash -lc 'cat > /etc/systemd/system/gpu-ssh-guard-sync.timer <<\"EOF2\"
 [Unit]
-Description=GPU SSH Guard Allowlist Sync Timer
+Description=GPU SSH Guard List Sync Timer
 
 [Timer]
 OnBootSec=30
-OnUnitActiveSec=2min
+OnUnitActiveSec=${SSH_GUARD_SYNC_INTERVAL}
 Unit=gpu-ssh-guard-sync.service
 
 [Install]
 WantedBy=timers.target
 EOF2'"
 
-    ssh ${SSH_OPTS} "${target}" "${REMOTE_SUDO} systemctl daemon-reload && ${REMOTE_SUDO} systemctl enable --now gpu-ssh-guard-sync.timer && ${REMOTE_SUDO} systemctl start gpu-ssh-guard-sync.service || true"
+    ssh ${SSH_OPTS} "${target}" "${REMOTE_SUDO} bash -lc 'cat > /etc/systemd/system/gpu-ssh-guard-enforce.service <<\"EOF2\"
+[Unit]
+Description=GPU SSH Guard Session Enforcer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/gpu-cluster/enforce_ssh_sessions.sh
+EOF2'"
+
+    ssh ${SSH_OPTS} "${target}" "${REMOTE_SUDO} bash -lc 'cat > /etc/systemd/system/gpu-ssh-guard-enforce.timer <<\"EOF2\"
+[Unit]
+Description=GPU SSH Guard Session Enforcer Timer
+
+[Timer]
+OnBootSec=40
+OnUnitActiveSec=${SSH_GUARD_ENFORCE_INTERVAL}
+Unit=gpu-ssh-guard-enforce.service
+
+[Install]
+WantedBy=timers.target
+EOF2'"
+
+    ssh ${SSH_OPTS} "${target}" "${REMOTE_SUDO} systemctl daemon-reload && ${REMOTE_SUDO} systemctl enable --now gpu-ssh-guard-sync.timer gpu-ssh-guard-enforce.timer && ${REMOTE_SUDO} systemctl start gpu-ssh-guard-sync.service gpu-ssh-guard-enforce.service || true"
     ssh ${SSH_OPTS} "${target}" "${REMOTE_SUDO} bash -lc 'if [[ -f /etc/pam.d/sshd ]] && ! grep -q \"/opt/gpu-cluster/ssh_login_check.sh\" /etc/pam.d/sshd; then echo \"account required pam_exec.so quiet /opt/gpu-cluster/ssh_login_check.sh\" >> /etc/pam.d/sshd; fi'"
   fi
 
