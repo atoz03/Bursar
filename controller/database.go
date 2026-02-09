@@ -342,7 +342,7 @@ VALUES($1, $2, $3)`, username, amount, method); err != nil {
 	}, nil
 }
 
-func (s *Store) InsertUsageRecordTx(ctx context.Context, tx *sql.Tx, nodeID string, ts time.Time, proc UserProcess, cost float64) error {
+func (s *Store) InsertUsageRecordTx(ctx context.Context, tx *sql.Tx, nodeID string, localUsername string, ts time.Time, proc UserProcess, cost float64) error {
 	gpuUsage := proc.GPUUsage
 	if gpuUsage == nil {
 		// 保持 JSONB 非空且语义一致：CPU-only 记录也用空数组而非 null
@@ -352,10 +352,14 @@ func (s *Store) InsertUsageRecordTx(ctx context.Context, tx *sql.Tx, nodeID stri
 	if err != nil {
 		return err
 	}
+	localUsername = strings.TrimSpace(localUsername)
+	if localUsername == "" {
+		localUsername = strings.TrimSpace(proc.Username)
+	}
 	_, err = tx.ExecContext(ctx, `
-INSERT INTO usage_records(node_id, username, timestamp, pid, cpu_percent, memory_mb, gpu_count, command, gpu_usage, cost)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-		nodeID, proc.Username, ts, proc.PID, proc.CPUPercent, proc.MemoryMB, len(proc.GPUUsage), strings.TrimSpace(proc.Command), string(gpuJSON), cost)
+INSERT INTO usage_records(node_id, local_username, username, timestamp, pid, cpu_percent, memory_mb, gpu_count, command, gpu_usage, cost)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		nodeID, localUsername, proc.Username, ts, proc.PID, proc.CPUPercent, proc.MemoryMB, len(proc.GPUUsage), strings.TrimSpace(proc.Command), string(gpuJSON), cost)
 	return err
 }
 
@@ -446,9 +450,23 @@ func (s *Store) ListUsageByUser(ctx context.Context, username string, limit int)
 		limit = 200
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT node_id, username, timestamp, pid, cpu_percent, memory_mb, gpu_count, command, gpu_usage, cost
-FROM usage_records
-WHERE username=$1
+SELECT ur.node_id,
+       CASE
+         WHEN ur.local_username = ur.username
+              AND EXISTS(SELECT 1 FROM admin_accounts aa WHERE aa.username = ur.username)
+              AND NOT EXISTS(SELECT 1 FROM user_node_accounts una2 WHERE una2.node_id=ur.node_id AND una2.local_username=ur.local_username)
+         THEN ''
+         ELSE ur.local_username
+       END AS local_username,
+       ur.username,
+       (
+         EXISTS(SELECT 1 FROM user_accounts ua WHERE ua.username = ur.username)
+         OR EXISTS(SELECT 1 FROM admin_accounts aa WHERE aa.username = ur.username)
+         OR EXISTS(SELECT 1 FROM power_users pu WHERE pu.username = ur.username)
+       ) AS registered,
+       ur.timestamp, ur.pid, ur.cpu_percent, ur.memory_mb, ur.gpu_count, ur.command, ur.gpu_usage, ur.cost
+FROM usage_records ur
+WHERE ur.username=$1
 ORDER BY timestamp DESC
 LIMIT $2`, username, limit)
 	if err != nil {
@@ -459,36 +477,66 @@ LIMIT $2`, username, limit)
 	var out []UsageRecord
 	for rows.Next() {
 		var r UsageRecord
-		if err := rows.Scan(&r.NodeID, &r.Username, &r.Timestamp, &r.PID, &r.CPUPercent, &r.MemoryMB, &r.GPUCount, &r.Command, &r.GPUUsage, &r.Cost); err != nil {
+		if err := rows.Scan(&r.NodeID, &r.LocalUser, &r.BillingUser, &r.Registered, &r.Timestamp, &r.PID, &r.CPUPercent, &r.MemoryMB, &r.GPUCount, &r.Command, &r.GPUUsage, &r.Cost); err != nil {
 			return nil, err
 		}
+		r.Username = r.BillingUser
 		out = append(out, r)
 	}
 	return out, rows.Err()
 }
 
-func (s *Store) ListUsageAdmin(ctx context.Context, username string, limit int) ([]UsageRecord, error) {
-	username = strings.TrimSpace(username)
+func (s *Store) ListUsageAdmin(ctx context.Context, billingUsername string, localUsername string, unregisteredOnly bool, limit int) ([]UsageRecord, error) {
+	billingUsername = strings.TrimSpace(billingUsername)
+	localUsername = strings.TrimSpace(localUsername)
 	if limit <= 0 || limit > 5000 {
 		limit = 200
 	}
-
-	var rows *sql.Rows
-	var err error
-	if username == "" {
-		rows, err = s.db.QueryContext(ctx, `
-SELECT node_id, username, timestamp, pid, cpu_percent, memory_mb, gpu_count, command, gpu_usage, cost
-FROM usage_records
-ORDER BY timestamp DESC
-LIMIT $1`, limit)
-	} else {
-		rows, err = s.db.QueryContext(ctx, `
-SELECT node_id, username, timestamp, pid, cpu_percent, memory_mb, gpu_count, command, gpu_usage, cost
-FROM usage_records
-WHERE username=$1
-ORDER BY timestamp DESC
-LIMIT $2`, username, limit)
+	conds := make([]string, 0, 3)
+	args := make([]any, 0, 6)
+	addArg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
 	}
+	if billingUsername != "" {
+		conds = append(conds, "ur.username="+addArg(billingUsername))
+	}
+	if localUsername != "" {
+		conds = append(conds, "ur.local_username="+addArg(localUsername))
+	}
+	if unregisteredOnly {
+		conds = append(conds, `
+NOT (
+  EXISTS(SELECT 1 FROM user_accounts ua2 WHERE ua2.username = ur.username)
+  OR EXISTS(SELECT 1 FROM admin_accounts aa2 WHERE aa2.username = ur.username)
+  OR EXISTS(SELECT 1 FROM power_users pu2 WHERE pu2.username = ur.username)
+)`)
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = "WHERE " + strings.Join(conds, " AND ")
+	}
+	query := `
+SELECT ur.node_id,
+       CASE
+         WHEN ur.local_username = ur.username
+              AND EXISTS(SELECT 1 FROM admin_accounts aa WHERE aa.username = ur.username)
+              AND NOT EXISTS(SELECT 1 FROM user_node_accounts una2 WHERE una2.node_id=ur.node_id AND una2.local_username=ur.local_username)
+         THEN ''
+         ELSE ur.local_username
+       END AS local_username,
+       ur.username,
+       (
+         EXISTS(SELECT 1 FROM user_accounts ua WHERE ua.username = ur.username)
+         OR EXISTS(SELECT 1 FROM admin_accounts aa WHERE aa.username = ur.username)
+         OR EXISTS(SELECT 1 FROM power_users pu WHERE pu.username = ur.username)
+       ) AS registered,
+       ur.timestamp, ur.pid, ur.cpu_percent, ur.memory_mb, ur.gpu_count, ur.command, ur.gpu_usage, ur.cost
+FROM usage_records ur
+` + where + `
+ORDER BY ur.timestamp DESC
+LIMIT ` + addArg(limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -497,9 +545,10 @@ LIMIT $2`, username, limit)
 	var out []UsageRecord
 	for rows.Next() {
 		var r UsageRecord
-		if err := rows.Scan(&r.NodeID, &r.Username, &r.Timestamp, &r.PID, &r.CPUPercent, &r.MemoryMB, &r.GPUCount, &r.Command, &r.GPUUsage, &r.Cost); err != nil {
+		if err := rows.Scan(&r.NodeID, &r.LocalUser, &r.BillingUser, &r.Registered, &r.Timestamp, &r.PID, &r.CPUPercent, &r.MemoryMB, &r.GPUCount, &r.Command, &r.GPUUsage, &r.Cost); err != nil {
 			return nil, err
 		}
+		r.Username = r.BillingUser
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -548,6 +597,34 @@ LIMIT $2`, billingUsername, limit)
 		out = append(out, v)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) ListUserNodeAccounts(ctx context.Context, billingUsername string, limit int) ([]UserNodeAccount, error) {
+	billingUsername = strings.TrimSpace(billingUsername)
+	if limit <= 0 || limit > 20000 {
+		limit = 5000
+	}
+	if billingUsername == "" {
+		rows, err := s.db.QueryContext(ctx, `
+SELECT node_id, local_username, billing_username, created_at, updated_at
+FROM user_node_accounts
+ORDER BY billing_username, node_id, local_username
+LIMIT $1`, limit)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		out := make([]UserNodeAccount, 0)
+		for rows.Next() {
+			var v UserNodeAccount
+			if err := rows.Scan(&v.NodeID, &v.LocalUsername, &v.BillingUsername, &v.CreatedAt, &v.UpdatedAt); err != nil {
+				return nil, err
+			}
+			out = append(out, v)
+		}
+		return out, rows.Err()
+	}
+	return s.ListUserNodeAccountsByBilling(ctx, billingUsername, limit)
 }
 
 func (s *Store) UpsertUserNodeAccount(ctx context.Context, nodeID string, localUsername string, billingUsername string) error {
@@ -689,6 +766,79 @@ LIMIT $2`, nodeID, limit)
 	return out, rows.Err()
 }
 
+func (s *Store) ListExemptLocalUsersByNode(ctx context.Context, nodeID string, limit int) ([]string, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return nil, errors.New("node_id 不能为空")
+	}
+	if limit <= 0 || limit > 200000 {
+		limit = 50000
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT DISTINCT local_username
+FROM ssh_exemptions
+WHERE node_id=$1 OR node_id='*'
+ORDER BY local_username
+LIMIT $2`, nodeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListDeniedLocalUsersByNode(ctx context.Context, nodeID string, limit int) ([]string, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return nil, errors.New("node_id 不能为空")
+	}
+	if limit <= 0 || limit > 200000 {
+		limit = 50000
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT DISTINCT local_username
+FROM ssh_blacklist
+WHERE node_id=$1 OR node_id='*'
+ORDER BY local_username
+LIMIT $2`, nodeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) IsExempted(ctx context.Context, nodeID string, localUsername string) (bool, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	if nodeID == "" || localUsername == "" {
+		return false, errors.New("node_id/local_username 不能为空")
+	}
+	var exists bool
+	err := s.db.QueryRowContext(ctx, `
+SELECT EXISTS(
+  SELECT 1 FROM ssh_exemptions
+  WHERE local_username=$2 AND (node_id=$1 OR node_id='*')
+)`, nodeID, localUsername).Scan(&exists)
+	return exists, err
+}
+
 func (s *Store) IsWhitelisted(ctx context.Context, nodeID string, localUsername string) (bool, error) {
 	nodeID = strings.TrimSpace(nodeID)
 	localUsername = strings.TrimSpace(localUsername)
@@ -699,6 +849,21 @@ func (s *Store) IsWhitelisted(ctx context.Context, nodeID string, localUsername 
 	err := s.db.QueryRowContext(ctx, `
 SELECT EXISTS(
   SELECT 1 FROM ssh_whitelist
+  WHERE local_username=$2 AND (node_id=$1 OR node_id='*')
+)`, nodeID, localUsername).Scan(&exists)
+	return exists, err
+}
+
+func (s *Store) IsBlacklisted(ctx context.Context, nodeID string, localUsername string) (bool, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	if nodeID == "" || localUsername == "" {
+		return false, errors.New("node_id/local_username 不能为空")
+	}
+	var exists bool
+	err := s.db.QueryRowContext(ctx, `
+SELECT EXISTS(
+  SELECT 1 FROM ssh_blacklist
   WHERE local_username=$2 AND (node_id=$1 OR node_id='*')
 )`, nodeID, localUsername).Scan(&exists)
 	return exists, err
@@ -717,12 +882,19 @@ SELECT node_id, local_username, created_by, created_at, updated_at
 FROM ssh_whitelist
 ORDER BY node_id, local_username
 LIMIT $1`, limit)
+	} else if nodeID == "*" {
+		rows, err = s.db.QueryContext(ctx, `
+SELECT node_id, local_username, created_by, created_at, updated_at
+FROM ssh_whitelist
+WHERE node_id='*'
+ORDER BY local_username
+LIMIT $1`, limit)
 	} else {
 		rows, err = s.db.QueryContext(ctx, `
 SELECT node_id, local_username, created_by, created_at, updated_at
 FROM ssh_whitelist
-WHERE node_id=$1
-ORDER BY local_username
+WHERE node_id=$1 OR node_id='*'
+ORDER BY CASE WHEN node_id='*' THEN 0 ELSE 1 END, local_username
 LIMIT $2`, nodeID, limit)
 	}
 	if err != nil {
@@ -770,26 +942,317 @@ SET created_by=EXCLUDED.created_by, updated_at=NOW()`, nodeID, u, createdBy); er
 	})
 }
 
-func (s *Store) DeleteWhitelist(ctx context.Context, nodeID string, localUsername string) error {
+func (s *Store) DeleteWhitelistWithNodes(ctx context.Context, nodeID string, localUsername string) ([]string, error) {
 	nodeID = strings.TrimSpace(nodeID)
 	localUsername = strings.TrimSpace(localUsername)
 	if nodeID == "" || localUsername == "" {
-		return errors.New("node_id/local_username 不能为空")
+		return nil, errors.New("node_id/local_username 不能为空")
 	}
-	res, err := s.db.ExecContext(ctx, `
+	deletedNodeSet := map[string]struct{}{}
+	if nodeID == "*" {
+		deletedNodeSet["*"] = struct{}{}
+	} else {
+		deletedNodeSet[nodeID] = struct{}{}
+		var hasGlobal bool
+		if err := s.db.QueryRowContext(ctx, `
+SELECT EXISTS(
+  SELECT 1 FROM ssh_whitelist
+  WHERE node_id='*' AND local_username=$1
+)`, localUsername).Scan(&hasGlobal); err == nil && hasGlobal {
+			deletedNodeSet["*"] = struct{}{}
+		}
+	}
+	var res sql.Result
+	var err error
+	if nodeID == "*" {
+		res, err = s.db.ExecContext(ctx, `
 DELETE FROM ssh_whitelist
-WHERE node_id=$1 AND local_username=$2`, nodeID, localUsername)
+WHERE node_id='*' AND local_username=$1`, localUsername)
+	} else {
+		// 删除节点级白名单时，同时删除全局(*)同名白名单，避免“看起来删了但仍能登录”。
+		res, err = s.db.ExecContext(ctx, `
+DELETE FROM ssh_whitelist
+WHERE local_username=$1
+  AND (node_id=$2 OR node_id='*')`, localUsername, nodeID)
+	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if n == 0 {
-		return sql.ErrNoRows
+		return nil, sql.ErrNoRows
 	}
-	return nil
+	nodes := make([]string, 0, len(deletedNodeSet))
+	for k := range deletedNodeSet {
+		nodes = append(nodes, k)
+	}
+	sort.Strings(nodes)
+	return nodes, nil
+}
+
+func (s *Store) DeleteWhitelist(ctx context.Context, nodeID string, localUsername string) error {
+	_, err := s.DeleteWhitelistWithNodes(ctx, nodeID, localUsername)
+	return err
+}
+
+func (s *Store) ListBlacklist(ctx context.Context, nodeID string, limit int) ([]SSHBlacklistEntry, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	if limit <= 0 || limit > 200000 {
+		limit = 1000
+	}
+	var rows *sql.Rows
+	var err error
+	if nodeID == "" {
+		rows, err = s.db.QueryContext(ctx, `
+SELECT node_id, local_username, created_by, created_at, updated_at
+FROM ssh_blacklist
+ORDER BY node_id, local_username
+LIMIT $1`, limit)
+	} else if nodeID == "*" {
+		rows, err = s.db.QueryContext(ctx, `
+SELECT node_id, local_username, created_by, created_at, updated_at
+FROM ssh_blacklist
+WHERE node_id='*'
+ORDER BY local_username
+LIMIT $1`, limit)
+	} else {
+		rows, err = s.db.QueryContext(ctx, `
+SELECT node_id, local_username, created_by, created_at, updated_at
+FROM ssh_blacklist
+WHERE node_id=$1 OR node_id='*'
+ORDER BY CASE WHEN node_id='*' THEN 0 ELSE 1 END, local_username
+LIMIT $2`, nodeID, limit)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]SSHBlacklistEntry, 0)
+	for rows.Next() {
+		var v SSHBlacklistEntry
+		if err := rows.Scan(&v.NodeID, &v.LocalUsername, &v.CreatedBy, &v.CreatedAt, &v.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListExemptions(ctx context.Context, nodeID string, limit int) ([]SSHExemptionEntry, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	if limit <= 0 || limit > 200000 {
+		limit = 1000
+	}
+	var rows *sql.Rows
+	var err error
+	if nodeID == "" {
+		rows, err = s.db.QueryContext(ctx, `
+SELECT node_id, local_username, created_by, created_at, updated_at
+FROM ssh_exemptions
+ORDER BY node_id, local_username
+LIMIT $1`, limit)
+	} else if nodeID == "*" {
+		rows, err = s.db.QueryContext(ctx, `
+SELECT node_id, local_username, created_by, created_at, updated_at
+FROM ssh_exemptions
+WHERE node_id='*'
+ORDER BY local_username
+LIMIT $1`, limit)
+	} else {
+		rows, err = s.db.QueryContext(ctx, `
+SELECT node_id, local_username, created_by, created_at, updated_at
+FROM ssh_exemptions
+WHERE node_id=$1 OR node_id='*'
+ORDER BY CASE WHEN node_id='*' THEN 0 ELSE 1 END, local_username
+LIMIT $2`, nodeID, limit)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]SSHExemptionEntry, 0)
+	for rows.Next() {
+		var v SSHExemptionEntry
+		if err := rows.Scan(&v.NodeID, &v.LocalUsername, &v.CreatedBy, &v.CreatedAt, &v.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) UpsertExemptions(ctx context.Context, nodeID string, usernames []string, createdBy string) error {
+	nodeID = strings.TrimSpace(nodeID)
+	createdBy = strings.TrimSpace(createdBy)
+	if nodeID == "" {
+		return errors.New("node_id 不能为空")
+	}
+	if createdBy == "" {
+		createdBy = "admin"
+	}
+	if len(usernames) == 0 {
+		return errors.New("usernames 不能为空")
+	}
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		for _, u := range usernames {
+			u = strings.TrimSpace(u)
+			if u == "" {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, `
+INSERT INTO ssh_exemptions(node_id, local_username, created_by, updated_at)
+VALUES($1,$2,$3,NOW())
+ON CONFLICT (node_id, local_username) DO UPDATE
+SET created_by=EXCLUDED.created_by, updated_at=NOW()`, nodeID, u, createdBy); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (s *Store) DeleteExemptionsWithNodes(ctx context.Context, nodeID string, localUsername string) ([]string, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	if nodeID == "" || localUsername == "" {
+		return nil, errors.New("node_id/local_username 不能为空")
+	}
+	deletedNodeSet := map[string]struct{}{}
+	if nodeID == "*" {
+		deletedNodeSet["*"] = struct{}{}
+	} else {
+		deletedNodeSet[nodeID] = struct{}{}
+		var hasGlobal bool
+		if err := s.db.QueryRowContext(ctx, `
+SELECT EXISTS(
+  SELECT 1 FROM ssh_exemptions
+  WHERE node_id='*' AND local_username=$1
+)`, localUsername).Scan(&hasGlobal); err == nil && hasGlobal {
+			deletedNodeSet["*"] = struct{}{}
+		}
+	}
+	var res sql.Result
+	var err error
+	if nodeID == "*" {
+		res, err = s.db.ExecContext(ctx, `
+DELETE FROM ssh_exemptions
+WHERE node_id='*' AND local_username=$1`, localUsername)
+	} else {
+		res, err = s.db.ExecContext(ctx, `
+DELETE FROM ssh_exemptions
+WHERE local_username=$1
+  AND (node_id=$2 OR node_id='*')`, localUsername, nodeID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if n == 0 {
+		return nil, sql.ErrNoRows
+	}
+	nodes := make([]string, 0, len(deletedNodeSet))
+	for k := range deletedNodeSet {
+		nodes = append(nodes, k)
+	}
+	sort.Strings(nodes)
+	return nodes, nil
+}
+
+func (s *Store) DeleteExemptions(ctx context.Context, nodeID string, localUsername string) error {
+	_, err := s.DeleteExemptionsWithNodes(ctx, nodeID, localUsername)
+	return err
+}
+
+func (s *Store) UpsertBlacklist(ctx context.Context, nodeID string, usernames []string, createdBy string) error {
+	nodeID = strings.TrimSpace(nodeID)
+	createdBy = strings.TrimSpace(createdBy)
+	if nodeID == "" {
+		return errors.New("node_id 不能为空")
+	}
+	if createdBy == "" {
+		createdBy = "admin"
+	}
+	if len(usernames) == 0 {
+		return errors.New("usernames 不能为空")
+	}
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		for _, u := range usernames {
+			u = strings.TrimSpace(u)
+			if u == "" {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, `
+INSERT INTO ssh_blacklist(node_id, local_username, created_by, updated_at)
+VALUES($1,$2,$3,NOW())
+ON CONFLICT (node_id, local_username) DO UPDATE
+SET created_by=EXCLUDED.created_by, updated_at=NOW()`, nodeID, u, createdBy); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (s *Store) DeleteBlacklistWithNodes(ctx context.Context, nodeID string, localUsername string) ([]string, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	if nodeID == "" || localUsername == "" {
+		return nil, errors.New("node_id/local_username 不能为空")
+	}
+	deletedNodeSet := map[string]struct{}{}
+	if nodeID == "*" {
+		deletedNodeSet["*"] = struct{}{}
+	} else {
+		deletedNodeSet[nodeID] = struct{}{}
+		var hasGlobal bool
+		if err := s.db.QueryRowContext(ctx, `
+SELECT EXISTS(
+  SELECT 1 FROM ssh_blacklist
+  WHERE node_id='*' AND local_username=$1
+)`, localUsername).Scan(&hasGlobal); err == nil && hasGlobal {
+			deletedNodeSet["*"] = struct{}{}
+		}
+	}
+	var res sql.Result
+	var err error
+	if nodeID == "*" {
+		res, err = s.db.ExecContext(ctx, `
+DELETE FROM ssh_blacklist
+WHERE node_id='*' AND local_username=$1`, localUsername)
+	} else {
+		// 删除节点级黑名单时，同时删除全局(*)同名黑名单，避免“看起来删了仍被全局拦截”。
+		res, err = s.db.ExecContext(ctx, `
+DELETE FROM ssh_blacklist
+WHERE local_username=$1
+  AND (node_id=$2 OR node_id='*')`, localUsername, nodeID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if n == 0 {
+		return nil, sql.ErrNoRows
+	}
+	nodes := make([]string, 0, len(deletedNodeSet))
+	for k := range deletedNodeSet {
+		nodes = append(nodes, k)
+	}
+	sort.Strings(nodes)
+	return nodes, nil
+}
+
+func (s *Store) DeleteBlacklist(ctx context.Context, nodeID string, localUsername string) error {
+	_, err := s.DeleteBlacklistWithNodes(ctx, nodeID, localUsername)
+	return err
 }
 
 func (s *Store) CreateUserRequestTx(
@@ -996,6 +1459,7 @@ func (s *Store) UpsertNodeStatusTx(
 	gpuProcCount int,
 	cpuProcCount int,
 	usageRecordsCount int,
+	sshActiveCount int,
 	costTotal float64,
 ) error {
 	nodeID = strings.TrimSpace(nodeID)
@@ -1044,9 +1508,9 @@ FOR UPDATE`, nodeID).Scan(&prevRx, &prevTx, &prevMonth, &prevRxMBMonth, &prevTxM
 INSERT INTO nodes(
   node_id, last_seen_at, last_report_id, last_report_ts, interval_seconds,
   cpu_model, cpu_count, gpu_model, gpu_count, net_rx_bytes, net_tx_bytes, net_rx_mb_month, net_tx_mb_month, traffic_month,
-  gpu_process_count, cpu_process_count, usage_records_count, cost_total, updated_at
+  gpu_process_count, cpu_process_count, usage_records_count, ssh_active_count, cost_total, updated_at
 )
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,NOW())
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,NOW())
 ON CONFLICT (node_id) DO UPDATE SET
   last_seen_at=EXCLUDED.last_seen_at,
   last_report_id=EXCLUDED.last_report_id,
@@ -1064,12 +1528,13 @@ ON CONFLICT (node_id) DO UPDATE SET
   gpu_process_count=EXCLUDED.gpu_process_count,
   cpu_process_count=EXCLUDED.cpu_process_count,
   usage_records_count=EXCLUDED.usage_records_count,
+  ssh_active_count=EXCLUDED.ssh_active_count,
   cost_total=EXCLUDED.cost_total,
   updated_at=NOW()
 `, nodeID, lastSeenAt, reportID, reportTS, intervalSeconds,
 		cpuModel, cpuCount, gpuModel, gpuCount,
 		int64(netRxBytes), int64(netTxBytes), rxMBMonth, txMBMonth, month,
-		gpuProcCount, cpuProcCount, usageRecordsCount, costTotal)
+		gpuProcCount, cpuProcCount, usageRecordsCount, sshActiveCount, costTotal)
 	return err
 }
 
@@ -1080,7 +1545,7 @@ func (s *Store) ListNodes(ctx context.Context, limit int) ([]NodeStatus, error) 
 	rows, err := s.db.QueryContext(ctx, `
 SELECT node_id, last_seen_at, last_report_id, last_report_ts, interval_seconds,
        cpu_model, cpu_count, gpu_model, gpu_count, net_rx_mb_month, net_tx_mb_month,
-       gpu_process_count, cpu_process_count, usage_records_count, cost_total, updated_at
+       gpu_process_count, cpu_process_count, usage_records_count, ssh_active_count, cost_total, updated_at
 FROM nodes
 ORDER BY last_seen_at DESC
 LIMIT $1`, limit)
@@ -1107,6 +1572,7 @@ LIMIT $1`, limit)
 			&n.GPUProcessCount,
 			&n.CPUProcessCount,
 			&n.UsageRecordsCount,
+			&n.SSHActiveCount,
 			&n.CostTotal,
 			&n.UpdatedAt,
 		); err != nil {
@@ -1115,6 +1581,39 @@ LIMIT $1`, limit)
 		out = append(out, n)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) GetNodeStatus(ctx context.Context, nodeID string) (NodeStatus, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return NodeStatus{}, errors.New("node_id 不能为空")
+	}
+	var n NodeStatus
+	err := s.db.QueryRowContext(ctx, `
+SELECT node_id, last_seen_at, last_report_id, last_report_ts, interval_seconds,
+       cpu_model, cpu_count, gpu_model, gpu_count, net_rx_mb_month, net_tx_mb_month,
+       gpu_process_count, cpu_process_count, usage_records_count, ssh_active_count, cost_total, updated_at
+FROM nodes
+WHERE node_id=$1`, nodeID).Scan(
+		&n.NodeID,
+		&n.LastSeenAt,
+		&n.LastReportID,
+		&n.LastReportTS,
+		&n.IntervalSeconds,
+		&n.CPUModel,
+		&n.CPUCount,
+		&n.GPUModel,
+		&n.GPUCount,
+		&n.NetRxMBMonth,
+		&n.NetTxMBMonth,
+		&n.GPUProcessCount,
+		&n.CPUProcessCount,
+		&n.UsageRecordsCount,
+		&n.SSHActiveCount,
+		&n.CostTotal,
+		&n.UpdatedAt,
+	)
+	return n, err
 }
 
 func (s *Store) CountAdminAccounts(ctx context.Context) (int, error) {
@@ -1164,6 +1663,134 @@ func (s *Store) VerifyAdminPassword(ctx context.Context, username string, passwo
 	return true, nil
 }
 
+func (s *Store) CreatePowerUser(ctx context.Context, username string, password string, canViewBoard bool, canViewNodes bool, canReview bool, createdBy string) error {
+	username = strings.TrimSpace(username)
+	createdBy = strings.TrimSpace(createdBy)
+	if username == "" {
+		return errors.New("username 不能为空")
+	}
+	if len(password) < 8 {
+		return errors.New("password 至少 8 位")
+	}
+	if createdBy == "" {
+		createdBy = "admin"
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	res, err := s.db.ExecContext(ctx, `
+INSERT INTO power_users(username, password_hash, can_view_board, can_view_nodes, can_review_requests, created_by, updated_by)
+VALUES($1,$2,$3,$4,$5,$6,$6)
+ON CONFLICT (username) DO NOTHING`, username, string(hash), canViewBoard, canViewNodes, canReview, createdBy)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return errors.New("高级用户已存在")
+	}
+	return nil
+}
+
+func (s *Store) VerifyPowerUserPassword(ctx context.Context, username string, password string) (PowerUser, bool, error) {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return PowerUser{}, false, errors.New("username 不能为空")
+	}
+	var hash string
+	var out PowerUser
+	err := s.db.QueryRowContext(ctx, `
+SELECT password_hash, username, can_view_board, can_view_nodes, can_review_requests, created_by, updated_by, last_login_at, created_at, updated_at
+FROM power_users
+WHERE username=$1`, username).Scan(
+		&hash, &out.Username, &out.CanViewBoard, &out.CanViewNodes, &out.CanReviewRequests, &out.CreatedBy, &out.UpdatedBy, &out.LastLoginAt, &out.CreatedAt, &out.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return PowerUser{}, false, nil
+		}
+		return PowerUser{}, false, err
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)); err != nil {
+		return PowerUser{}, false, nil
+	}
+	_, _ = s.db.ExecContext(ctx, `UPDATE power_users SET last_login_at=NOW(), updated_at=NOW() WHERE username=$1`, username)
+	return out, true, nil
+}
+
+func (s *Store) ListPowerUsers(ctx context.Context, limit int) ([]PowerUser, error) {
+	if limit <= 0 || limit > 5000 {
+		limit = 1000
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT username, can_view_board, can_view_nodes, can_review_requests, created_by, updated_by, last_login_at, created_at, updated_at
+FROM power_users
+ORDER BY username
+LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]PowerUser, 0)
+	for rows.Next() {
+		var p PowerUser
+		if err := rows.Scan(&p.Username, &p.CanViewBoard, &p.CanViewNodes, &p.CanReviewRequests, &p.CreatedBy, &p.UpdatedBy, &p.LastLoginAt, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) UpdatePowerUserPermissions(ctx context.Context, username string, canViewBoard bool, canViewNodes bool, canReview bool, updatedBy string) error {
+	username = strings.TrimSpace(username)
+	updatedBy = strings.TrimSpace(updatedBy)
+	if username == "" {
+		return errors.New("username 不能为空")
+	}
+	if updatedBy == "" {
+		updatedBy = "admin"
+	}
+	res, err := s.db.ExecContext(ctx, `
+UPDATE power_users
+SET can_view_board=$2, can_view_nodes=$3, can_review_requests=$4, updated_by=$5, updated_at=NOW()
+WHERE username=$1`, username, canViewBoard, canViewNodes, canReview, updatedBy)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) DeletePowerUser(ctx context.Context, username string) error {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return errors.New("username 不能为空")
+	}
+	res, err := s.db.ExecContext(ctx, `DELETE FROM power_users WHERE username=$1`, username)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 func (s *Store) CreateUserAccountTx(ctx context.Context, tx *sql.Tx, in UserAccount, password string, defaultBalance float64) error {
 	in.Username = strings.TrimSpace(in.Username)
 	in.Email = strings.TrimSpace(strings.ToLower(in.Email))
@@ -1173,6 +1800,29 @@ func (s *Store) CreateUserAccountTx(ctx context.Context, tx *sql.Tx, in UserAcco
 	in.Phone = strings.TrimSpace(in.Phone)
 	if in.Username == "" || in.Email == "" || in.RealName == "" || in.StudentID == "" || in.Advisor == "" || in.Phone == "" {
 		return errors.New("注册信息不完整")
+	}
+	var dup []string
+	var exists bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM user_accounts WHERE username=$1)`, in.Username).Scan(&exists); err != nil {
+		return err
+	}
+	if exists {
+		dup = append(dup, "用户名")
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM user_accounts WHERE email=$1)`, in.Email).Scan(&exists); err != nil {
+		return err
+	}
+	if exists {
+		dup = append(dup, "邮箱")
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM user_accounts WHERE student_id=$1)`, in.StudentID).Scan(&exists); err != nil {
+		return err
+	}
+	if exists {
+		dup = append(dup, "学号")
+	}
+	if len(dup) > 0 {
+		return fmt.Errorf("以下信息已存在账号：%s", strings.Join(dup, "、"))
 	}
 	if len(password) < 8 {
 		return errors.New("password 至少 8 位")
@@ -1362,6 +2012,15 @@ func (s *Store) GetMailSettings(ctx context.Context, cfg Config) (MailSettings, 
 		FromEmail: strings.TrimSpace(cfg.FromEmail),
 		FromName:  strings.TrimSpace(cfg.FromName),
 	}
+	if out.SMTPHost == "" {
+		out.SMTPHost = "smtp.163.com"
+	}
+	if out.SMTPPort == 0 {
+		out.SMTPPort = 465
+	}
+	if out.FromEmail == "" {
+		out.FromEmail = out.SMTPUser
+	}
 	if out.FromName == "" {
 		out.FromName = "GPU Ops 团队"
 	}
@@ -1396,6 +2055,15 @@ func (s *Store) GetMailSettings(ctx context.Context, cfg Config) (MailSettings, 
 	}
 	if err := rows.Err(); err != nil {
 		return out, err
+	}
+	if out.SMTPHost == "" {
+		out.SMTPHost = "smtp.163.com"
+	}
+	if out.SMTPPort == 0 {
+		out.SMTPPort = 465
+	}
+	if out.FromEmail == "" {
+		out.FromEmail = out.SMTPUser
 	}
 	if out.FromName == "" {
 		out.FromName = "GPU Ops 团队"
@@ -1459,16 +2127,19 @@ func (s *Store) ListUsageSummaryByUser(ctx context.Context, from time.Time, to t
 		limit = 1000
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT username,
+SELECT COALESCE(una.billing_username, ur.username) AS username,
        COUNT(1) AS usage_records,
-       SUM(CASE WHEN gpu_count > 0 THEN 1 ELSE 0 END) AS gpu_process_records,
-       SUM(CASE WHEN gpu_count = 0 THEN 1 ELSE 0 END) AS cpu_process_records,
-       COALESCE(SUM(cpu_percent), 0) AS total_cpu_percent,
-       COALESCE(SUM(memory_mb), 0) AS total_memory_mb,
-       COALESCE(SUM(cost), 0) AS total_cost
-FROM usage_records
-WHERE timestamp >= $1 AND timestamp <= $2
-GROUP BY username
+       SUM(CASE WHEN ur.gpu_count > 0 THEN 1 ELSE 0 END) AS gpu_process_records,
+       SUM(CASE WHEN ur.gpu_count = 0 THEN 1 ELSE 0 END) AS cpu_process_records,
+       COALESCE(SUM(ur.cpu_percent), 0) AS total_cpu_percent,
+       COALESCE(SUM(ur.memory_mb), 0) AS total_memory_mb,
+       COALESCE(SUM(ur.cost), 0) AS total_cost
+FROM usage_records ur
+LEFT JOIN user_node_accounts una
+  ON una.node_id = ur.node_id
+ AND una.local_username = ur.username
+WHERE ur.timestamp >= $1 AND ur.timestamp <= $2
+GROUP BY COALESCE(una.billing_username, ur.username)
 ORDER BY total_cost DESC
 LIMIT $3`, from, to, limit)
 	if err != nil {
@@ -1491,16 +2162,19 @@ func (s *Store) ListUsageMonthlyByUser(ctx context.Context, from time.Time, to t
 		limit = 20000
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT to_char(date_trunc('month', timestamp), 'YYYY-MM') AS month,
-       username,
+SELECT to_char(date_trunc('month', ur.timestamp), 'YYYY-MM') AS month,
+       COALESCE(una.billing_username, ur.username) AS username,
        COUNT(1) AS usage_records,
-       SUM(CASE WHEN gpu_count > 0 THEN 1 ELSE 0 END) AS gpu_process_records,
-       SUM(CASE WHEN gpu_count = 0 THEN 1 ELSE 0 END) AS cpu_process_records,
-       COALESCE(SUM(cpu_percent), 0) AS total_cpu_percent,
-       COALESCE(SUM(memory_mb), 0) AS total_memory_mb,
-       COALESCE(SUM(cost), 0) AS total_cost
-FROM usage_records
-WHERE timestamp >= $1 AND timestamp <= $2
+       SUM(CASE WHEN ur.gpu_count > 0 THEN 1 ELSE 0 END) AS gpu_process_records,
+       SUM(CASE WHEN ur.gpu_count = 0 THEN 1 ELSE 0 END) AS cpu_process_records,
+       COALESCE(SUM(ur.cpu_percent), 0) AS total_cpu_percent,
+       COALESCE(SUM(ur.memory_mb), 0) AS total_memory_mb,
+       COALESCE(SUM(ur.cost), 0) AS total_cost
+FROM usage_records ur
+LEFT JOIN user_node_accounts una
+  ON una.node_id = ur.node_id
+ AND una.local_username = ur.username
+WHERE ur.timestamp >= $1 AND ur.timestamp <= $2
 GROUP BY 1,2
 ORDER BY month DESC, total_cost DESC
 LIMIT $3`, from, to, limit)
@@ -1512,6 +2186,513 @@ LIMIT $3`, from, to, limit)
 	for rows.Next() {
 		var x UsageMonthlySummary
 		if err := rows.Scan(&x.Month, &x.Username, &x.UsageRecords, &x.GPUProcessRecords, &x.CPUProcessRecords, &x.TotalCPUPercent, &x.TotalMemoryMB, &x.TotalCost); err != nil {
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListAnnouncements(ctx context.Context, limit int) ([]Announcement, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT announcement_id, title, content, pinned, created_by, created_at, updated_at
+FROM announcements
+ORDER BY pinned DESC, created_at DESC
+LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]Announcement, 0)
+	for rows.Next() {
+		var a Announcement
+		if err := rows.Scan(&a.AnnouncementID, &a.Title, &a.Content, &a.Pinned, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) CreateAnnouncement(ctx context.Context, title string, content string, pinned bool, createdBy string) error {
+	title = strings.TrimSpace(title)
+	content = strings.TrimSpace(content)
+	createdBy = strings.TrimSpace(createdBy)
+	if title == "" || content == "" {
+		return errors.New("title/content 不能为空")
+	}
+	if createdBy == "" {
+		createdBy = "admin"
+	}
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO announcements(title, content, pinned, created_by)
+VALUES($1,$2,$3,$4)`, title, content, pinned, createdBy)
+	return err
+}
+
+func (s *Store) DeleteAnnouncement(ctx context.Context, id int) error {
+	if id <= 0 {
+		return errors.New("id 不合法")
+	}
+	res, err := s.db.ExecContext(ctx, `DELETE FROM announcements WHERE announcement_id=$1`, id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) ListAdminUserDetails(ctx context.Context, limit int) ([]AdminUserDetail, error) {
+	if limit <= 0 || limit > 5000 {
+		limit = 1000
+	}
+	rows, err := s.db.QueryContext(ctx, `
+WITH usage_agg AS (
+  SELECT username, COUNT(1) AS usage_records, COALESCE(SUM(cost),0) AS total_cost, MAX(timestamp) AS last_usage_at
+  FROM usage_records
+  GROUP BY username
+),
+union_users AS (
+  SELECT
+    ua.username,
+    'user' AS role,
+    FALSE AS can_view_board,
+    FALSE AS can_view_nodes,
+    FALSE AS can_review_requests,
+    ua.email,
+    ua.student_id,
+    ua.real_name,
+    ua.advisor,
+    ua.expected_graduation_year,
+    ua.phone
+  FROM user_accounts ua
+  UNION ALL
+  SELECT
+    aa.username,
+    'admin' AS role,
+    TRUE AS can_view_board,
+    TRUE AS can_view_nodes,
+    TRUE AS can_review_requests,
+    '' AS email,
+    '' AS student_id,
+    '' AS real_name,
+    '' AS advisor,
+    0 AS expected_graduation_year,
+    '' AS phone
+  FROM admin_accounts aa
+  UNION ALL
+  SELECT
+    pu.username,
+    'power_user' AS role,
+    pu.can_view_board,
+    pu.can_view_nodes,
+    pu.can_review_requests,
+    '' AS email,
+    '' AS student_id,
+    '' AS real_name,
+    '' AS advisor,
+    0 AS expected_graduation_year,
+    '' AS phone
+  FROM power_users pu
+)
+SELECT uu.username, uu.role, uu.can_view_board, uu.can_view_nodes, uu.can_review_requests,
+       uu.email, uu.student_id, uu.real_name, uu.advisor, uu.expected_graduation_year, uu.phone,
+       COALESCE(u.balance, 0), COALESCE(u.status, 'normal'),
+       COALESCE(x.usage_records, 0), COALESCE(x.total_cost, 0), COALESCE(x.last_usage_at, to_timestamp(0))
+FROM union_users uu
+LEFT JOIN users u ON u.username=uu.username
+LEFT JOIN usage_agg x ON x.username=uu.username
+ORDER BY uu.username
+LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]AdminUserDetail, 0)
+	for rows.Next() {
+		var d AdminUserDetail
+		if err := rows.Scan(
+			&d.Username, &d.Role, &d.CanViewBoard, &d.CanViewNodes, &d.CanReviewRequest,
+			&d.Email, &d.StudentID, &d.RealName, &d.Advisor, &d.ExpectedGradYear, &d.Phone,
+			&d.Balance, &d.Status, &d.UsageRecords, &d.TotalCost, &d.LastUsageAt,
+		); err != nil {
+			return nil, err
+		}
+		accounts, err := s.ListUserNodeAccountsByBilling(ctx, d.Username, 5000)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+		d.NodeAccounts = accounts
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) UpdateUserProfileBase(ctx context.Context, username string, realName string, advisor string, expectedGradYear int, phone string) error {
+	username = strings.TrimSpace(username)
+	realName = strings.TrimSpace(realName)
+	advisor = strings.TrimSpace(advisor)
+	phone = strings.TrimSpace(phone)
+	if username == "" {
+		return errors.New("username 不能为空")
+	}
+	if realName == "" || advisor == "" || phone == "" {
+		return errors.New("真实姓名/导师/电话不能为空")
+	}
+	if expectedGradYear < 2000 || expectedGradYear > 2200 {
+		return errors.New("预计毕业年份不合法")
+	}
+	res, err := s.db.ExecContext(ctx, `
+UPDATE user_accounts
+SET real_name=$2, advisor=$3, expected_graduation_year=$4, phone=$5, updated_at=NOW()
+WHERE username=$1`, username, realName, advisor, expectedGradYear, phone)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) CreateProfileChangeRequest(ctx context.Context, billingUsername string, newUsername string, newEmail string, newStudentID string, reason string) error {
+	billingUsername = strings.TrimSpace(billingUsername)
+	newUsername = strings.TrimSpace(newUsername)
+	newEmail = strings.TrimSpace(strings.ToLower(newEmail))
+	newStudentID = strings.TrimSpace(newStudentID)
+	reason = strings.TrimSpace(reason)
+	if billingUsername == "" || newUsername == "" || newEmail == "" || newStudentID == "" {
+		return errors.New("用户名/邮箱/学号不能为空")
+	}
+	if reason == "" {
+		return errors.New("请填写变更原因，管理员审核时需要")
+	}
+	var old UserAccount
+	if err := s.db.QueryRowContext(ctx, `
+SELECT username, email, real_name, student_id, advisor, expected_graduation_year, phone, role, last_login_at, created_at, updated_at
+FROM user_accounts WHERE username=$1`, billingUsername).Scan(
+		&old.Username, &old.Email, &old.RealName, &old.StudentID, &old.Advisor, &old.ExpectedGraduationYear, &old.Phone,
+		&old.Role, &old.LastLoginAt, &old.CreatedAt, &old.UpdatedAt,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("用户不存在")
+		}
+		return err
+	}
+	var hasPending bool
+	if err := s.db.QueryRowContext(ctx, `
+SELECT EXISTS(
+  SELECT 1 FROM profile_change_requests
+  WHERE billing_username=$1 AND status='pending'
+)`, billingUsername).Scan(&hasPending); err != nil {
+		return err
+	}
+	if hasPending {
+		return errors.New("你已有待审核的关键信息变更申请，请等待管理员处理")
+	}
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO profile_change_requests(
+  billing_username, old_username, old_email, old_student_id,
+  new_username, new_email, new_student_id, reason, status
+)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,'pending')`,
+		billingUsername, old.Username, old.Email, old.StudentID,
+		newUsername, newEmail, newStudentID, reason,
+	)
+	return err
+}
+
+func (s *Store) ListProfileChangeRequestsByUser(ctx context.Context, billingUsername string, limit int) ([]ProfileChangeRequest, error) {
+	billingUsername = strings.TrimSpace(billingUsername)
+	if billingUsername == "" {
+		return nil, errors.New("billing_username 不能为空")
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT request_id, billing_username, old_username, old_email, old_student_id,
+       new_username, new_email, new_student_id, reason, status, reviewed_by, reviewed_at, created_at, updated_at
+FROM profile_change_requests
+WHERE billing_username=$1
+ORDER BY request_id DESC
+LIMIT $2`, billingUsername, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]ProfileChangeRequest, 0)
+	for rows.Next() {
+		var x ProfileChangeRequest
+		if err := rows.Scan(
+			&x.RequestID, &x.BillingUsername, &x.OldUsername, &x.OldEmail, &x.OldStudentID,
+			&x.NewUsername, &x.NewEmail, &x.NewStudentID, &x.Reason, &x.Status,
+			&x.ReviewedBy, &x.ReviewedAt, &x.CreatedAt, &x.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListProfileChangeRequestsAdmin(ctx context.Context, status string, username string, limit int) ([]ProfileChangeRequest, error) {
+	status = strings.TrimSpace(status)
+	username = strings.TrimSpace(username)
+	if limit <= 0 || limit > 5000 {
+		limit = 500
+	}
+	conds := make([]string, 0, 2)
+	args := make([]any, 0, 3)
+	if status != "" {
+		conds = append(conds, "status=$"+strconv.Itoa(len(args)+1))
+		args = append(args, status)
+	}
+	if username != "" {
+		conds = append(conds, "billing_username=$"+strconv.Itoa(len(args)+1))
+		args = append(args, username)
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = "WHERE " + strings.Join(conds, " AND ")
+	}
+	args = append(args, limit)
+	query := `
+SELECT request_id, billing_username, old_username, old_email, old_student_id,
+       new_username, new_email, new_student_id, reason, status, reviewed_by, reviewed_at, created_at, updated_at
+FROM profile_change_requests
+` + where + `
+ORDER BY
+  CASE status WHEN 'pending' THEN 0 ELSE 1 END,
+  request_id DESC
+LIMIT $` + strconv.Itoa(len(args))
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]ProfileChangeRequest, 0)
+	for rows.Next() {
+		var x ProfileChangeRequest
+		if err := rows.Scan(
+			&x.RequestID, &x.BillingUsername, &x.OldUsername, &x.OldEmail, &x.OldStudentID,
+			&x.NewUsername, &x.NewEmail, &x.NewStudentID, &x.Reason, &x.Status,
+			&x.ReviewedBy, &x.ReviewedAt, &x.CreatedAt, &x.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ReviewProfileChangeRequestTx(ctx context.Context, tx *sql.Tx, requestID int, newStatus string, reviewedBy string, reviewedAt time.Time) (ProfileChangeRequest, error) {
+	if requestID <= 0 {
+		return ProfileChangeRequest{}, errors.New("request_id 不合法")
+	}
+	newStatus = strings.TrimSpace(newStatus)
+	reviewedBy = strings.TrimSpace(reviewedBy)
+	if newStatus != "approved" && newStatus != "rejected" {
+		return ProfileChangeRequest{}, errors.New("status 仅支持 approved/rejected")
+	}
+	if reviewedBy == "" {
+		reviewedBy = "admin"
+	}
+	var r ProfileChangeRequest
+	if err := tx.QueryRowContext(ctx, `
+SELECT request_id, billing_username, old_username, old_email, old_student_id,
+       new_username, new_email, new_student_id, reason, status, reviewed_by, reviewed_at, created_at, updated_at
+FROM profile_change_requests
+WHERE request_id=$1`, requestID).Scan(
+		&r.RequestID, &r.BillingUsername, &r.OldUsername, &r.OldEmail, &r.OldStudentID,
+		&r.NewUsername, &r.NewEmail, &r.NewStudentID, &r.Reason, &r.Status, &r.ReviewedBy, &r.ReviewedAt, &r.CreatedAt, &r.UpdatedAt,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ProfileChangeRequest{}, errors.New("申请不存在")
+		}
+		return ProfileChangeRequest{}, err
+	}
+	if r.Status != "pending" {
+		return ProfileChangeRequest{}, errors.New("该申请已处理，不能重复审核")
+	}
+
+	if newStatus == "approved" {
+		// 1) 唯一性校验
+		var exists bool
+		if strings.TrimSpace(r.NewUsername) != strings.TrimSpace(r.OldUsername) {
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM user_accounts WHERE username=$1)`, r.NewUsername).Scan(&exists); err != nil {
+				return ProfileChangeRequest{}, err
+			}
+			if exists {
+				return ProfileChangeRequest{}, errors.New("新用户名已存在")
+			}
+		}
+		if strings.TrimSpace(strings.ToLower(r.NewEmail)) != strings.TrimSpace(strings.ToLower(r.OldEmail)) {
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM user_accounts WHERE email=$1)`, strings.ToLower(r.NewEmail)).Scan(&exists); err != nil {
+				return ProfileChangeRequest{}, err
+			}
+			if exists {
+				return ProfileChangeRequest{}, errors.New("新邮箱已存在")
+			}
+		}
+		if strings.TrimSpace(r.NewStudentID) != strings.TrimSpace(r.OldStudentID) {
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM user_accounts WHERE student_id=$1)`, r.NewStudentID).Scan(&exists); err != nil {
+				return ProfileChangeRequest{}, err
+			}
+			if exists {
+				return ProfileChangeRequest{}, errors.New("新学号已存在")
+			}
+		}
+
+		// 2) 更新 user_accounts
+		res, err := tx.ExecContext(ctx, `
+UPDATE user_accounts
+SET username=$2, email=$3, student_id=$4, updated_at=NOW()
+WHERE username=$1`, r.OldUsername, r.NewUsername, strings.ToLower(r.NewEmail), r.NewStudentID)
+		if err != nil {
+			return ProfileChangeRequest{}, err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ProfileChangeRequest{}, errors.New("原账号不存在或已变更，请刷新后重试")
+		}
+
+		// 3) 若用户名变化，级联同步历史业务表
+		if r.NewUsername != r.OldUsername {
+			if _, err := tx.ExecContext(ctx, `UPDATE users SET username=$2 WHERE username=$1`, r.OldUsername, r.NewUsername); err != nil {
+				return ProfileChangeRequest{}, err
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE usage_records SET username=$2 WHERE username=$1`, r.OldUsername, r.NewUsername); err != nil {
+				return ProfileChangeRequest{}, err
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE recharge_records SET username=$2 WHERE username=$1`, r.OldUsername, r.NewUsername); err != nil {
+				return ProfileChangeRequest{}, err
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE user_node_accounts SET billing_username=$2 WHERE billing_username=$1`, r.OldUsername, r.NewUsername); err != nil {
+				return ProfileChangeRequest{}, err
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE user_requests SET billing_username=$2 WHERE billing_username=$1`, r.OldUsername, r.NewUsername); err != nil {
+				return ProfileChangeRequest{}, err
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE profile_change_requests SET billing_username=$2 WHERE billing_username=$1`, r.OldUsername, r.NewUsername); err != nil {
+				return ProfileChangeRequest{}, err
+			}
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+UPDATE profile_change_requests
+SET status=$2, reviewed_by=$3, reviewed_at=$4, updated_at=NOW()
+WHERE request_id=$1`, requestID, newStatus, reviewedBy, reviewedAt); err != nil {
+		return ProfileChangeRequest{}, err
+	}
+	if err := tx.QueryRowContext(ctx, `
+SELECT request_id, billing_username, old_username, old_email, old_student_id,
+       new_username, new_email, new_student_id, reason, status, reviewed_by, reviewed_at, created_at, updated_at
+FROM profile_change_requests
+WHERE request_id=$1`, requestID).Scan(
+		&r.RequestID, &r.BillingUsername, &r.OldUsername, &r.OldEmail, &r.OldStudentID,
+		&r.NewUsername, &r.NewEmail, &r.NewStudentID, &r.Reason, &r.Status,
+		&r.ReviewedBy, &r.ReviewedAt, &r.CreatedAt, &r.UpdatedAt,
+	); err != nil {
+		return ProfileChangeRequest{}, err
+	}
+	return r, nil
+}
+
+func (s *Store) ListPlatformUsageSummaryByUser(ctx context.Context, from time.Time, to time.Time, limit int) ([]PlatformUsageUserSummary, error) {
+	if limit <= 0 || limit > 10000 {
+		limit = 1000
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT COALESCE(una.billing_username, ur.username) AS platform_username,
+       COUNT(1) AS usage_records,
+       COALESCE(SUM(CASE WHEN jsonb_array_length(ur.gpu_usage) > 0 THEN 1 ELSE 0 END), 0) AS gpu_records,
+       COALESCE(SUM(CASE WHEN jsonb_array_length(ur.gpu_usage) = 0 THEN 1 ELSE 0 END), 0) AS cpu_records,
+       COALESCE(SUM(ur.cpu_percent), 0) AS total_cpu_percent,
+       COALESCE(SUM(ur.memory_mb), 0) AS total_memory_mb,
+       COALESCE(SUM(ur.cost), 0) AS total_cost
+FROM usage_records ur
+LEFT JOIN user_node_accounts una
+  ON una.node_id = ur.node_id
+ AND una.local_username = ur.username
+WHERE ur.timestamp >= $1 AND ur.timestamp <= $2
+GROUP BY COALESCE(una.billing_username, ur.username)
+ORDER BY total_cost DESC
+LIMIT $3`, from, to, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]PlatformUsageUserSummary, 0)
+	for rows.Next() {
+		var x PlatformUsageUserSummary
+		if err := rows.Scan(
+			&x.PlatformUsername, &x.UsageRecords, &x.GPUProcessCount, &x.CPUProcessCount,
+			&x.TotalCPUPercent, &x.TotalMemoryMB, &x.TotalCost,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListPlatformUsageNodeDetails(ctx context.Context, platformUsername string, from time.Time, to time.Time, limit int) ([]PlatformUsageNodeDetail, error) {
+	platformUsername = strings.TrimSpace(platformUsername)
+	if platformUsername == "" {
+		return nil, errors.New("platform_username 不能为空")
+	}
+	if limit <= 0 || limit > 20000 {
+		limit = 2000
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT ur.node_id,
+       COALESCE(n.cpu_model, '') AS cpu_model,
+       COALESCE(n.cpu_count, 0) AS cpu_count,
+       COALESCE(n.gpu_model, '') AS gpu_model,
+       COALESCE(n.gpu_count, 0) AS gpu_count,
+       COALESCE(n.last_seen_at, to_timestamp(0)) AS last_seen_at,
+       COUNT(1) AS usage_records,
+       COALESCE(SUM(ur.cpu_percent), 0) AS total_cpu_percent,
+       COALESCE(SUM(ur.memory_mb), 0) AS total_memory_mb,
+       COALESCE(SUM(ur.cost), 0) AS total_cost,
+       MAX(ur.timestamp) AS last_usage_at
+FROM usage_records ur
+LEFT JOIN user_node_accounts una
+  ON una.node_id = ur.node_id
+ AND una.local_username = ur.username
+LEFT JOIN nodes n
+  ON n.node_id = ur.node_id
+WHERE COALESCE(una.billing_username, ur.username) = $1
+  AND ur.timestamp >= $2
+  AND ur.timestamp <= $3
+GROUP BY ur.node_id, n.cpu_model, n.cpu_count, n.gpu_model, n.gpu_count, n.last_seen_at
+ORDER BY total_cost DESC, ur.node_id ASC
+LIMIT $4`, platformUsername, from, to, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]PlatformUsageNodeDetail, 0)
+	for rows.Next() {
+		var x PlatformUsageNodeDetail
+		if err := rows.Scan(
+			&x.NodeID, &x.CPUModel, &x.CPUCount, &x.GPUModel, &x.GPUCount, &x.LastSeenAt,
+			&x.UsageRecords, &x.TotalCPUPercent, &x.TotalMemoryMB, &x.TotalCost, &x.LastUsageAt,
+		); err != nil {
 			return nil, err
 		}
 		out = append(out, x)
@@ -1585,6 +2766,7 @@ func (s *Store) queryUsageRows(
 
 	query := fmt.Sprintf(`
 SELECT node_id, username, timestamp, cpu_percent, memory_mb, gpu_usage::text, cost
+     , local_username
 FROM usage_records
 %s
 ORDER BY timestamp ASC

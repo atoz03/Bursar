@@ -14,17 +14,24 @@
           <el-menu-item index="/admin/board"><el-icon><DataBoard /></el-icon><span>运营看板</span></el-menu-item>
           <el-menu-item index="/admin/nodes"><el-icon><Monitor /></el-icon><span>节点状态</span></el-menu-item>
           <el-menu-item index="/admin/users"><el-icon><UserFilled /></el-icon><span>用户管理</span></el-menu-item>
-          <el-menu-item index="/admin/prices"><el-icon><Money /></el-icon><span>价格配置</span></el-menu-item>
+          <el-menu-item index="/admin/prices"><el-icon><Money /></el-icon><span>积分单价</span></el-menu-item>
           <el-menu-item index="/admin/usage"><el-icon><Tickets /></el-icon><span>使用记录</span></el-menu-item>
           <el-menu-item index="/admin/requests"><el-icon><Checked /></el-icon><span>注册审核</span></el-menu-item>
           <el-menu-item index="/admin/queue"><el-icon><Clock /></el-icon><span>排队队列</span></el-menu-item>
           <el-menu-item index="/admin/accounts"><el-icon><UserFilled /></el-icon><span>账号映射</span></el-menu-item>
-          <el-menu-item index="/admin/whitelist"><el-icon><Lock /></el-icon><span>SSH白名单</span></el-menu-item>
+          <el-menu-item index="/admin/whitelist"><el-icon><Lock /></el-icon><span>SSH名单</span></el-menu-item>
+          <el-menu-item index="/admin/announcements"><el-icon><Bell /></el-icon><span>公告管理</span></el-menu-item>
           <el-menu-item index="/admin/mail"><el-icon><Message /></el-icon><span>邮件设置</span></el-menu-item>
+          <el-menu-item index="/admin/power-users"><el-icon><UserFilled /></el-icon><span>高级用户</span></el-menu-item>
           <el-menu-item index="/admin/change-password"><el-icon><Key /></el-icon><span>修改密码</span></el-menu-item>
         </template>
+        <template v-else-if="authState.role === 'power_user'">
+          <el-menu-item v-if="authState.canViewBoard" index="/admin/board"><el-icon><DataBoard /></el-icon><span>运营看板</span></el-menu-item>
+          <el-menu-item v-if="authState.canViewNodes" index="/admin/nodes"><el-icon><Monitor /></el-icon><span>节点状态</span></el-menu-item>
+          <el-menu-item v-if="authState.canReviewRequests" index="/admin/requests"><el-icon><Checked /></el-icon><span>注册审核</span></el-menu-item>
+        </template>
         <template v-else>
-          <el-menu-item index="/user/balance"><el-icon><WalletFilled /></el-icon><span>我的余额</span></el-menu-item>
+          <el-menu-item index="/user/balance"><el-icon><WalletFilled /></el-icon><span>我的积分</span></el-menu-item>
           <el-menu-item index="/user/usage"><el-icon><DataAnalysis /></el-icon><span>我的用量</span></el-menu-item>
           <el-menu-item index="/user/accounts"><el-icon><UserFilled /></el-icon><span>服务器账号</span></el-menu-item>
           <el-menu-item index="/user/change-password"><el-icon><Key /></el-icon><span>修改密码</span></el-menu-item>
@@ -46,7 +53,9 @@
           />
         </div>
         <div class="header-right">
-          <el-tag type="success" effect="light">{{ authState.role === 'admin' ? '管理员' : '用户' }}</el-tag>
+          <el-tag type="success" effect="light">
+            {{ authState.role === 'admin' ? '管理员' : (authState.role === 'power_user' ? '高级用户' : '用户') }}
+          </el-tag>
           <el-tag effect="plain">{{ authState.username }}</el-tag>
           <el-button @click="persist" type="primary">
             <el-icon><Check /></el-icon>
@@ -71,6 +80,7 @@ import { computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { persistSettings, settingsState } from "../lib/settingsStore";
 import { authState, logout } from "../lib/authStore";
+import { ElMessage } from "element-plus";
 import {
   Check,
   Clock,
@@ -83,6 +93,7 @@ import {
   Money,
   Monitor,
   Lock,
+  Bell,
   SwitchButton,
   Tickets,
   UserFilled,
@@ -96,6 +107,7 @@ const activePath = computed(() => route.path);
 
 function persist() {
   persistSettings();
+  ElMessage.success("保存成功");
 }
 
 async function doLogout() {
@@ -133,6 +145,11 @@ async function doLogout() {
   border-right: none;
   padding: 8px;
   background: transparent;
+}
+.menu :deep(.el-menu-item.is-active) {
+  color: #0f766e;
+  background: #ecfeff;
+  border-radius: 10px;
 }
 .header {
   display: flex;

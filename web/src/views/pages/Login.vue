@@ -1,20 +1,19 @@
 <template>
-  <div class="auth-shell">
-    <div class="left-hero">
-      <div class="hero-card">
-        <el-icon :size="44"><Cpu /></el-icon>
-        <h1>GPU Ops</h1>
-        <p>GPU 资源运维与计费平台</p>
-      </div>
+  <div class="water-shell">
+    <div class="water-bg">
+      <span class="wave wave-1"></span>
+      <span class="wave wave-2"></span>
+      <span class="wave wave-3"></span>
     </div>
 
-    <el-card class="login-card">
-      <template #header>
-        <div class="head">
-          <h2>账号登录</h2>
-          <p>管理员与普通用户共用登录入口</p>
+    <div class="login-panel">
+      <div class="brand">
+        <el-icon :size="34"><Cpu /></el-icon>
+        <div>
+          <h1>GPU Ops</h1>
+          <p>GPU 运维与计费平台</p>
         </div>
-      </template>
+      </div>
 
       <el-alert v-if="error" :title="error" type="error" show-icon class="mb" />
 
@@ -27,13 +26,13 @@
         </el-form-item>
       </el-form>
 
-      <el-button :loading="loading" type="primary" @click="doLogin" style="width: 100%">登录</el-button>
+      <el-button :loading="loading" type="primary" class="login-btn" @click="doLogin">登录</el-button>
 
       <div class="actions">
         <router-link to="/register">用户注册</router-link>
         <router-link to="/forgot-password">找回密码</router-link>
       </div>
-    </el-card>
+    </div>
   </div>
 </template>
 
@@ -56,11 +55,21 @@ async function doLogin() {
     await login(username.value.trim(), password.value);
     if (authState.role === "admin") {
       await router.push("/admin/board");
+    } else if (authState.role === "power_user") {
+      if (authState.canViewBoard) {
+        await router.push("/admin/board");
+      } else if (authState.canViewNodes) {
+        await router.push("/admin/nodes");
+      } else if (authState.canReviewRequests) {
+        await router.push("/admin/requests");
+      } else {
+        error.value = "当前高级用户未授予可访问权限，请联系管理员";
+      }
     } else {
       await router.push("/user/balance");
     }
   } catch (e: any) {
-    error.value = e?.body ? `${e.message}\n${e.body}` : (e?.message ?? String(e));
+    error.value = e?.message ?? String(e);
   } finally {
     loading.value = false;
   }
@@ -68,43 +77,64 @@ async function doLogin() {
 </script>
 
 <style scoped>
-.auth-shell {
+.water-shell {
+  position: relative;
+  overflow: hidden;
   min-height: 100vh;
   display: grid;
-  grid-template-columns: 1fr 460px;
-  background: #eef4ff;
-}
-.left-hero {
-  display: grid;
   place-items: center;
-  background: radial-gradient(circle at 20% 20%, #0ea5e9 0, #1d4ed8 45%, #0f172a 100%);
+  background: linear-gradient(145deg, #0b3948 0%, #087e8b 42%, #bfdbf7 100%);
 }
-.hero-card {
-  color: #fff;
-  text-align: center;
+.water-bg {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
 }
-.hero-card h1 {
-  margin: 10px 0 4px;
-  font-size: 40px;
+.wave {
+  position: absolute;
+  left: -30%;
+  width: 160%;
+  height: 55%;
+  border-radius: 44%;
+  background: rgba(255, 255, 255, 0.15);
+  animation: drift 16s linear infinite;
 }
-.hero-card p {
+.wave-1 { bottom: -28%; }
+.wave-2 { bottom: -34%; opacity: 0.22; animation-duration: 20s; animation-direction: reverse; }
+.wave-3 { bottom: -40%; opacity: 0.12; animation-duration: 26s; }
+.login-panel {
+  position: relative;
+  z-index: 1;
+  width: min(92vw, 460px);
+  padding: 26px 24px 18px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 20px 50px rgba(2, 6, 23, 0.24);
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #0f172a;
+  margin-bottom: 12px;
+}
+.brand h1 {
   margin: 0;
-  opacity: 0.9;
+  font-size: 24px;
+  letter-spacing: 0.4px;
 }
-.login-card {
-  margin: auto;
-  width: 92%;
-  max-width: 420px;
-}
-.head h2 {
-  margin: 0;
-}
-.head p {
-  color: #475569;
-  margin: 6px 0 0;
+.brand p {
+  margin: 2px 0 0;
+  color: #334155;
+  font-size: 13px;
 }
 .mb {
   margin-bottom: 12px;
+}
+.login-btn {
+  width: 100%;
+  margin-top: 4px;
 }
 .actions {
   margin-top: 14px;
@@ -112,15 +142,17 @@ async function doLogin() {
   justify-content: space-between;
 }
 .actions a {
-  color: #1d4ed8;
+  color: #0f766e;
   text-decoration: none;
+  font-weight: 600;
 }
-@media (max-width: 900px) {
-  .auth-shell {
-    grid-template-columns: 1fr;
-  }
-  .left-hero {
-    min-height: 220px;
+@keyframes drift {
+  0% { transform: translateX(-8%) rotate(0deg); }
+  100% { transform: translateX(8%) rotate(360deg); }
+}
+@media (max-width: 700px) {
+  .login-panel {
+    padding: 20px 14px 14px;
   }
 }
 </style>

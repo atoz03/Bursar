@@ -19,6 +19,7 @@ type NodeAgent struct {
 	controllerURL string
 	agentToken    string
 	interval      time.Duration
+	actionPoll    time.Duration
 	stateDir      string
 
 	client *http.Client
@@ -35,6 +36,7 @@ func main() {
 		controllerURL: strings.TrimSpace(os.Getenv("CONTROLLER_URL")),
 		agentToken:    strings.TrimSpace(os.Getenv("AGENT_TOKEN")),
 		interval:      60 * time.Second,
+		actionPoll:    1 * time.Second,
 		stateDir:      strings.TrimSpace(os.Getenv("STATE_DIR")),
 		logger:        log.New(os.Stdout, "[node-agent] ", log.LstdFlags|log.Lmicroseconds),
 		cpuMinPercent: 1.0,
@@ -45,6 +47,11 @@ func main() {
 	if sec := strings.TrimSpace(os.Getenv("INTERVAL_SECONDS")); sec != "" {
 		if v, err := strconv.Atoi(sec); err == nil && v > 0 {
 			agent.interval = time.Duration(v) * time.Second
+		}
+	}
+	if sec := strings.TrimSpace(os.Getenv("ACTION_POLL_INTERVAL_SECONDS")); sec != "" {
+		if v, err := strconv.Atoi(sec); err == nil && v > 0 {
+			agent.actionPoll = time.Duration(v) * time.Second
 		}
 	}
 	if v := strings.TrimSpace(os.Getenv("CPU_MIN_PERCENT")); v != "" {
@@ -69,23 +76,35 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	agent.logger.Printf("启动：node_id=%s controller=%s interval=%s", agent.nodeID, agent.controllerURL, agent.interval)
+	agent.logger.Printf("启动：node_id=%s controller=%s interval=%s action_poll=%s", agent.nodeID, agent.controllerURL, agent.interval, agent.actionPoll)
 	agent.Run(ctx)
 }
 
 func (a *NodeAgent) Run(ctx context.Context) {
-	ticker := time.NewTicker(a.interval)
-	defer ticker.Stop()
+	reportTicker := time.NewTicker(a.interval)
+	actionTicker := time.NewTicker(a.actionPoll)
+	defer reportTicker.Stop()
+	defer actionTicker.Stop()
+
+	if err := a.tick(ctx); err != nil {
+		a.logger.Printf("tick 异常：%v", err)
+	}
+	if err := a.actionTick(ctx); err != nil {
+		a.logger.Printf("action tick 异常：%v", err)
+	}
 
 	for {
-		if err := a.tick(ctx); err != nil {
-			a.logger.Printf("tick 异常：%v", err)
-		}
-
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-reportTicker.C:
+			if err := a.tick(ctx); err != nil {
+				a.logger.Printf("tick 异常：%v", err)
+			}
+		case <-actionTicker.C:
+			if err := a.actionTick(ctx); err != nil {
+				a.logger.Printf("action tick 异常：%v", err)
+			}
 		}
 	}
 }
@@ -109,13 +128,33 @@ func (a *NodeAgent) tick(ctx context.Context) error {
 		return err
 	}
 
-	for _, act := range resp.Actions {
-		actCtx, cancel3 := context.WithTimeout(ctx, 30*time.Second)
+	a.executeActions(ctx, resp.Actions)
+
+	return nil
+}
+
+func (a *NodeAgent) actionTick(ctx context.Context) error {
+	pollTimeout := 900 * time.Millisecond
+	if a.actionPoll < 900*time.Millisecond {
+		pollTimeout = a.actionPoll
+	}
+	pollCtx, cancel := context.WithTimeout(ctx, pollTimeout)
+	defer cancel()
+
+	resp, err := a.FetchActions(pollCtx)
+	if err != nil {
+		return err
+	}
+	a.executeActions(ctx, resp.Actions)
+	return nil
+}
+
+func (a *NodeAgent) executeActions(ctx context.Context, actions []Action) {
+	for _, act := range actions {
+		actCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		if err := a.ExecuteAction(actCtx, act); err != nil {
 			a.logger.Printf("执行 action 失败：type=%s user=%s err=%v", act.Type, act.Username, err)
 		}
-		cancel3()
+		cancel()
 	}
-
-	return nil
 }

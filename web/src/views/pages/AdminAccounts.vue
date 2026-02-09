@@ -4,14 +4,15 @@
       <div class="head"><span>账号映射管理（管理员）</span><el-button :loading="loading" type="primary" @click="reload">刷新</el-button></div>
     </template>
     <el-alert v-if="error" :title="error" type="error" show-icon class="mb" />
+    <el-alert v-if="success" :title="success" type="success" show-icon class="mb" />
     <el-form inline>
-      <el-form-item label="计费账号"><el-input v-model="billing" placeholder="alice" /></el-form-item>
+      <el-form-item label="系统账号"><el-input v-model="billing" placeholder="alice" @keyup.enter="reload" /></el-form-item>
       <el-form-item label="机器编号"><el-input v-model="nodeId" placeholder="60000" /></el-form-item>
       <el-form-item label="机器用户名"><el-input v-model="localUsername" placeholder="alice" /></el-form-item>
       <el-form-item><el-button type="primary" @click="save">新增/覆盖</el-button></el-form-item>
     </el-form>
     <el-table :data="rows" stripe>
-      <el-table-column prop="billing_username" label="计费账号" width="170" />
+      <el-table-column prop="billing_username" label="系统账号" width="170" />
       <el-table-column prop="node_id" label="机器编号" width="130" />
       <el-table-column prop="local_username" label="机器用户名" width="170" />
       <el-table-column prop="updated_at" label="更新时间" min-width="180" />
@@ -33,6 +34,7 @@ import { authState } from "../../lib/authStore";
 
 const loading = ref(false);
 const error = ref("");
+const success = ref("");
 const rows = ref<UserNodeAccount[]>([]);
 const billing = ref("");
 const nodeId = ref("");
@@ -40,7 +42,6 @@ const localUsername = ref("");
 const old = ref<{ billing: string; node: string; local: string } | null>(null);
 
 async function reload() {
-  if (!billing.value.trim()) return;
   loading.value = true;
   error.value = "";
   try {
@@ -48,7 +49,7 @@ async function reload() {
     const r = await client.adminAccounts(billing.value.trim());
     rows.value = r.accounts ?? [];
   } catch (e: any) {
-    error.value = e?.body ? `${e.message}\n${e.body}` : (e?.message ?? String(e));
+    error.value = e?.message ?? String(e);
   } finally {
     loading.value = false;
   }
@@ -63,6 +64,7 @@ function prefill(row: UserNodeAccount) {
 
 async function save() {
   error.value = "";
+  success.value = "";
   try {
     const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
     if (old.value) {
@@ -82,16 +84,18 @@ async function save() {
         local_username: localUsername.value.trim(),
       });
     }
+    success.value = "保存成功";
     nodeId.value = "";
     localUsername.value = "";
     await reload();
   } catch (e: any) {
-    error.value = e?.body ? `${e.message}\n${e.body}` : (e?.message ?? String(e));
+    error.value = e?.message ?? String(e);
   }
 }
 
 async function remove(row: UserNodeAccount) {
   error.value = "";
+  success.value = "";
   try {
     const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
     await client.adminDeleteAccount({
@@ -99,11 +103,14 @@ async function remove(row: UserNodeAccount) {
       node_id: row.node_id,
       local_username: row.local_username,
     });
+    success.value = "删除成功";
     await reload();
   } catch (e: any) {
-    error.value = e?.body ? `${e.message}\n${e.body}` : (e?.message ?? String(e));
+    error.value = e?.message ?? String(e);
   }
 }
+
+reload();
 </script>
 
 <style scoped>

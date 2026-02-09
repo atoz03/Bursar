@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS usage_records (
     record_id SERIAL PRIMARY KEY,
     node_id VARCHAR(50) NOT NULL,
+    local_username VARCHAR(50) NOT NULL DEFAULT '',
     username VARCHAR(50) NOT NULL,
     timestamp TIMESTAMP NOT NULL,
     pid INT NOT NULL DEFAULT 0,
@@ -73,6 +74,7 @@ CREATE TABLE IF NOT EXISTS nodes (
     gpu_process_count INT NOT NULL DEFAULT 0,
     cpu_process_count INT NOT NULL DEFAULT 0,
     usage_records_count INT NOT NULL DEFAULT 0,
+    ssh_active_count INT NOT NULL DEFAULT 0,
     cost_total DECIMAL(12,4) NOT NULL DEFAULT 0.0,
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
@@ -81,6 +83,19 @@ CREATE TABLE IF NOT EXISTS nodes (
 CREATE TABLE IF NOT EXISTS admin_accounts (
     username VARCHAR(50) PRIMARY KEY,
     password_hash TEXT NOT NULL,
+    last_login_at TIMESTAMP NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS power_users (
+    username VARCHAR(50) PRIMARY KEY,
+    password_hash TEXT NOT NULL,
+    can_view_board BOOLEAN NOT NULL DEFAULT TRUE,
+    can_view_nodes BOOLEAN NOT NULL DEFAULT TRUE,
+    can_review_requests BOOLEAN NOT NULL DEFAULT FALSE,
+    created_by VARCHAR(50) NOT NULL DEFAULT 'admin',
+    updated_by VARCHAR(50) NOT NULL DEFAULT 'admin',
     last_login_at TIMESTAMP NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
@@ -112,6 +127,7 @@ CREATE TABLE IF NOT EXISTS user_requests (
 );
 
 CREATE INDEX IF NOT EXISTS idx_usage_username ON usage_records(username);
+CREATE INDEX IF NOT EXISTS idx_usage_local_username ON usage_records(local_username);
 CREATE INDEX IF NOT EXISTS idx_usage_timestamp ON usage_records(timestamp);
 CREATE INDEX IF NOT EXISTS idx_usage_node ON usage_records(node_id);
 CREATE INDEX IF NOT EXISTS idx_usage_timestamp_username ON usage_records(timestamp, username);
@@ -138,6 +154,7 @@ CREATE TABLE IF NOT EXISTS user_accounts (
 );
 
 CREATE INDEX IF NOT EXISTS idx_user_accounts_email ON user_accounts(email);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_user_accounts_student_id ON user_accounts(student_id);
 
 -- 应用配置（如 SMTP）
 CREATE TABLE IF NOT EXISTS app_settings (
@@ -145,6 +162,37 @@ CREATE TABLE IF NOT EXISTS app_settings (
     value TEXT NOT NULL,
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS announcements (
+    announcement_id SERIAL PRIMARY KEY,
+    title VARCHAR(200) NOT NULL,
+    content TEXT NOT NULL,
+    pinned BOOLEAN NOT NULL DEFAULT FALSE,
+    created_by VARCHAR(50) NOT NULL DEFAULT 'admin',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_announcements_created_at ON announcements(created_at DESC);
+
+-- 用户关键信息变更申请（用户名/邮箱/学号）
+CREATE TABLE IF NOT EXISTS profile_change_requests (
+    request_id SERIAL PRIMARY KEY,
+    billing_username VARCHAR(50) NOT NULL,
+    old_username VARCHAR(50) NOT NULL,
+    old_email VARCHAR(120) NOT NULL,
+    old_student_id VARCHAR(40) NOT NULL,
+    new_username VARCHAR(50) NOT NULL,
+    new_email VARCHAR(120) NOT NULL,
+    new_student_id VARCHAR(40) NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    status VARCHAR(20) NOT NULL DEFAULT 'pending', -- pending, approved, rejected
+    reviewed_by VARCHAR(50) NULL,
+    reviewed_at TIMESTAMP NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_profile_change_requests_status ON profile_change_requests(status);
+CREATE INDEX IF NOT EXISTS idx_profile_change_requests_user ON profile_change_requests(billing_username);
 
 -- SSH 白名单（允许不注册直接登录）
 CREATE TABLE IF NOT EXISTS ssh_whitelist (
@@ -157,3 +205,30 @@ CREATE TABLE IF NOT EXISTS ssh_whitelist (
 );
 
 CREATE INDEX IF NOT EXISTS idx_ssh_whitelist_user ON ssh_whitelist(local_username);
+
+-- SSH 黑名单（强制禁止登录，优先级高于白名单/映射）
+CREATE TABLE IF NOT EXISTS ssh_blacklist (
+    node_id VARCHAR(50) NOT NULL,  -- 具体节点或 "*" 表示所有节点
+    local_username VARCHAR(50) NOT NULL,
+    created_by VARCHAR(50) NOT NULL DEFAULT 'admin',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (node_id, local_username)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ssh_blacklist_user ON ssh_blacklist(local_username);
+
+-- SSH 豁免名单（最高优先级，绕过白/黑名单与注册限制）
+CREATE TABLE IF NOT EXISTS ssh_exemptions (
+    node_id VARCHAR(50) NOT NULL,  -- 具体节点或 "*" 表示所有节点
+    local_username VARCHAR(50) NOT NULL,
+    created_by VARCHAR(50) NOT NULL DEFAULT 'admin',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (node_id, local_username)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ssh_exemptions_user ON ssh_exemptions(local_username);
+INSERT INTO ssh_exemptions(node_id, local_username, created_by)
+VALUES('*', 'gpuops', 'system')
+ON CONFLICT (node_id, local_username) DO NOTHING;

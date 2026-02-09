@@ -22,3 +22,8 @@ web/dist/
 helloagents/
 .serena/
 .ace-tool/
+
+my_ssh_keys/
+my_ssh_keys/*.txt
+!my_ssh_keys/server_ssh_map.csv
+!my_ssh_keys/README.md

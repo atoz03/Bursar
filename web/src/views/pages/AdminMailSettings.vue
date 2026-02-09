@@ -12,16 +12,16 @@
 
     <el-form label-position="top">
       <el-row :gutter="12">
-        <el-col :span="12"><el-form-item label="SMTP 主机"><el-input v-model="form.smtp_host" placeholder="smtp.example.com" /></el-form-item></el-col>
-        <el-col :span="12"><el-form-item label="SMTP 端口"><el-input-number v-model="form.smtp_port" :min="1" :max="65535" style="width: 100%" /></el-form-item></el-col>
+        <el-col :span="12"><el-form-item label="SMTP 主机 *" required><el-input v-model="form.smtp_host" placeholder="smtp.163.com" /></el-form-item></el-col>
+        <el-col :span="12"><el-form-item label="SMTP 端口 *" required><el-input-number v-model="form.smtp_port" :min="1" :max="65535" style="width: 100%" /></el-form-item></el-col>
       </el-row>
       <el-row :gutter="12">
-        <el-col :span="12"><el-form-item label="SMTP 用户名"><el-input v-model="form.smtp_user" /></el-form-item></el-col>
+        <el-col :span="12"><el-form-item label="SMTP 用户名 *" required><el-input v-model="form.smtp_user" placeholder="xxx@163.com" /></el-form-item></el-col>
         <el-col :span="12"><el-form-item label="SMTP 密码"><el-input v-model="smtpPass" type="password" show-password placeholder="留空表示不修改" /></el-form-item></el-col>
       </el-row>
       <el-row :gutter="12">
-        <el-col :span="12"><el-form-item label="发件邮箱"><el-input v-model="form.from_email" /></el-form-item></el-col>
-        <el-col :span="12"><el-form-item label="发件人名称"><el-input v-model="form.from_name" /></el-form-item></el-col>
+        <el-col :span="12"><el-form-item label="发件邮箱 *" required><el-input v-model="form.from_email" placeholder="建议与 SMTP 用户名一致" /></el-form-item></el-col>
+        <el-col :span="12"><el-form-item label="发件人名称 *" required><el-input v-model="form.from_name" /></el-form-item></el-col>
       </el-row>
     </el-form>
 
@@ -53,8 +53,8 @@ const smtpPass = ref("");
 const testUsername = ref("");
 
 const form = reactive({
-  smtp_host: "",
-  smtp_port: 587,
+  smtp_host: "smtp.163.com",
+  smtp_port: 465,
   smtp_user: "",
   from_email: "",
   from_name: "GPU Ops 团队",
@@ -63,10 +63,10 @@ const form = reactive({
 async function load() {
   const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
   const r = await client.adminGetMailSettings();
-  form.smtp_host = r.smtp_host ?? "";
-  form.smtp_port = r.smtp_port || 587;
+  form.smtp_host = r.smtp_host || "smtp.163.com";
+  form.smtp_port = r.smtp_port || 465;
   form.smtp_user = r.smtp_user ?? "";
-  form.from_email = r.from_email ?? "";
+  form.from_email = r.from_email || form.smtp_user;
   form.from_name = r.from_name ?? "GPU Ops 团队";
 }
 
@@ -85,7 +85,7 @@ async function save() {
     smtpPass.value = "";
     await load();
   } catch (e: any) {
-    error.value = e?.body ? `${e.message}\n${e.body}` : (e?.message ?? String(e));
+    error.value = e?.message ?? String(e);
   } finally {
     saving.value = false;
   }
@@ -104,14 +104,14 @@ async function sendTest() {
     const r = await client.adminMailTest(testUsername.value.trim());
     success.value = `测试邮件已发送到 ${r.email}`;
   } catch (e: any) {
-    error.value = e?.body ? `${e.message}\n${e.body}` : (e?.message ?? String(e));
+    error.value = e?.message ?? String(e);
   } finally {
     testing.value = false;
   }
 }
 
 load().catch((e: any) => {
-  error.value = e?.body ? `${e.message}\n${e.body}` : (e?.message ?? String(e));
+  error.value = e?.message ?? String(e);
 });
 </script>
 

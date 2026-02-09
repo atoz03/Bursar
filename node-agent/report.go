@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,6 +52,34 @@ func (a *NodeAgent) postMetrics(ctx context.Context, metrics *MetricsData) (*Con
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(res.Body, 16*1024))
 		return nil, fmt.Errorf("控制器返回非 2xx：code=%d body=%s", res.StatusCode, strings.TrimSpace(string(b)))
+	}
+
+	var cr ControllerResponse
+	if err := json.NewDecoder(res.Body).Decode(&cr); err != nil {
+		return nil, err
+	}
+	return &cr, nil
+}
+
+func (a *NodeAgent) FetchActions(ctx context.Context) (*ControllerResponse, error) {
+	q := url.Values{}
+	q.Set("node_id", a.nodeID)
+	u := strings.TrimRight(a.controllerURL, "/") + "/api/node/actions?" + q.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Agent-Token", a.agentToken)
+
+	res, err := a.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(res.Body, 16*1024))
+		return nil, fmt.Errorf("动作轮询返回非 2xx：code=%d body=%s", res.StatusCode, strings.TrimSpace(string(b)))
 	}
 
 	var cr ControllerResponse
