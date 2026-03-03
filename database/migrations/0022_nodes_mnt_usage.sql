@@ -1,0 +1,6 @@
+-- 0022_nodes_mnt_usage.sql：节点 /mnt 容量统计
+
+ALTER TABLE nodes
+    ADD COLUMN IF NOT EXISTS mnt_total_gb DOUBLE PRECISION NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS mnt_used_gb DOUBLE PRECISION NOT NULL DEFAULT 0;
+

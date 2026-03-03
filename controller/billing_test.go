@@ -44,3 +44,47 @@ func TestStatusAndActions_GraceKill(t *testing.T) {
 		t.Fatalf("expected kill_process action")
 	}
 }
+
+func TestCalculateProcessCostWithPolicy_PrecedenceAndFallback(t *testing.T) {
+	global := NewPriceIndex([]PriceRow{
+		{Model: "A100", Price: 0.5},
+		{Model: "RTX 3090", Price: 0.2},
+	})
+	nodeModel := NewPriceIndex([]PriceRow{
+		{Model: "A100", Price: 0.8},
+	})
+	nodeUniform := 0.4
+	proc := UserProcess{
+		Username: "u",
+		PID:      1,
+		GPUUsage: []GPUUsage{
+			{GPUModel: "NVIDIA A100-SXM4-80GB"}, // 命中节点按卡型
+			{GPUModel: "NVIDIA RTX 3090"},       // 回退节点统一
+			{GPUModel: "Unknown GPU"},           // 回退节点统一
+		},
+	}
+	got := CalculateProcessCostWithPolicy(proc, nodeModel, &nodeUniform, global, 0.1)
+	want := 1.6 // 0.8 + 0.4 + 0.4
+	if got != want {
+		t.Fatalf("cost=%v want=%v", got, want)
+	}
+}
+
+func TestCalculateProcessCostWithPolicy_GlobalAndDefaultFallback(t *testing.T) {
+	global := NewPriceIndex([]PriceRow{
+		{Model: "RTX 3090", Price: 0.2},
+	})
+	proc := UserProcess{
+		Username: "u",
+		PID:      1,
+		GPUUsage: []GPUUsage{
+			{GPUModel: "NVIDIA RTX 3090"}, // 回退全局型号
+			{GPUModel: "Unknown GPU"},     // 回退默认单价
+		},
+	}
+	got := CalculateProcessCostWithPolicy(proc, NewPriceIndex(nil), nil, global, 0.1)
+	want := 0.3
+	if got != want {
+		t.Fatalf("cost=%v want=%v", got, want)
+	}
+}

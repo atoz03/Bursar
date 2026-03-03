@@ -40,6 +40,7 @@ func main() {
 
 	srv := NewServer(cfg, store)
 	r := srv.Router()
+	srv.StartPointsMonthlyResetScheduler(context.Background())
 
 	log.Printf("控制器启动：listen=%s dry_run=%v", cfg.ListenAddr, cfg.DryRun)
 	if err := r.Run(cfg.ListenAddr); err != nil {

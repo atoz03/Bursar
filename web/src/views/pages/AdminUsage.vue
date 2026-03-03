@@ -2,9 +2,12 @@
   <el-card>
     <template #header>
       <div class="row">
-        <div>
+        <div class="section-title-wrap">
+          <span class="section-icon"><el-icon><DataBoard /></el-icon></span>
+          <div>
           <div class="title">使用记录</div>
           <div class="sub">需要管理员登录：GET /api/admin/usage，GET /api/admin/usage/export.csv</div>
+          </div>
         </div>
         <div class="row">
           <el-button :loading="loading" type="primary" @click="reload">刷新</el-button>
@@ -13,15 +16,15 @@
       </div>
     </template>
 
-    <el-space direction="vertical" fill style="width: 100%">
+    <div class="content-stack">
       <el-alert v-if="error" :title="error" type="error" show-icon />
 
       <el-form inline>
         <el-form-item label="平台账号">
-          <el-input v-model="billingUsername" placeholder="按系统账号查询" @keyup.enter="reload" />
+          <el-input v-model="billingUsername" placeholder="按平台账号查询" @keyup.enter="reload" />
         </el-form-item>
-        <el-form-item label="机器本地账号">
-          <el-input v-model="localUsername" placeholder="按机器账号查询" @keyup.enter="reload" />
+        <el-form-item label="节点账号">
+          <el-input v-model="localUsername" placeholder="按节点账号查询" @keyup.enter="reload" />
         </el-form-item>
         <el-form-item>
           <el-checkbox v-model="unregisteredOnly">仅看未注册偷跑</el-checkbox>
@@ -40,13 +43,18 @@
       <el-table :data="records" stripe height="520" :row-class-name="rowClassName">
         <el-table-column prop="timestamp" label="时间" width="190" sortable />
         <el-table-column prop="node_id" label="节点" width="120" sortable />
-        <el-table-column prop="local_username" label="机器本地账号" width="150" sortable />
-        <el-table-column prop="billing_username" label="系统账号(平台)" width="170" sortable>
+        <el-table-column prop="local_username" label="节点账号" width="150" sortable />
+        <el-table-column prop="billing_username" label="平台账号" width="170" sortable>
           <template #default="{ row }">
-            <span :class="{ unregistered: row.registered === false }">
-              {{ row.billing_username || row.username || "-" }}
-              <span v-if="row.registered === false">（未注册）</span>
-            </span>
+            <el-button
+              v-if="row.registered !== false && (row.billing_username || row.username)"
+              link
+              type="primary"
+              @click="openPlatformProfile(row.billing_username || row.username)"
+            >
+              {{ row.billing_username || row.username }}
+            </el-button>
+            <span v-else class="unregistered">未注册</span>
           </template>
         </el-table-column>
         <el-table-column label="CPU%" width="90" prop="cpu_percent" sortable>
@@ -62,29 +70,63 @@
       </el-table>
 
       <el-card v-if="unregisteredSummary.length > 0">
-        <template #header><b>未注册偷跑汇总</b></template>
+        <template #header>
+          <div class="section-inline-title">
+            <el-icon><WarningFilled /></el-icon>
+            <span>未注册偷跑汇总</span>
+          </div>
+        </template>
         <el-table :data="unregisteredSummary" stripe max-height="260">
-          <el-table-column prop="billing_username" label="系统账号(平台)" width="180" />
-          <el-table-column prop="local_username" label="机器本地账号" width="160" />
+          <el-table-column prop="billing_username" label="平台账号" width="180" />
+          <el-table-column prop="local_username" label="节点账号" width="160" />
           <el-table-column prop="nodes" label="涉及节点" min-width="260" />
           <el-table-column prop="count" label="记录数" width="100" sortable />
+          <el-table-column label="操作" width="170">
+            <template #default="{ row }">
+              <el-button
+                type="danger"
+                size="small"
+                :loading="blacklistingKey === `${row.local_username}::${row.nodes}`"
+                @click="addUnregisteredToBlacklist(row)"
+              >
+                拉黑并断开SSH
+              </el-button>
+            </template>
+          </el-table-column>
         </el-table>
       </el-card>
-    </el-space>
+
+      <el-dialog v-model="userActionsVisible" title="平台账号操作" width="480px">
+        <div style="margin-bottom: 10px">当前账号：<b>{{ selectedPlatformUsername || "-" }}</b></div>
+        <el-space>
+          <el-button type="danger" @click="blockSelectedUser">拉黑</el-button>
+          <el-button type="success" @click="unblockSelectedUser">拉白</el-button>
+          <el-button type="warning" @click="deleteSelectedUser">删除</el-button>
+        </el-space>
+      </el-dialog>
+      <PlatformUserDetailDialog v-model="profileVisible" :username="selectedProfileUsername" />
+    </div>
   </el-card>
 </template>
 
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import { ApiClient, type UsageRecord } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
+import PlatformUserDetailDialog from "../../components/PlatformUserDetailDialog.vue";
+import { DataBoard, WarningFilled } from "@element-plus/icons-vue";
 
 const loading = ref(false);
 const exporting = ref(false);
+const blacklistingKey = ref("");
 const error = ref("");
 const records = ref<UsageRecord[]>([]);
+const userActionsVisible = ref(false);
+const selectedPlatformUsername = ref("");
+const profileVisible = ref(false);
+const selectedProfileUsername = ref("");
 
 const billingUsername = ref("");
 const localUsername = ref("");
@@ -112,7 +154,7 @@ async function reload() {
     records.value = (r.records ?? []).map((x) => ({
       ...x,
       local_username: x.local_username || "-",
-      billing_username: x.billing_username || x.username,
+      billing_username: x.registered === false ? "" : (x.billing_username || x.username || ""),
     }));
   } catch (e: any) {
     error.value = e?.message ?? String(e);
@@ -149,13 +191,13 @@ async function exportCSV() {
 }
 
 const unregisteredSummary = computed(() => {
-  const m = new Map<string, { billing_username: string; local_username: string; nodes: Set<string>; count: number }>();
+  const m = new Map<string, { billing_username: string; local_username: string; nodes: Set<string>; node_ids: string[]; count: number }>();
   for (const r of records.value) {
     if (r.registered !== false) continue;
-    const b = r.billing_username || r.username || "-";
+    const b = "未注册";
     const l = r.local_username || "-";
-    const key = `${b}::${l}`;
-    const item = m.get(key) || { billing_username: b, local_username: l, nodes: new Set<string>(), count: 0 };
+    const key = `${r.username || "-"}::${l}`;
+    const item = m.get(key) || { billing_username: b, local_username: l, nodes: new Set<string>(), node_ids: [], count: 0 };
     item.count += 1;
     if (r.node_id) item.nodes.add(r.node_id);
     m.set(key, item);
@@ -163,6 +205,7 @@ const unregisteredSummary = computed(() => {
   return Array.from(m.values()).map((x) => ({
     billing_username: x.billing_username,
     local_username: x.local_username,
+    node_ids: Array.from(x.nodes).sort(),
     nodes: Array.from(x.nodes).sort().join(", "),
     count: x.count,
   }));
@@ -170,6 +213,116 @@ const unregisteredSummary = computed(() => {
 
 function rowClassName({ row }: { row: UsageRecord }) {
   return row.registered === false ? "unregistered-row" : "";
+}
+
+function openPlatformUserActions(username: string) {
+  selectedPlatformUsername.value = String(username || "").trim();
+  if (!selectedPlatformUsername.value) return;
+  userActionsVisible.value = true;
+}
+
+function openPlatformProfile(username: string) {
+  selectedProfileUsername.value = String(username || "").trim();
+  if (!selectedProfileUsername.value) return;
+  profileVisible.value = true;
+}
+
+async function blockSelectedUser() {
+  const username = selectedPlatformUsername.value;
+  if (!username) return;
+  try {
+    await ElMessageBox.confirm(`确认拉黑平台账号 ${username} 吗？`, "二次确认", { type: "warning", confirmButtonText: "确认拉黑", cancelButtonText: "取消" });
+  } catch {
+    return;
+  }
+  try {
+    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+    await client.adminBlockUser(username);
+    ElMessage.success(`已拉黑：${username}`);
+    userActionsVisible.value = false;
+  } catch (e: any) {
+    error.value = e?.message ?? String(e);
+  }
+}
+
+async function unblockSelectedUser() {
+  const username = selectedPlatformUsername.value;
+  if (!username) return;
+  try {
+    await ElMessageBox.confirm(`确认拉白平台账号 ${username} 吗？`, "二次确认", { type: "warning", confirmButtonText: "确认拉白", cancelButtonText: "取消" });
+  } catch {
+    return;
+  }
+  try {
+    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+    await client.adminUnblockUser(username);
+    ElMessage.success(`已拉白：${username}`);
+    userActionsVisible.value = false;
+  } catch (e: any) {
+    error.value = e?.message ?? String(e);
+  }
+}
+
+async function deleteSelectedUser() {
+  const username = selectedPlatformUsername.value;
+  if (!username) return;
+  try {
+    await ElMessageBox.confirm(`确认删除平台账号 ${username} 吗？`, "二次确认", { type: "warning", confirmButtonText: "确认删除", cancelButtonText: "取消" });
+  } catch {
+    return;
+  }
+  try {
+    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+    await client.adminDeleteUser(username, "从使用记录页面删除");
+    ElMessage.success(`已删除：${username}`);
+    userActionsVisible.value = false;
+  } catch (e: any) {
+    error.value = e?.message ?? String(e);
+  }
+}
+
+async function addUnregisteredToBlacklist(row: { local_username: string; nodes: string; node_ids?: string[] }) {
+  const local = String(row.local_username || "").trim();
+  const nodeIDs = (row.node_ids ?? [])
+    .map((x) => String(x || "").trim())
+    .filter((x) => x && x !== "-");
+  if (!local || !nodeIDs.length) {
+    ElMessage.warning("缺少可用的节点账号或节点ID，无法加入黑名单");
+    return;
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      `确认将节点账号 ${local} 加入黑名单并立刻断开SSH吗？\n涉及节点：${nodeIDs.join(", ")}`,
+      "二次确认",
+      {
+        type: "warning",
+        confirmButtonText: "确认拉黑",
+        cancelButtonText: "取消",
+      },
+    );
+  } catch {
+    return;
+  }
+
+  blacklistingKey.value = `${local}::${row.nodes}`;
+  error.value = "";
+  try {
+    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+    const results = await Promise.allSettled(nodeIDs.map((id) => client.adminUpsertBlacklist(id, [local], [])));
+    const okCount = results.filter((x) => x.status === "fulfilled").length;
+    const failCount = results.length - okCount;
+    if (failCount > 0) {
+      ElMessage.warning(`黑名单已部分生效：成功 ${okCount} 个节点，失败 ${failCount} 个节点`);
+    } else {
+      ElMessage.success(`已拉黑并下发断开SSH：${okCount} 个节点`);
+    }
+    await reload();
+  } catch (e: any) {
+    error.value = e?.message ?? String(e);
+  } finally {
+    blacklistingKey.value = "";
+  }
 }
 
 reload();
@@ -182,8 +335,36 @@ reload();
   justify-content: space-between;
   gap: 12px;
 }
+.content-stack {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
 .title {
   font-weight: 700;
+}
+.section-title-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.section-icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #dbeafe;
+  background: linear-gradient(135deg, #1d4ed8, #2563eb);
+  flex-shrink: 0;
+}
+.section-inline-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 .sub {
   margin-top: 4px;

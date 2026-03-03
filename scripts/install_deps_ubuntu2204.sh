@@ -136,11 +136,30 @@ install_docker() {
 }
 
 summary() {
+  local go_text="not installed"
+  local node_text="not installed"
+  local pnpm_text="not installed"
+  local docker_text="not installed"
+
+  if command -v go >/dev/null 2>&1; then
+    go_text="$(go version 2>/dev/null || echo 'installed')"
+  fi
+  if command -v node >/dev/null 2>&1; then
+    node_text="$(node -v 2>/dev/null || echo 'installed')"
+  fi
+  if command -v pnpm >/dev/null 2>&1; then
+    # 某些环境 Node 版本较低时 pnpm 会报错；这里静默捕获，避免干扰主流程日志。
+    pnpm_text="$(pnpm -v 2>/dev/null || echo 'installed (version unavailable)')"
+  fi
+  if command -v docker >/dev/null 2>&1; then
+    docker_text="$(docker --version 2>/dev/null || echo 'installed')"
+  fi
+
   echo "[6/6] 完成"
-  echo "Go:      $(command -v go >/dev/null 2>&1 && go version || echo 'not installed')"
-  echo "Node:    $(command -v node >/dev/null 2>&1 && node -v || echo 'not installed')"
-  echo "pnpm:    $(command -v pnpm >/dev/null 2>&1 && pnpm -v || echo 'not installed')"
-  echo "Docker:  $(command -v docker >/dev/null 2>&1 && docker --version || echo 'not installed')"
+  echo "Go:      ${go_text}"
+  echo "Node:    ${node_text}"
+  echo "pnpm:    ${pnpm_text}"
+  echo "Docker:  ${docker_text}"
   echo
   echo "如果你刚加入 docker 组，请重新登录 shell 后再执行 docker 命令。"
 }

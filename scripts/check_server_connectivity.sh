@@ -79,6 +79,7 @@ check_one() {
 
   local ssh_cmd=(
     ssh
+    -n
     -i "${key_use_path}"
     -p "${port}"
     -o BatchMode=yes

@@ -9,6 +9,7 @@ export type AuthState = {
   role: string;
   canViewBoard: boolean;
   canViewNodes: boolean;
+  canManageNodes: boolean;
   canReviewRequests: boolean;
   csrfToken: string;
   expiresAt: string;
@@ -21,6 +22,7 @@ export const authState = reactive<AuthState>({
   role: "",
   canViewBoard: false,
   canViewNodes: false,
+  canManageNodes: false,
   canReviewRequests: false,
   csrfToken: "",
   expiresAt: "",
@@ -35,6 +37,7 @@ export async function refreshAuth(): Promise<void> {
   authState.role = me.role ?? "";
   authState.canViewBoard = !!me.can_view_board;
   authState.canViewNodes = !!me.can_view_nodes;
+  authState.canManageNodes = !!me.can_manage_nodes;
   authState.canReviewRequests = !!me.can_review_requests;
   authState.csrfToken = me.csrf_token ?? "";
   authState.expiresAt = me.expires_at ?? "";

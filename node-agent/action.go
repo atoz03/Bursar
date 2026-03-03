@@ -7,8 +7,10 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -40,9 +42,9 @@ func (a *NodeAgent) ExecuteAction(ctx context.Context, action Action) error {
 	case "notify":
 		return a.writeNotice(action.Username, action.Message)
 	case "block_user":
-		return a.blockUserGPUAccess(action.Username, action.Reason)
+		return a.blockUserGPUAccess(ctx, action.Username, action.Reason)
 	case "unblock_user":
-		return a.unblockUserGPUAccess(action.Username)
+		return a.unblockUserGPUAccess(ctx, action.Username)
 	case "set_cpu_quota":
 		return a.setUserCPUQuota(ctx, action.Username, action.CPUQuotaPercent, action.Reason)
 	case "kill_process":
@@ -51,9 +53,134 @@ func (a *NodeAgent) ExecuteAction(ctx context.Context, action Action) error {
 		return a.kickAllSSH(ctx, action.Reason)
 	case "kick_ssh_user":
 		return a.kickSSHUser(ctx, action.Username, action.Reason)
+	case "kill_all_processes":
+		return a.killAllProcessesByUser(ctx, action.Username, action.Reason)
+	case "kill_all_user_processes":
+		return a.killAllUserProcesses(ctx, action.Reason)
+	case "force_sync":
+		a.triggerForceSync(action.Reason)
+		return nil
+	case "create_local_account":
+		return a.createLocalAccount(ctx, action.Username, action.PublicKey, action.Reason)
 	default:
 		return fmt.Errorf("未知 action.type：%s", action.Type)
 	}
+}
+
+var localUsernamePattern = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+
+func (a *NodeAgent) createLocalAccount(ctx context.Context, username string, publicKey string, reason string) error {
+	username = strings.TrimSpace(username)
+	publicKey = strings.TrimSpace(publicKey)
+	if username == "" {
+		return errors.New("username 不能为空")
+	}
+	if !localUsernamePattern.MatchString(username) {
+		return fmt.Errorf("非法本地账号名：%s", username)
+	}
+	if publicKey == "" {
+		return errors.New("public_key 不能为空")
+	}
+	if !strings.HasPrefix(publicKey, "ssh-ed25519 ") {
+		return errors.New("public_key 格式不合法，仅支持 ssh-ed25519")
+	}
+
+	// 幂等：账号已存在时不重复 useradd，但仍会刷新 authorized_keys，确保密钥可更新。
+	userExists := exec.CommandContext(ctx, "id", "-u", username).Run() == nil
+	if !userExists {
+		if out, err := exec.CommandContext(ctx, "useradd", "-m", "-s", "/bin/bash", username).CombinedOutput(); err != nil {
+			// 兜底：竞态下可能已被其它流程创建。
+			if checkErr := exec.CommandContext(ctx, "id", "-u", username).Run(); checkErr == nil {
+				userExists = true
+				log.Printf("执行 create_local_account：user=%s race-created reason=%s", username, strings.TrimSpace(reason))
+			} else {
+				return fmt.Errorf("useradd 失败：%w out=%s", err, strings.TrimSpace(string(out)))
+			}
+		}
+	}
+
+	sysUser, err := user.Lookup(username)
+	if err != nil {
+		return fmt.Errorf("查询系统账号失败：%w", err)
+	}
+	uid, err := strconv.Atoi(sysUser.Uid)
+	if err != nil {
+		return fmt.Errorf("解析 uid 失败：%w", err)
+	}
+	gid, err := strconv.Atoi(sysUser.Gid)
+	if err != nil {
+		return fmt.Errorf("解析 gid 失败：%w", err)
+	}
+	homeDir := strings.TrimSpace(sysUser.HomeDir)
+	if homeDir == "" {
+		homeDir = filepath.Join("/home", username)
+	}
+	sshDir := filepath.Join(homeDir, ".ssh")
+	authFile := filepath.Join(sshDir, "authorized_keys")
+
+	if err := os.MkdirAll(sshDir, 0700); err != nil {
+		return fmt.Errorf("创建 .ssh 目录失败：%w", err)
+	}
+	if err := os.Chown(sshDir, uid, gid); err != nil {
+		return fmt.Errorf("设置 .ssh 目录属主失败：%w", err)
+	}
+	if err := os.Chmod(sshDir, 0700); err != nil {
+		return fmt.Errorf("设置 .ssh 目录权限失败：%w", err)
+	}
+	if err := os.WriteFile(authFile, []byte(publicKey+"\n"), 0600); err != nil {
+		return fmt.Errorf("写入 authorized_keys 失败：%w", err)
+	}
+	if err := os.Chown(authFile, uid, gid); err != nil {
+		return fmt.Errorf("设置 authorized_keys 属主失败：%w", err)
+	}
+	if err := os.Chmod(authFile, 0600); err != nil {
+		return fmt.Errorf("设置 authorized_keys 权限失败：%w", err)
+	}
+
+	if userExists {
+		log.Printf("执行 create_local_account：user=%s already-exists key-updated home=%s reason=%s", username, homeDir, strings.TrimSpace(reason))
+	} else {
+		log.Printf("执行 create_local_account：user=%s created key-updated home=%s reason=%s", username, homeDir, strings.TrimSpace(reason))
+	}
+	return nil
+}
+
+func (a *NodeAgent) killAllProcessesByUser(ctx context.Context, username string, reason string) error {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return errors.New("username 不能为空")
+	}
+	if username == "root" {
+		return nil
+	}
+	cmd := exec.CommandContext(ctx, "pkill", "-KILL", "-u", username)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		// pkill 返回 1 表示没有匹配进程，不视为失败。
+		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 1 {
+			log.Printf("执行 kill_all_processes：user=%s no-process reason=%s", username, strings.TrimSpace(reason))
+			return nil
+		}
+		return fmt.Errorf("pkill 失败：%w out=%s", err, strings.TrimSpace(string(out)))
+	}
+	log.Printf("执行 kill_all_processes：user=%s reason=%s", username, strings.TrimSpace(reason))
+	return nil
+}
+
+func (a *NodeAgent) killAllUserProcesses(ctx context.Context, reason string) error {
+	exempt := loadSSHExemptUsers()
+	users := loadHomeUsers()
+	killedUsers := 0
+	for _, username := range users {
+		if _, ok := exempt[username]; ok {
+			continue
+		}
+		if err := a.killAllProcessesByUser(ctx, username, reason); err == nil {
+			killedUsers++
+		}
+	}
+	log.Printf("执行 kill_all_user_processes：affected_users=%d reason=%s", killedUsers, strings.TrimSpace(reason))
+	return nil
 }
 
 func (a *NodeAgent) kickAllSSH(ctx context.Context, reason string) error {
@@ -147,7 +274,7 @@ func (a *NodeAgent) writeNotice(username string, message string) error {
 	return os.WriteFile(noticeFile, []byte(content), 0644)
 }
 
-func (a *NodeAgent) blockUserGPUAccess(username string, reason string) error {
+func (a *NodeAgent) blockUserGPUAccess(ctx context.Context, username string, reason string) error {
 	username = strings.TrimSpace(username)
 	if username == "" {
 		return errors.New("username 不能为空")
@@ -157,10 +284,17 @@ func (a *NodeAgent) blockUserGPUAccess(username string, reason string) error {
 	if strings.TrimSpace(reason) == "" {
 		reason = "余额不足，限制新 GPU 任务"
 	}
-	return os.WriteFile(flagFile, []byte(reason+"\n"), 0644)
+	if err := os.WriteFile(flagFile, []byte(reason+"\n"), 0644); err != nil {
+		return err
+	}
+	if err := setUserGPUAccessByCgroup(ctx, username, false); err != nil {
+		// cgroup 失败时保留原有标记文件，避免动作完全失效。
+		log.Printf("设置 GPU cgroup 限制失败：user=%s err=%v", username, err)
+	}
+	return nil
 }
 
-func (a *NodeAgent) unblockUserGPUAccess(username string) error {
+func (a *NodeAgent) unblockUserGPUAccess(ctx context.Context, username string) error {
 	username = strings.TrimSpace(username)
 	if username == "" {
 		return errors.New("username 不能为空")
@@ -168,6 +302,9 @@ func (a *NodeAgent) unblockUserGPUAccess(username string) error {
 	flagFile := filepath.Join("/home", username, ".gpu_blocked")
 	if err := os.Remove(flagFile); err != nil && !os.IsNotExist(err) {
 		return err
+	}
+	if err := setUserGPUAccessByCgroup(ctx, username, true); err != nil {
+		log.Printf("解除 GPU cgroup 限制失败：user=%s err=%v", username, err)
 	}
 	return nil
 }

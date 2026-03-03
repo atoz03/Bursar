@@ -1,128 +1,221 @@
-# 管理员指南（部署与运营）
+# 📘 管理员查阅手册（功能与安全规则）
 
-建议先阅读：`docs/runbook.md`（一步步上线运行手册）。
+面向对象：管理员 / 高级用户（具备部分后台权限）。
 
-## 1. 组件清单
+目标：让你快速熟悉各模块职责、核心操作、安全机制和触发规则。
 
-- 控制器：`controller/`（建议部署在中转机/控制节点）
-- 节点 Agent：`node-agent/`（部署在所有 GPU 计算节点，建议以 root 运行）
-- 数据库：PostgreSQL（建议独立实例/主备）
-- Hook：`tools/check_quota.sh`（部署到各节点 `/opt/gpu-cluster/` 并写入用户 `.bashrc`）
+---
 
-## 2. 关键配置
+## 🧭 目录
 
-配置文件示例：`config/controller.yaml`
+- [1. 角色与权限](#1-角色与权限)
+- [2. 后台模块速览](#2-后台模块速览)
+- [3. 各模块功能说明](#3-各模块功能说明)
+- [4. 什么是“疑似恶意用户”](#4-什么是疑似恶意用户)
+- [5. 已上线安全措施与防护范围](#5-已上线安全措施与防护范围)
+- [6. 安全规则阈值速查表](#6-安全规则阈值速查表)
+- [7. 常见处置流程（建议）](#7-常见处置流程建议)
+- [8. 手册维护约定（随代码更新）](#8-手册维护约定随代码更新)
 
-重点字段：
-- `database_dsn`：PostgreSQL 连接串
-- `agent_token`：保护 `/api/metrics`，防止伪造上报
-- `admin_token`：保护管理员接口与充值
-- `auth_secret`：Web 登录会话签名密钥（启用会话时必填，建议强随机）
-- `session_hours`：Web 登录会话有效期（小时；0 表示禁用会话，仅保留 Bearer admin_token）
-- `cpu_price_per_core_minute`：CPU 单价（核分钟）
-- `enable_cpu_control`：是否启用 CPU 限流动作
-- `cpu_limit_percent_limited / cpu_limit_percent_blocked`：CPU 限流百分比（0 表示解除限制）
-- `kill_grace_period_seconds`：欠费 kill 宽限期（秒）
+---
 
-## 2.1 Web 管理端登录（上线必做）
+## 1. 角色与权限
 
-1) 用 `admin_token` 初始化管理员账号（只允许一次）：
-- `POST /api/admin/bootstrap`
+### 👑 管理员（`admin`）
+- 可访问全部后台模块。
+- 负责节点策略、积分、注册审核、账号映射、安全处置、邮件配置、容灾配置等。
 
-2) 浏览器访问：
-- `/login` 登录
-- `/` 进入管理页
+### 🧩 高级用户（`power_user`）
+- 只可访问被授权的后台能力：
+  - `canViewBoard`：运营看板
+  - `canViewNodes`：节点状态
+  - `canReviewRequests`：注册审核
 
-说明：
-- Web 管理端不需要粘贴 token；使用 HttpOnly cookie 会话。
-- cookie 会话访问管理员接口时，非 GET 需要 `X-CSRF-Token`（前端已自动处理；脚本调用见 `docs/api-reference.md`）。
+---
 
-## 3. CPU 控制兼容性（重点）
+## 2. 后台模块速览
 
-Agent 的 CPU 限流实现为三段兜底：
-1) systemd：`systemctl set-property --runtime user-<uid>.slice CPUQuota=...`
-2) cgroup v2：写 `cpu.max`（并尝试把该用户进程写入 `cgroup.procs`）
-3) cgroup v1：写 `cpu.cfs_period_us/cpu.cfs_quota_us`（并把该用户进程 PID 写入 `tasks`）
+### 📊 运营分析
+- 运营看板：`/admin/board`
+- 使用记录：`/admin/usage`
+- 排队队列：`/admin/queue`
 
-要求：
-- Agent 需要以 root 运行（写 cgroup 与迁移进程需要权限）
-- 机器上需要至少具备 systemd 或 cgroup cpu controller（v1/v2 任一）
+### 🖥️ 资源管理
+- 节点状态：`/admin/nodes`
 
-## 4. 计费幂等（防重复扣费）
+### 💰 积分管理
+- 积分管理：`/admin/points`
 
-Agent 每次上报携带 `report_id`（随机 128bit），控制器写入 `metric_reports` 表做幂等：
-- 若同一个 `report_id` 重复上报，控制器直接忽略，不落库、不扣费、不下发动作
+### 👥 账号与访问
+- 平台用户管理：`/admin/users`
+- 账号映射：`/admin/accounts`
+- 平台账号注册审核：`/admin/requests`
+- 高级用户管理：`/admin/power-users`
+- SSH 名单（白名单/黑名单/豁免）：`/admin/whitelist`
 
-数据库迁移：`database/migrations/0003_metric_reports.sql`
+### ⚙️ 系统与容灾
+- 容灾同步：`/admin/ha`
+- 公告管理：`/admin/announcements`
+- 用户准则：`/admin/guideline`
+- 管理员记事本：`/admin/notebook`
+- 邮件设置：`/admin/mail`
+- 个人信息：`/admin/profile`
+- 修改密码：`/admin/change-password`
 
-## 5. 建议上线步骤（试点到全量）
+---
 
-1) 中转机部署控制器与数据库（先 `dry_run=true` 观察 1-3 天）
-2) 选择 2-3 台节点部署 Agent + Hook，邀请少量用户试用
-3) 根据数据校验与用户反馈调整单价/阈值
-4) 全量部署到 24 台节点
+## 3. 各模块功能说明
 
-## 6. 常用脚本
+### 📊 运营分析
+- 运营看板：看总体用户、节点、用量、积分变化趋势。
+- 使用记录：按平台账号/节点账号筛选，支持导出 CSV 对账。
+- 排队队列：查看任务排队与资源等待情况。
 
-- `scripts/build_linux.sh`：构建 Linux 二进制（输出到 `bin/`）
-- `scripts/deploy_agent.sh`：批量部署 Agent（示例）
-- `scripts/deploy_controller.sh`：部署控制器（示例）
-- `scripts/deploy_hook.sh`：部署 Hook 到所有用户（示例）
-- `scripts/check_status.sh`：接口自检（示例）
-- `scripts/node_prereq_check.sh`：计算节点前置检查（systemd/cgroup/GPU）
+### 🖥️ 节点状态（重点）
+- 节点在线与资源监控：心跳、CPU/GPU 进程数、磁盘与流量。
+- 节点策略开关：
+  - SSH 拦截（未注册拦截）
+  - 积分拦截（是否扣分与限速）
+  - 单卡积分（仅按节点单独设置）
+  - 独享用户
+  - 可见性（限定哪些高级用户可见）
+- 运维动作：
+  - 立即同步
+  - 踢 SSH
+  - 清用户进程
+- 安全视图：
+  - 节点列表风险标识（节点 ID 旁 emoji：`🚨/⚠️`）
+  - 页面顶部风险条幅（汇总近 7 天有风险的机器，可直接点击进入详情）
+  - 疑似恶意用户名单（近 7 天）
+  - 安全审计日志（节点维度）
 
-## 7. 上线后常用接口
+### 💰 积分管理
+- 单用户积分调整（支持通用积分/结转积分/专属积分）。
+- 全体加减积分（对象应显示“全部用户”）。
+- 月初重置（博士/硕士/其他规则 + 特殊用户覆盖）。
+- 月度结转（上月未用完通用积分可结转到本月，受“结转上限”约束；该上限是结转池累计上限，不是每月新增上限）。
+- 扣费优先级：节点专属积分 -> 结转积分 -> 通用积分。
+- 节点专属积分不参与月度结转，也不会按月过期。
+- 积分操作记录追溯（时间、操作、对象、变动值、积分类型）。
 
-- 节点在线状态：`GET /api/admin/nodes`
-- 使用记录查询：`GET /api/admin/usage`
-- 使用记录导出：`GET /api/admin/usage/export.csv`
+### 👥 账号与访问
+- 平台用户管理：用户状态、拉黑/解黑、删除/恢复、重复身份排查。
+- 账号映射管理：平台账号与节点账号绑定关系维护。
+- 节点账号开通：
+  - 支持开通并发送“平台内密文 + 邮件提取码”
+  - 若账号已映射到同一平台用户，可二次确认“重新生成新密钥并重发”
+- 注册审核：待审、冲突、退回、资料变更审核。
+- SSH 名单：白名单、黑名单、豁免名单统一管理。
 
-## 7.1 用户注册/开号审核（新增）
+### ⚙️ 系统与容灾
+- 邮件配置与批量通知发送。
+- 容灾状态查看与主备一致性核查。
+- 公告/用户准则统一发布。
+- 管理员记事本用于运营留痕。
 
-用户自助在 Web「用户注册」页面提交：
-- 账号绑定登记（bind）：把 `(node_id, local_username)` 绑定到 `billing_username`，用于扣费映射与 SSH 校验
-- 开号申请（open）：仅用于记录与流程（不自动创建系统账号）
+---
 
-管理员处理方式（二选一）：
-1) Web 管理端：`管理功能 -> 注册审核`
-2) API：
-   - 查看：`GET /api/admin/requests?status=pending`
-   - 通过：`POST /api/admin/requests/:id/approve`
-   - 拒绝：`POST /api/admin/requests/:id/reject`
+## 4. 什么是“疑似恶意用户”
 
-## 8. 前端构建（Vue3）
+### 🚨 定义
+“疑似恶意用户”不是手工标签，而是系统根据安全事件自动聚合得到：
 
-前端在 `web/`，使用 `pnpm`：
+- 数据源：`node_security_events`
+- 统计窗口：近 7 天
+- 统计维度：按 `node_id + username` 聚合
+- 输出字段：
+  - `hit_count`：触发次数
+  - `last_seen_at`：最近触发时间
+  - `reason_hints`：自动理由汇总
+  - `phenomena`：疑似现象（如疑似挖矿/SSH爆破等）
+  - `mining_suspected`：是否命中过疑似挖矿事件
 
-```bash
-cd web
-pnpm install
-pnpm build
-```
+### 🧠 重要理解
+- 只有“事件中带相关用户名”的安全事件会进入“疑似恶意用户名单”。
+- 例如端口扫描事件通常没有用户名，只会在“安全审计日志”中出现，不一定出现在“疑似恶意用户名单”。
 
-构建产物在 `web/dist/`，可由控制器托管（配置 `web_dir`）。
+---
 
-## 9. 计算节点：未登记禁止 SSH 登录（可选，强管控）
+## 5. 已上线安全措施与防护范围
 
-本仓库示例脚本 `scripts/deploy_agent.sh` 支持可选安装 SSH 登录拦截：
-- 规则：若本地用户名未在控制器登记通过（`user_node_accounts`），则禁止 SSH 登录
-- 例外：可配置排除用户（默认 `root gpuops xqt`）
+| 安全措施 | 作用 | 可防范问题 |
+|---|---|---|
+| 🔐 `agent_token` 鉴权（Agent上报） | 保护 `/api/metrics` | 防伪造节点上报、注入假用量 |
+| 🧾 会话 + CSRF 保护（Web 管理接口） | 非 GET 需 CSRF | 防跨站伪造后台操作 |
+| 🚪 SSH 拦截策略 | 未注册账号可被拦截 | 防未登记账号绕过平台管理 |
+| 📃 SSH 白/黑/豁免名单 | 精细化准入控制 | 防违规账号持续登录 |
+| 🧪 可疑行为审计（安全事件） | 自动识别并留痕 | 防挖矿、爆破、扫描、资源滥用漏检 |
+| ⛔ 节点动作处置（踢SSH/清进程） | 管理端即时干预 | 防攻击持续扩散、快速止血 |
+| 💿 磁盘打满风险检测 | 容量异常预警 | 防服务雪崩、节点不可写 |
+| 🧮 积分拦截 + 低余额限制 | 余额不足限制计算行为 | 防无成本滥用资源 |
+| 🔁 安全事件冷却去重 | 同类事件限频写入 | 防日志风暴、告警淹没 |
 
-推荐部署方式：
+---
 
-1) 先确保节点 Agent 上报的 `NODE_ID` 是机器编号（推荐用端口号，例如 `60000`）
-2) 启用 SSH Guard 并按“机器编号:IP”方式传入节点列表：
+## 6. 安全规则阈值速查表
 
-```bash
-export CONTROLLER_URL="http://controller:8000"
-export AGENT_TOKEN="dev-agent-token"
-export NODES="60000:192.0.2.10 60001:192.0.2.10"
-export ENABLE_SSH_GUARD=1
-export SSH_GUARD_EXCLUDE_USERS="root gpuops xqt"
-export SSH_GUARD_FAIL_OPEN=1   # 控制器不可达时是否放行（1=放行；0=拒绝）
-bash scripts/deploy_agent.sh
-```
+> 以下规则为当前代码实际实现值。
 
-注意：
-- 节点需要 `curl`（同步 allowlist）；且系统启用 PAM（`/etc/pam.d/sshd` 存在，且支持 `pam_exec.so`）。
-- 这是高风险变更，建议先在 1-2 台节点试点验证再全量推开。
+| 事件类型 | 触发条件 | 严重级别 | 冷却时间 |
+|---|---|---|---|
+| `suspected_mining`（疑似挖矿） | 进程命令行命中挖矿特征关键词（如 `xmrig`、`cpuminer`、`minerd`、`ethminer`、`lolminer`、`nbminer`、`stratum`、`randomx`、`ethash` 等） | `critical` | 2 分钟 |
+| `high_cpu_load`（高CPU负载） | 节点 CPU 总负载 `>= 95%` | `warning` | 5 分钟 |
+| `ssh_failed_login_spike`（失败峰值） | 5 分钟内 SSH 失败登录次数 `> 20` | `critical` | 2 分钟 |
+| `ssh_bruteforce`（SSH爆破） | Agent 安全信号检测到爆破 | `critical` | 2 分钟 |
+| `abnormal_port_scan`（端口扫描） | Agent 安全信号检测到端口扫描 | `critical` | 2 分钟 |
+| `disk_full_risk`（磁盘打满风险） | `/`、`/home`、`/mnt` 任一分区：已用率 `>= 98%` 或剩余空间 `<= 1GB` | `critical` | 10 分钟 |
+
+### 📌 “疑似恶意用户名单”生成规则
+- 统计窗口：7 天
+- 默认上限：200 条（节点详情）/ 500 条（安全事件页）
+- `mining_suspected = true` 条件：该用户在窗口内命中过 `suspected_mining`
+
+---
+
+## 7. 常见处置流程（建议）
+
+### 🧯 发现疑似挖矿
+1. 进入节点详情，查看“疑似恶意用户名单”和“安全审计日志”。
+2. 点击“查看详细”核对命令样本与触发理由。
+3. 立即执行：拉黑账号 + 踢 SSH + 清进程。
+4. 检查该账号映射关系和近期积分消耗。
+5. 必要时通知用户并冻结相关账号。
+
+### 🔒 SSH 攻击突增
+1. 查看 `ssh_failed_login_spike` / `ssh_bruteforce` 事件。
+2. 对可疑来源和账号执行黑名单策略。
+3. 确认该节点 SSH 拦截策略是否开启。
+4. 复核白名单/豁免名单，避免误开后门。
+
+### 💿 磁盘接近打满
+1. 查看 `disk_full_risk` 事件详情（分区与剩余空间）。
+2. 在节点详情定位高占用用户（`/home` 占用）。
+3. 联系用户清理或管理员代清理，必要时暂时限制账号。
+
+---
+
+## 8. 手册维护约定（随代码更新）
+
+### ✅ 维护原则
+- 只要后台模块、权限、安全规则、阈值、处置动作发生变化，必须同步更新本手册。
+
+### 🛠️ 触发更新的代码范围
+- `web/src/views/pages/Admin*.vue`（后台页面功能变更）
+- `web/src/router/index.ts`、`web/src/views/Layout.vue`（菜单与权限入口变更）
+- `controller/api.go`、`controller/database.go`（安全规则、阈值、事件逻辑变更）
+- `config/controller.yaml`（策略参数含义变更）
+
+### 📋 每次发布前最少检查
+1. 菜单路径与模块描述是否一致。
+2. 安全阈值表是否与代码一致（时间窗口、次数、百分比、冷却）。
+3. “疑似恶意用户”定义与字段说明是否一致。
+4. 新增/删除后台功能是否补充到本手册目录。
+
+---
+
+## 🔗 相关文档
+
+- `docs/runbook.md`：上线运行手册
+- `docs/api-reference.md`：API 参考
+- `docs/user-guide.md`：用户手册
+- `README.md`：部署与常用命令总览

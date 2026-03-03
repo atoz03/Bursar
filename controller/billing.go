@@ -57,6 +57,34 @@ func CalculateProcessCost(proc UserProcess, prices PriceIndex, defaultPricePerMi
 	return math.Round(cost*10000) / 10000
 }
 
+// CalculateProcessCostWithPolicy 计算“节点策略 + 全局价格”下的 GPU 费用。
+// 优先级：节点按卡型单价 > 节点统一单价 > 全局 GPU 型号单价 > 默认单价。
+func CalculateProcessCostWithPolicy(
+	proc UserProcess,
+	nodeModelPrices PriceIndex,
+	nodePricePerMinute *float64,
+	globalPrices PriceIndex,
+	defaultPricePerMinute float64,
+) float64 {
+	cost := 0.0
+	for _, g := range proc.GPUUsage {
+		if p, ok := nodeModelPrices.MatchPrice(g.GPUModel); ok {
+			cost += p
+			continue
+		}
+		if nodePricePerMinute != nil {
+			cost += *nodePricePerMinute
+			continue
+		}
+		if p, ok := globalPrices.MatchPrice(g.GPUModel); ok {
+			cost += p
+			continue
+		}
+		cost += defaultPricePerMinute
+	}
+	return math.Round(cost*10000) / 10000
+}
+
 func StatusForBalance(balance, warningThreshold, limitedThreshold float64) string {
 	if balance < 0 {
 		return "blocked"
@@ -110,6 +138,11 @@ func DecideActions(now time.Time, prevStatus string, user User, warningThreshold
 	case "blocked":
 		// 首次进入 blocked 先提醒，超过宽限期再 kill
 		if prevStatus != "blocked" {
+			actions = append(actions, Action{
+				Type:     "block_user",
+				Username: user.Username,
+				Reason:   formatBalanceMessage("已欠费，限制新 GPU 任务", user.Balance),
+			})
 			actions = append(actions, Action{
 				Type:     "notify",
 				Username: user.Username,

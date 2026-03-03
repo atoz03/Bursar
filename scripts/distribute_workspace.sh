@@ -12,6 +12,7 @@ PROJECT_DIR_NAME="${PROJECT_DIR_NAME:-$(basename "${ROOT_DIR}")}"
 TARGET_BASE="${TARGET_BASE:-/home}"
 SSH_TIMEOUT="${SSH_TIMEOUT:-10}"
 DRY_RUN="${DRY_RUN:-0}"
+PARALLEL="${PARALLEL:-6}"
 
 if [[ ! -f "${MAP_FILE}" ]]; then
   echo "映射表不存在：${MAP_FILE}" >&2
@@ -26,6 +27,7 @@ fi
 echo "SOURCE_DIR=${SOURCE_DIR}"
 echo "MAP_FILE=${MAP_FILE}"
 echo "TARGET=<${TARGET_BASE}>/<用户名>/${PROJECT_DIR_NAME}"
+echo "PARALLEL=${PARALLEL}"
 
 copy_one() {
   local txt_file="$1"
@@ -71,6 +73,7 @@ copy_one() {
 
   local target_dir="${TARGET_BASE}/${user}/${PROJECT_DIR_NAME}"
   local ssh_cmd=(ssh -i "${key_use_path}" -p "${port}" -o StrictHostKeyChecking=no -o ConnectTimeout="${SSH_TIMEOUT}" "${user}@${ip}")
+  local ssh_cmd_no_stdin=(ssh -n -i "${key_use_path}" -p "${port}" -o StrictHostKeyChecking=no -o ConnectTimeout="${SSH_TIMEOUT}" "${user}@${ip}")
 
   echo "[COPY][${node_id}] ${user}@${ip}:${target_dir}"
 
@@ -81,7 +84,7 @@ copy_one() {
     return 0
   fi
 
-  "${ssh_cmd[@]}" "mkdir -p '${target_dir}'"
+  "${ssh_cmd_no_stdin[@]}" "mkdir -p '${target_dir}'"
 
   tar -C "${SOURCE_DIR}" \
     --exclude='.git' \
@@ -99,9 +102,25 @@ copy_one() {
   fi
 }
 
+wait_for_slot() {
+  local limit="$1"
+  while true; do
+    local running
+    running="$(jobs -rp | wc -l | tr -d ' ')"
+    if [[ -z "${running}" ]]; then
+      running=0
+    fi
+    if (( running < limit )); then
+      break
+    fi
+    sleep 0.1
+  done
+}
+
 # 读取 CSV（跳过表头）
 # 列：txt文件名,端口号,内部ip,节点id,txt对应的用户名
-while IFS=',' read -r txt_file port ip node_id user; do
+job_pids=()
+while IFS=',' read -r txt_file port ip node_id user <&3; do
   if [[ "${txt_file}" == "txt文件名" ]]; then
     continue
   fi
@@ -116,7 +135,22 @@ while IFS=',' read -r txt_file port ip node_id user; do
     continue
   fi
 
-  copy_one "${txt_file}" "${port}" "${ip}" "${node_id}" "${user}"
-done < "${MAP_FILE}"
+  wait_for_slot "${PARALLEL}"
+  (
+    copy_one "${txt_file}" "${port}" "${ip}" "${node_id}" "${user}"
+  ) &
+  job_pids+=("$!")
+done 3< "${MAP_FILE}"
 
+fail_count=0
+for pid in "${job_pids[@]}"; do
+  if ! wait "${pid}"; then
+    fail_count=$((fail_count + 1))
+  fi
+done
+
+if (( fail_count > 0 )); then
+  echo "全部处理完成，但有 ${fail_count} 个任务失败。" >&2
+  exit 1
+fi
 echo "全部处理完成。"

@@ -1,31 +1,32 @@
 :root {
-  --primary-color: #1d4ed8;
-  --primary-light: #2563eb;
-  --primary-dark: #1e40af;
-  --primary-gradient: linear-gradient(135deg, #0ea5e9 0%, #1d4ed8 55%, #1e3a8a 100%);
+  --primary-color: #0b7cff;
+  --primary-color-hover: #1d4ed8;
+  --primary-light: #38bdf8;
+  --primary-dark: #1e3a8a;
+  --primary-gradient: linear-gradient(135deg, #22d3ee 0%, #0b7cff 58%, #2563eb 100%);
 
-  --bg-primary: #f4f7fb;
+  --bg-primary: #edf5ff;
   --bg-secondary: #ffffff;
-  --bg-tertiary: #eef2f7;
+  --bg-tertiary: #eaf3ff;
   --bg-card: #ffffff;
-  --bg-hover: #eaf2ff;
+  --bg-hover: #e3f0ff;
 
   --text-primary: #0f172a;
   --text-secondary: #334155;
   --text-tertiary: #64748b;
   --text-muted: #94a3b8;
 
-  --border-color: #dbe3ef;
-  --border-light: #cbd5e1;
+  --border-color: #d7e2f0;
+  --border-light: #e2e8f0;
 
   --success-color: #16a34a;
   --warning-color: #d97706;
   --error-color: #dc2626;
-  --info-color: #0284c7;
+  --info-color: #0f766e;
 
-  --shadow-sm: 0 1px 2px rgba(2, 6, 23, 0.08);
-  --shadow-md: 0 8px 20px rgba(15, 23, 42, 0.08);
-  --shadow-lg: 0 16px 30px rgba(15, 23, 42, 0.12);
+  --shadow-sm: 0 2px 8px rgba(15, 23, 42, 0.06);
+  --shadow-md: 0 10px 24px rgba(15, 23, 42, 0.08);
+  --shadow-lg: 0 16px 32px rgba(15, 23, 42, 0.1);
 
   --radius-sm: 6px;
   --radius-md: 10px;
@@ -43,32 +44,311 @@ html, body, #app {
 
 body {
   font-family: "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
-  background: var(--bg-primary);
+  background:
+    radial-gradient(1100px 620px at -10% -10%, rgba(56, 189, 248, 0.28), transparent 62%),
+    radial-gradient(980px 560px at 120% 0%, rgba(59, 130, 246, 0.26), transparent 64%),
+    radial-gradient(900px 520px at 50% 120%, rgba(34, 211, 238, 0.16), transparent 66%),
+    linear-gradient(160deg, #eef7ff 0%, #edf5ff 46%, #f8fbff 100%);
   color: var(--text-primary);
+  background-attachment: fixed;
 }
 
 .el-card {
+  background: var(--bg-card) !important;
   border-color: var(--border-color) !important;
+  border-width: 1px !important;
   border-radius: var(--radius-lg) !important;
-  box-shadow: var(--shadow-sm) !important;
+  box-shadow: var(--shadow-md) !important;
+  transition: box-shadow 0.22s ease, border-color 0.22s ease, transform 0.22s ease;
+}
+
+.el-card:hover {
+  box-shadow: var(--shadow-lg) !important;
 }
 
 .el-card__header {
+  background: #f7fbff;
   border-bottom-color: var(--border-color) !important;
 }
 
 .el-table th.el-table__cell {
-  background: #f1f5fb !important;
+  background: var(--bg-tertiary) !important;
   color: #0f172a !important;
 }
 
+.el-table,
+.el-table tr,
+.el-table td.el-table__cell,
+.el-table__inner-wrapper {
+  background: #ffffff !important;
+}
+
+.el-table--striped .el-table__body tr.el-table__row--striped td.el-table__cell {
+  background: #f8fbff !important;
+}
+
+.el-dialog,
+.el-drawer {
+  background: #ffffff !important;
+  box-shadow: 0 22px 44px rgba(15, 23, 42, 0.16) !important;
+}
+
+.el-dialog__header,
+.el-drawer__header {
+  border-bottom: 1px solid var(--border-color);
+}
+
 .el-menu-item.is-active {
-  background: #e0ecff !important;
-  color: #1d4ed8 !important;
+  background: transparent !important;
+  color: var(--primary-color) !important;
   border-radius: 8px;
 }
 
-.el-button--primary {
+.el-button--primary:not(.is-link):not(.is-text) {
   background: var(--primary-gradient) !important;
   border: none !important;
+}
+
+.md-math-inline {
+  color: #0f172a;
+  font-family: "Times New Roman", "Noto Serif", serif;
+  padding: 0 2px;
+  white-space: nowrap;
+}
+
+.md-math-block {
+  margin: 10px 0;
+  padding: 8px 10px;
+  border-left: 3px solid #cbd5e1;
+  border-radius: 8px;
+  background: #f8fafc;
+  overflow-x: auto;
+  color: #0f172a;
+  font-family: "Times New Roman", "Noto Serif", serif;
+}
+
+.user-fun-page {
+  position: relative;
+  min-height: 72vh;
+  overflow: hidden;
+  border-radius: 24px;
+  padding: 14px;
+  background:
+    radial-gradient(950px 520px at -8% -18%, rgba(249, 115, 22, 0.22), transparent 62%),
+    radial-gradient(900px 520px at 108% 118%, rgba(14, 165, 233, 0.2), transparent 62%),
+    linear-gradient(160deg, #fff7ed 0%, #fefce8 34%, #ecfeff 100%);
+  background-size: 120% 120%, 125% 125%, 180% 180%;
+  animation: userFunGradientShift 12s ease-in-out infinite;
+}
+
+.user-fun-bg {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.user-fun-bg::before {
+  content: "";
+  position: absolute;
+  inset: -20%;
+  background: conic-gradient(from 0deg, rgba(251, 113, 133, 0.1), rgba(34, 211, 238, 0.1), rgba(245, 158, 11, 0.1), rgba(251, 113, 133, 0.1));
+  filter: blur(24px);
+  animation: userFunSpin 24s linear infinite;
+}
+
+.user-fun-bg::after {
+  content: "";
+  position: absolute;
+  inset: -15%;
+  background:
+    repeating-linear-gradient(
+      120deg,
+      rgba(15, 118, 110, 0.07) 0 10px,
+      rgba(255, 255, 255, 0) 10px 24px
+    );
+  opacity: 0.55;
+  animation: userFunStream 16s linear infinite;
+}
+
+.user-fun-flow {
+  position: absolute;
+  border-radius: 999px;
+  filter: blur(38px);
+  opacity: 0.3;
+}
+
+.user-fun-flow.a {
+  width: 420px;
+  height: 110px;
+  left: -80px;
+  top: 23%;
+  transform: rotate(-18deg);
+  background: linear-gradient(90deg, #0ea5e9, #14b8a6);
+  animation: userFunWaveA 11s ease-in-out infinite;
+}
+
+.user-fun-flow.b {
+  width: 420px;
+  height: 110px;
+  right: -120px;
+  bottom: 18%;
+  transform: rotate(-22deg);
+  background: linear-gradient(90deg, #f59e0b, #f97316);
+  animation: userFunWaveB 12s ease-in-out infinite;
+}
+
+.user-fun-blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(30px);
+  opacity: 0.36;
+  animation: userFunFloat 13s ease-in-out infinite;
+}
+
+.user-fun-blob.a {
+  width: 220px;
+  height: 220px;
+  left: -46px;
+  top: 14%;
+  background: #fb7185;
+}
+
+.user-fun-blob.b {
+  width: 260px;
+  height: 260px;
+  right: -60px;
+  top: 38%;
+  background: #22d3ee;
+  animation-delay: 1.4s;
+}
+
+.user-fun-spark {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  transform: rotate(45deg);
+  background: rgba(255, 255, 255, 0.66);
+  opacity: 0.6;
+  animation: userFunSpark 4.6s ease-in-out infinite;
+}
+
+.user-fun-spark.a {
+  left: 16%;
+  bottom: 16%;
+}
+
+.user-fun-spark.b {
+  right: 18%;
+  top: 14%;
+  animation-delay: 0.7s;
+}
+
+.user-fun-sticker {
+  position: absolute;
+  z-index: 1;
+  padding: 8px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+  color: #0f172a;
+  background: #ffffff;
+  border: 2px solid #e2e8f0;
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.12);
+}
+
+.user-fun-sticker.left {
+  left: 6%;
+  top: 9%;
+  transform: rotate(-8deg);
+}
+
+.user-fun-sticker.right {
+  right: 8%;
+  bottom: 8%;
+  transform: rotate(8deg);
+}
+
+.user-fun-card {
+  position: relative;
+  z-index: 2;
+  border-radius: 22px !important;
+  background: #ffffff !important;
+  box-shadow: 0 16px 34px rgba(15, 23, 42, 0.09) !important;
+}
+
+.user-fun-card .el-card__header {
+  padding-top: 22px;
+  padding-bottom: 10px;
+}
+
+.user-fun-head-title {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 800;
+  line-height: 1.15;
+  color: #0f172a;
+}
+
+.user-fun-head-sub {
+  margin: 6px 0 0;
+  font-size: 15px;
+  color: #334155;
+}
+
+.user-fun-divider {
+  margin: 14px 0;
+}
+
+@keyframes userFunFloat {
+  0%, 100% { transform: translateY(0) translateX(0); }
+  50% { transform: translateY(-16px) translateX(12px); }
+}
+
+@keyframes userFunGradientShift {
+  0%, 100% { background-position: 0% 0%, 100% 100%, 0% 50%; }
+  50% { background-position: 12% 12%, 86% 90%, 100% 50%; }
+}
+
+@keyframes userFunSpin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes userFunStream {
+  from { transform: translateX(-5%) translateY(-3%); }
+  to { transform: translateX(5%) translateY(3%); }
+}
+
+@keyframes userFunWaveA {
+  0%, 100% { transform: translateX(0) translateY(0) rotate(-18deg); }
+  50% { transform: translateX(24px) translateY(-10px) rotate(-14deg); }
+}
+
+@keyframes userFunWaveB {
+  0%, 100% { transform: translateX(0) translateY(0) rotate(-22deg); }
+  50% { transform: translateX(-20px) translateY(10px) rotate(-26deg); }
+}
+
+@keyframes userFunSpark {
+  0%, 100% { transform: rotate(45deg) scale(1); opacity: 0.56; }
+  50% { transform: rotate(45deg) scale(1.2); opacity: 0.9; }
+}
+
+@media (max-width: 900px) {
+  .user-fun-page {
+    border-radius: 16px;
+    padding: 10px;
+  }
+  .user-fun-sticker {
+    font-size: 10px;
+    padding: 5px 9px;
+  }
+  .user-fun-head-title {
+    font-size: 24px;
+  }
+  .user-fun-head-sub {
+    font-size: 13px;
+  }
 }

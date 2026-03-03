@@ -3,7 +3,7 @@
 
 set -euo pipefail
 
-CONTROLLER_URL="${CONTROLLER_URL:-http://127.0.0.1:8000}"
+CONTROLLER_URL="${CONTROLLER_URL:-http://127.0.0.1:60039}"
 ADMIN_TOKEN="${ADMIN_TOKEN:-dev-admin-token}"
 
 echo "==> healthz"

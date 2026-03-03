@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -53,6 +54,13 @@ type Config struct {
 
 	MigrationDir string `yaml:"migration_dir"`
 	WebDir       string `yaml:"web_dir"`
+
+	// 容灾配置（主备控制器）
+	HAEnabled bool   `yaml:"ha_enabled"`
+	HANode    string `yaml:"ha_node"`
+	HARole    string `yaml:"ha_role"` // primary / standby
+	HAPeerURL string `yaml:"ha_peer_url"`
+	HAToken   string `yaml:"ha_token"`
 }
 
 func (c *Config) Validate() error {
@@ -109,6 +117,12 @@ func (c *Config) Validate() error {
 	}
 	if c.SMTPPort < 0 || c.SMTPPort > 65535 {
 		return errors.New("smtp_port 必须在 [0, 65535]")
+	}
+	if c.HAEnabled {
+		role := strings.TrimSpace(strings.ToLower(c.HARole))
+		if role != "" && role != "primary" && role != "standby" {
+			return errors.New("ha_role 仅支持 primary/standby")
+		}
 	}
 	return nil
 }

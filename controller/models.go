@@ -9,15 +9,38 @@ type MetricsData struct {
 	// ReportID 为单次上报的全局唯一 ID，用于幂等：控制器只处理一次，避免重试导致重复扣费。
 	ReportID string `json:"report_id"`
 	// IntervalSeconds 为 Agent 上报周期（秒）。为空时由控制器用 sample_interval_seconds 兜底。
-	IntervalSeconds int           `json:"interval_seconds,omitempty"`
-	CPUModel        string        `json:"cpu_model,omitempty"`
-	CPUCount        int           `json:"cpu_count,omitempty"`
-	GPUModel        string        `json:"gpu_model,omitempty"`
-	GPUCount        int           `json:"gpu_count,omitempty"`
-	NetRxBytes      uint64        `json:"net_rx_bytes,omitempty"`
-	NetTxBytes      uint64        `json:"net_tx_bytes,omitempty"`
-	SSHUsers        []string      `json:"ssh_users,omitempty"`
-	Users           []UserProcess `json:"users"`
+	IntervalSeconds int              `json:"interval_seconds,omitempty"`
+	CPUModel        string           `json:"cpu_model,omitempty"`
+	CPUCount        int              `json:"cpu_count,omitempty"`
+	GPUModel        string           `json:"gpu_model,omitempty"`
+	GPUCount        int              `json:"gpu_count,omitempty"`
+	DiskTotalGB     float64          `json:"disk_total_gb,omitempty"`
+	DiskUsedGB      float64          `json:"disk_used_gb,omitempty"`
+	HomeTotalGB     float64          `json:"home_total_gb,omitempty"`
+	HomeUsedGB      float64          `json:"home_used_gb,omitempty"`
+	MntTotalGB      float64          `json:"mnt_total_gb,omitempty"`
+	MntUsedGB       float64          `json:"mnt_used_gb,omitempty"`
+	OSVersion       string           `json:"os_version,omitempty"`
+	KernelVersion   string           `json:"kernel_version,omitempty"`
+	NodeIP          string           `json:"node_ip,omitempty"`
+	NodeMAC         string           `json:"node_mac,omitempty"`
+	NetRxBytes      uint64           `json:"net_rx_bytes,omitempty"`
+	NetTxBytes      uint64           `json:"net_tx_bytes,omitempty"`
+	SecuritySignals *SecuritySignals `json:"security_signals,omitempty"`
+	SSHUsers        []string         `json:"ssh_users,omitempty"`
+	LocalUsers      []NodeLocalUser  `json:"local_users,omitempty"`
+	Users           []UserProcess    `json:"users"`
+}
+
+type SecuritySignals struct {
+	SSHFailedCount5m      int      `json:"ssh_failed_count_5m,omitempty"`
+	SSHFailedUsernames    []string `json:"ssh_failed_usernames,omitempty"`
+	SSHFailedSourceIPs    []string `json:"ssh_failed_source_ips,omitempty"`
+	SSHBruteforceDetected bool     `json:"ssh_bruteforce_detected,omitempty"`
+	SSHBruteforceSources  []string `json:"ssh_bruteforce_sources,omitempty"`
+	PortScanDetected      bool     `json:"port_scan_detected,omitempty"`
+	PortScanSources       []string `json:"port_scan_sources,omitempty"`
+	PortScanTargetPorts   []int    `json:"port_scan_target_ports,omitempty"`
 }
 
 type UserProcess struct {
@@ -42,19 +65,21 @@ type ControllerResponse struct {
 
 // Action 为控制器下发到节点的动作。
 type Action struct {
-	Type            string  `json:"type"` // notify, block_user, unblock_user, kill_process, kick_ssh_all, kick_ssh_user
+	Type            string  `json:"type"` // notify, block_user, unblock_user, kill_process, kick_ssh_all, kick_ssh_user, kill_all_processes, force_sync, create_local_account
 	Username        string  `json:"username"`
 	PIDs            []int32 `json:"pids,omitempty"`
 	Reason          string  `json:"reason,omitempty"`
 	Message         string  `json:"message,omitempty"`
+	PublicKey       string  `json:"public_key,omitempty"`        // create_local_account 使用（ssh-ed25519 公钥）
 	CPUQuotaPercent float64 `json:"cpu_quota_percent,omitempty"` // set_cpu_quota 使用
 }
 
 type User struct {
-	Username  string
-	Balance   float64
-	Status    string
-	BlockedAt *time.Time
+	Username         string
+	Balance          float64
+	CarryoverBalance float64
+	Status           string
+	BlockedAt        *time.Time
 }
 
 type PriceRow struct {
@@ -79,23 +104,84 @@ type UsageRecord struct {
 }
 
 type NodeStatus struct {
-	NodeID            string    `json:"node_id"`
-	LastSeenAt        time.Time `json:"last_seen_at"`
-	LastReportID      string    `json:"last_report_id"`
-	LastReportTS      time.Time `json:"last_report_ts"`
-	IntervalSeconds   int       `json:"interval_seconds"`
-	CPUModel          string    `json:"cpu_model"`
-	CPUCount          int       `json:"cpu_count"`
-	GPUModel          string    `json:"gpu_model"`
-	GPUCount          int       `json:"gpu_count"`
-	NetRxMBMonth      float64   `json:"net_rx_mb_month"`
-	NetTxMBMonth      float64   `json:"net_tx_mb_month"`
-	GPUProcessCount   int       `json:"gpu_process_count"`
-	CPUProcessCount   int       `json:"cpu_process_count"`
-	UsageRecordsCount int       `json:"usage_records_count"`
-	SSHActiveCount    int       `json:"ssh_active_count"`
-	CostTotal         float64   `json:"cost_total"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	NodeID                  string             `json:"node_id"`
+	LastSeenAt              time.Time          `json:"last_seen_at"`
+	LastReportID            string             `json:"last_report_id"`
+	LastReportTS            time.Time          `json:"last_report_ts"`
+	IntervalSeconds         int                `json:"interval_seconds"`
+	CPUModel                string             `json:"cpu_model"`
+	CPUCount                int                `json:"cpu_count"`
+	GPUModel                string             `json:"gpu_model"`
+	GPUCount                int                `json:"gpu_count"`
+	DiskTotalGB             float64            `json:"disk_total_gb"`
+	DiskUsedGB              float64            `json:"disk_used_gb"`
+	HomeTotalGB             float64            `json:"home_total_gb"`
+	HomeUsedGB              float64            `json:"home_used_gb"`
+	MntTotalGB              float64            `json:"mnt_total_gb"`
+	MntUsedGB               float64            `json:"mnt_used_gb"`
+	OSVersion               string             `json:"os_version"`
+	KernelVersion           string             `json:"kernel_version"`
+	NodeIP                  string             `json:"node_ip"`
+	NodeMAC                 string             `json:"node_mac"`
+	NetRxMBMonth            float64            `json:"net_rx_mb_month"`
+	NetTxMBMonth            float64            `json:"net_tx_mb_month"`
+	GPUProcessCount         int                `json:"gpu_process_count"`
+	CPUProcessCount         int                `json:"cpu_process_count"`
+	UsageRecordsCount       int                `json:"usage_records_count"`
+	SSHActiveCount          int                `json:"ssh_active_count"`
+	SSHGuardEnabled         bool               `json:"ssh_guard_enabled"`
+	SSHExclusiveEnabled     bool               `json:"ssh_exclusive_enabled"`
+	PointsInterceptEnabled  bool               `json:"points_intercept_enabled"`
+	NodePricePerMinute      *float64           `json:"node_price_per_minute,omitempty"`
+	NodeModelPriceOverrides map[string]float64 `json:"node_model_price_overrides,omitempty"`
+	SecurityEventCount7d    int                `json:"security_event_count_7d,omitempty"`
+	SuspiciousUserCount7d   int                `json:"suspicious_user_count_7d,omitempty"`
+	CostTotal               float64            `json:"cost_total"`
+	UpdatedAt               time.Time          `json:"updated_at"`
+}
+
+type NodeLocalUser struct {
+	NodeID           string     `json:"node_id,omitempty"`
+	LocalUsername    string     `json:"local_username"`
+	PlatformUsername string     `json:"platform_username,omitempty"`
+	MappingExists    bool       `json:"mapping_exists"`
+	PlatformExists   bool       `json:"platform_exists"`
+	HomeCreatedAt    *time.Time `json:"home_created_at,omitempty"`
+	LastLoginAt      *time.Time `json:"last_login_at,omitempty"`
+	HomeUsedGB       float64    `json:"home_used_gb"`
+	HasSudo          bool       `json:"has_sudo"`
+	HasDocker        bool       `json:"has_docker"`
+	UpdatedAt        time.Time  `json:"updated_at,omitempty"`
+}
+
+type NodeSecurityEvent struct {
+	EventID          int64     `json:"event_id"`
+	ReportID         string    `json:"report_id"`
+	NodeID           string    `json:"node_id"`
+	EventType        string    `json:"event_type"`
+	Severity         string    `json:"severity"`
+	Reason           string    `json:"reason"`
+	RelatedUsernames []string  `json:"related_usernames"`
+	Details          string    `json:"details"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
+type NodeSuspiciousUser struct {
+	NodeID          string    `json:"node_id"`
+	Username        string    `json:"username"`
+	HitCount        int       `json:"hit_count"`
+	LastSeenAt      time.Time `json:"last_seen_at"`
+	ReasonHints     string    `json:"reason_hints"`
+	Phenomena       string    `json:"phenomena"`
+	MiningSuspected bool      `json:"mining_suspected"`
+}
+
+type NodeMonthlyUserCost struct {
+	NodeID           string    `json:"node_id"`
+	PlatformUsername string    `json:"platform_username"`
+	UsageRecords     int       `json:"usage_records"`
+	TotalCost        float64   `json:"total_cost"`
+	LastUsageAt      time.Time `json:"last_usage_at"`
 }
 
 // UserNodeAccount 表示“节点本地账号”到“计费账号”的映射。
@@ -108,28 +194,81 @@ type UserNodeAccount struct {
 	UpdatedAt       time.Time `json:"updated_at"`
 }
 
+type AccountProvisionLog struct {
+	ProvisionID      int64     `json:"provision_id"`
+	BillingUsername  string    `json:"billing_username"`
+	NodeID           string    `json:"node_id"`
+	LocalUsername    string    `json:"local_username"`
+	Email            string    `json:"email"`
+	SSHHost          string    `json:"ssh_host"`
+	SSHPort          int       `json:"ssh_port"`
+	DownloadFilename string    `json:"download_filename"`
+	MailSent         bool      `json:"mail_sent"`
+	MailError        string    `json:"mail_error"`
+	CreatedBy        string    `json:"created_by"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
+type UserProvisionMessage struct {
+	MessageID        int64     `json:"message_id"`
+	BillingUsername  string    `json:"billing_username"`
+	NodeID           string    `json:"node_id"`
+	LocalUsername    string    `json:"local_username"`
+	EncryptedPayload string    `json:"encrypted_payload"`
+	DecryptURL       string    `json:"decrypt_url"`
+	SSHHost          string    `json:"ssh_host"`
+	SSHPort          int       `json:"ssh_port"`
+	DownloadFilename string    `json:"download_filename"`
+	SSHCommand       string    `json:"ssh_command"`
+	MailTo           string    `json:"mail_to"`
+	CreatedBy        string    `json:"created_by"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
 type SSHWhitelistEntry struct {
-	NodeID        string    `json:"node_id"`
-	LocalUsername string    `json:"local_username"`
-	CreatedBy     string    `json:"created_by"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	NodeID                 string    `json:"node_id"`
+	LocalUsername          string    `json:"local_username"`
+	BillingUsername        string    `json:"billing_username"`
+	SourceType             string    `json:"source_type"`
+	SourcePlatformUsername string    `json:"source_platform_username"`
+	CreatedBy              string    `json:"created_by"`
+	Reason                 string    `json:"reason"`
+	CreatedAt              time.Time `json:"created_at"`
+	UpdatedAt              time.Time `json:"updated_at"`
 }
 
 type SSHBlacklistEntry struct {
-	NodeID        string    `json:"node_id"`
-	LocalUsername string    `json:"local_username"`
-	CreatedBy     string    `json:"created_by"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	NodeID                 string    `json:"node_id"`
+	LocalUsername          string    `json:"local_username"`
+	BillingUsername        string    `json:"billing_username"`
+	SourceType             string    `json:"source_type"`
+	SourcePlatformUsername string    `json:"source_platform_username"`
+	CreatedBy              string    `json:"created_by"`
+	Reason                 string    `json:"reason"`
+	CreatedAt              time.Time `json:"created_at"`
+	UpdatedAt              time.Time `json:"updated_at"`
 }
 
 type SSHExemptionEntry struct {
-	NodeID        string    `json:"node_id"`
-	LocalUsername string    `json:"local_username"`
-	CreatedBy     string    `json:"created_by"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	NodeID                 string    `json:"node_id"`
+	LocalUsername          string    `json:"local_username"`
+	BillingUsername        string    `json:"billing_username"`
+	SourceType             string    `json:"source_type"`
+	SourcePlatformUsername string    `json:"source_platform_username"`
+	CreatedBy              string    `json:"created_by"`
+	Reason                 string    `json:"reason"`
+	CreatedAt              time.Time `json:"created_at"`
+	UpdatedAt              time.Time `json:"updated_at"`
+}
+
+type SSHListSource struct {
+	ListType               string    `json:"list_type"`
+	NodeID                 string    `json:"node_id"`
+	LocalUsername          string    `json:"local_username"`
+	SourceType             string    `json:"source_type"`
+	SourcePlatformUsername string    `json:"source_platform_username"`
+	UpdatedBy              string    `json:"updated_by"`
+	UpdatedAt              time.Time `json:"updated_at"`
 }
 
 type UserRequest struct {
@@ -146,18 +285,68 @@ type UserRequest struct {
 	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
+type RegistrationRequest struct {
+	RequestID               int        `json:"request_id"`
+	Username                string     `json:"username"`
+	Email                   string     `json:"email"`
+	PasswordHash            string     `json:"-"`
+	RealName                string     `json:"real_name"`
+	StudentID               string     `json:"student_id"`
+	Advisor                 string     `json:"advisor"`
+	ExpectedGraduationYear  int        `json:"expected_graduation_year"`
+	ExpectedGraduationMonth int        `json:"expected_graduation_month"`
+	Phone                   string     `json:"phone"`
+	Status                  string     `json:"status"` // pending/approved/rejected
+	ReviewedBy              *string    `json:"reviewed_by,omitempty"`
+	ReviewedAt              *time.Time `json:"reviewed_at,omitempty"`
+	RejectReason            string     `json:"reject_reason,omitempty"`
+	CreatedAt               time.Time  `json:"created_at"`
+	UpdatedAt               time.Time  `json:"updated_at"`
+}
+
+type DeletedUserAccount struct {
+	DeletedID               int64      `json:"deleted_id"`
+	Username                string     `json:"username"`
+	Email                   string     `json:"email"`
+	StudentID               string     `json:"student_id"`
+	RealName                string     `json:"real_name"`
+	Advisor                 string     `json:"advisor"`
+	ExpectedGraduationYear  int        `json:"expected_graduation_year"`
+	ExpectedGraduationMonth int        `json:"expected_graduation_month"`
+	Phone                   string     `json:"phone"`
+	Role                    string     `json:"role"`
+	Balance                 float64    `json:"balance"`
+	CarryoverBalance        float64    `json:"carryover_balance"`
+	UserStatus              string     `json:"user_status"`
+	DeletedAt               time.Time  `json:"deleted_at"`
+	DeletedBy               string     `json:"deleted_by"`
+	DeleteReason            string     `json:"delete_reason"`
+	RestoredAt              *time.Time `json:"restored_at,omitempty"`
+	RestoredBy              *string    `json:"restored_by,omitempty"`
+}
+
+type AdminProfile struct {
+	Username  string    `json:"username"`
+	RealName  string    `json:"real_name"`
+	Email     string    `json:"email"`
+	Phone     string    `json:"phone"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 type UserAccount struct {
-	Username               string     `json:"username"`
-	Email                  string     `json:"email"`
-	RealName               string     `json:"real_name"`
-	StudentID              string     `json:"student_id"`
-	Advisor                string     `json:"advisor"`
-	ExpectedGraduationYear int        `json:"expected_graduation_year"`
-	Phone                  string     `json:"phone"`
-	Role                   string     `json:"role"`
-	LastLoginAt            *time.Time `json:"last_login_at,omitempty"`
-	CreatedAt              time.Time  `json:"created_at"`
-	UpdatedAt              time.Time  `json:"updated_at"`
+	Username                string     `json:"username"`
+	Email                   string     `json:"email"`
+	RealName                string     `json:"real_name"`
+	StudentID               string     `json:"student_id"`
+	Advisor                 string     `json:"advisor"`
+	ExpectedGraduationYear  int        `json:"expected_graduation_year"`
+	ExpectedGraduationMonth int        `json:"expected_graduation_month"`
+	Phone                   string     `json:"phone"`
+	Role                    string     `json:"role"`
+	LastLoginAt             *time.Time `json:"last_login_at,omitempty"`
+	CreatedAt               time.Time  `json:"created_at"`
+	UpdatedAt               time.Time  `json:"updated_at"`
 }
 
 type MailSettings struct {
@@ -171,8 +360,10 @@ type MailSettings struct {
 
 type PowerUser struct {
 	Username          string     `json:"username"`
+	IsPlatformUser    bool       `json:"is_platform_user"`
 	CanViewBoard      bool       `json:"can_view_board"`
 	CanViewNodes      bool       `json:"can_view_nodes"`
+	CanManageNodes    bool       `json:"can_manage_nodes"`
 	CanReviewRequests bool       `json:"can_review_requests"`
 	CreatedBy         string     `json:"created_by"`
 	UpdatedBy         string     `json:"updated_by"`
@@ -209,6 +400,17 @@ type RechargeSummary struct {
 	LastRecharge  time.Time `json:"last_recharge"`
 }
 
+type PointsOperationRecord struct {
+	RechargeID    int64     `json:"recharge_id"`
+	Username      string    `json:"username"`
+	TargetAccount string    `json:"target_account"`
+	Amount        float64   `json:"amount"`
+	Method        string    `json:"method"`
+	PointsScope   string    `json:"points_scope"`
+	NodeID        string    `json:"node_id"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
 type Announcement struct {
 	AnnouncementID int       `json:"announcement_id"`
 	Title          string    `json:"title"`
@@ -219,24 +421,49 @@ type Announcement struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
+type AdminNote struct {
+	NoteID    int       `json:"note_id"`
+	NoteDate  time.Time `json:"note_date"`
+	Title     string    `json:"title"`
+	Content   string    `json:"content"`
+	UpdatedBy string    `json:"updated_by"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 type AdminUserDetail struct {
-	Username         string            `json:"username"`
-	Role             string            `json:"role"`
-	CanViewBoard     bool              `json:"can_view_board"`
-	CanViewNodes     bool              `json:"can_view_nodes"`
-	CanReviewRequest bool              `json:"can_review_requests"`
-	Email            string            `json:"email"`
-	StudentID        string            `json:"student_id"`
-	RealName         string            `json:"real_name"`
-	Advisor          string            `json:"advisor"`
-	ExpectedGradYear int               `json:"expected_graduation_year"`
-	Phone            string            `json:"phone"`
-	Balance          float64           `json:"balance"`
-	Status           string            `json:"status"`
-	UsageRecords     int               `json:"usage_records"`
-	TotalCost        float64           `json:"total_cost"`
-	LastUsageAt      time.Time         `json:"last_usage_at"`
-	NodeAccounts     []UserNodeAccount `json:"node_accounts"`
+	Username          string            `json:"username"`
+	Role              string            `json:"role"`
+	CanViewBoard      bool              `json:"can_view_board"`
+	CanViewNodes      bool              `json:"can_view_nodes"`
+	CanReviewRequest  bool              `json:"can_review_requests"`
+	Email             string            `json:"email"`
+	StudentID         string            `json:"student_id"`
+	RealName          string            `json:"real_name"`
+	Advisor           string            `json:"advisor"`
+	ExpectedGradYear  int               `json:"expected_graduation_year"`
+	ExpectedGradMonth int               `json:"expected_graduation_month"`
+	Phone             string            `json:"phone"`
+	Balance           float64           `json:"balance"`
+	CarryoverBalance  float64           `json:"carryover_balance"`
+	ExclusiveBalance  float64           `json:"exclusive_balance"`
+	TotalBalance      float64           `json:"total_balance"`
+	Status            string            `json:"status"`
+	UsageRecords      int               `json:"usage_records"`
+	TotalCost         float64           `json:"total_cost"`
+	LastUsageAt       time.Time         `json:"last_usage_at"`
+	NodeAccounts      []UserNodeAccount `json:"node_accounts"`
+}
+
+type GraduationReminderUser struct {
+	Username                string `json:"username"`
+	Email                   string `json:"email"`
+	StudentID               string `json:"student_id"`
+	RealName                string `json:"real_name"`
+	Advisor                 string `json:"advisor"`
+	ExpectedGraduationYear  int    `json:"expected_graduation_year"`
+	ExpectedGraduationMonth int    `json:"expected_graduation_month"`
+	OverdueMonths           int    `json:"overdue_months"`
 }
 
 type ProfileChangeRequest struct {
@@ -278,4 +505,63 @@ type PlatformUsageNodeDetail struct {
 	TotalMemoryMB   float64   `json:"total_memory_mb"`
 	TotalCost       float64   `json:"total_cost"`
 	LastUsageAt     time.Time `json:"last_usage_at"`
+}
+
+type NodeRuntimeSnapshot struct {
+	ReportID        string    `json:"report_id"`
+	NodeID          string    `json:"node_id"`
+	ReportTS        time.Time `json:"report_ts"`
+	CPUPercentSum   float64   `json:"cpu_percent_sum"`
+	MemoryMBSum     float64   `json:"memory_mb_sum"`
+	GPUProcessCount int       `json:"gpu_process_count"`
+	CPUProcessCount int       `json:"cpu_process_count"`
+	SSHUserCount    int       `json:"ssh_user_count"`
+	SSHUsers        []string  `json:"ssh_users"`
+	CostTotal       float64   `json:"cost_total"`
+}
+
+type PointsUser struct {
+	Username         string  `json:"username"`
+	StudentID        string  `json:"student_id"`
+	Role             string  `json:"role"`
+	Balance          float64 `json:"balance"` // 兼容字段：等同普通积分
+	GeneralBalance   float64 `json:"general_balance"`
+	CarryoverBalance float64 `json:"carryover_balance"`
+	ExclusiveBalance float64 `json:"exclusive_balance"`
+	TotalBalance     float64 `json:"total_balance"`
+	Status           string  `json:"status"`
+}
+
+type NodeExclusivePointsBalance struct {
+	Username  string    `json:"username"`
+	NodeID    string    `json:"node_id"`
+	Balance   float64   `json:"balance"`
+	UpdatedBy string    `json:"updated_by"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type SpecialMonthlyPointsRule struct {
+	Username      string    `json:"username"`
+	MonthlyPoints float64   `json:"monthly_points"`
+	Enabled       bool      `json:"enabled"`
+	UpdatedBy     string    `json:"updated_by"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+type MonthlyPointsResetRun struct {
+	MonthKey     string    `json:"month_key"`
+	RunAt        time.Time `json:"run_at"`
+	RunBy        string    `json:"run_by"`
+	TotalUsers   int       `json:"total_users"`
+	ChangedUsers int       `json:"changed_users"`
+	Forced       bool      `json:"forced"`
+}
+
+type MonthlyPointsConfig struct {
+	DoctorPoints   float64 `json:"doctor_points"`
+	MasterPoints   float64 `json:"master_points"`
+	OtherPoints    float64 `json:"other_points"`
+	CarryoverLimit float64 `json:"carryover_limit"`
 }
