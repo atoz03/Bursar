@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var errNoNvidiaSMI = errors.New("未检测到 nvidia-smi")
@@ -65,6 +66,18 @@ func (a *NodeAgent) getGPUUsageMap(ctx context.Context) (map[int32][]GPUUsage, e
 }
 
 func (a *NodeAgent) getBusIDToIndexMap(ctx context.Context) (map[string]int32, error) {
+	now := time.Now()
+	a.cacheMu.Lock()
+	if len(a.gpuBusMapCache) > 0 && !a.gpuBusMapCachedAt.IsZero() && now.Sub(a.gpuBusMapCachedAt) < a.gpuBusMapCacheTTL {
+		cached := make(map[string]int32, len(a.gpuBusMapCache))
+		for k, v := range a.gpuBusMapCache {
+			cached[k] = v
+		}
+		a.cacheMu.Unlock()
+		return cached, nil
+	}
+	a.cacheMu.Unlock()
+
 	lines, err := a.runNvidiaSMI(ctx,
 		"--query-gpu=index,pci.bus_id",
 		"--format=csv,noheader",
@@ -93,10 +106,27 @@ func (a *NodeAgent) getBusIDToIndexMap(ctx context.Context) (map[string]int32, e
 		busID := normalizeBusID(parts[1])
 		out[busID] = int32(idx64)
 	}
+	a.cacheMu.Lock()
+	a.gpuBusMapCache = make(map[string]int32, len(out))
+	for k, v := range out {
+		a.gpuBusMapCache[k] = v
+	}
+	a.gpuBusMapCachedAt = now
+	a.cacheMu.Unlock()
 	return out, nil
 }
 
 func (a *NodeAgent) getGPUInventory(ctx context.Context) (string, int, error) {
+	now := time.Now()
+	a.cacheMu.Lock()
+	if !a.gpuInventoryCachedAt.IsZero() && now.Sub(a.gpuInventoryCachedAt) < a.gpuInventoryCacheTTL {
+		model := a.gpuInventoryModelCache
+		count := a.gpuInventoryCountCache
+		a.cacheMu.Unlock()
+		return model, count, nil
+	}
+	a.cacheMu.Unlock()
+
 	lines, err := a.runNvidiaSMI(ctx,
 		"--query-gpu=name",
 		"--format=csv,noheader",
@@ -119,11 +149,23 @@ func (a *NodeAgent) getGPUInventory(ctx context.Context) (string, int, error) {
 			model = name
 		}
 	}
+	a.cacheMu.Lock()
+	a.gpuInventoryModelCache = model
+	a.gpuInventoryCountCache = count
+	a.gpuInventoryCachedAt = now
+	a.cacheMu.Unlock()
 	return model, count, nil
 }
 
 func (a *NodeAgent) runNvidiaSMI(ctx context.Context, args ...string) ([]string, error) {
-	cmd := exec.CommandContext(ctx, "nvidia-smi", args...)
+	smiCtx := ctx
+	var cancel context.CancelFunc
+	if a.gpuCommandTimeout > 0 {
+		smiCtx, cancel = context.WithTimeout(ctx, a.gpuCommandTimeout)
+		defer cancel()
+	}
+
+	cmd := exec.CommandContext(smiCtx, "nvidia-smi", args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	b, err := cmd.Output()

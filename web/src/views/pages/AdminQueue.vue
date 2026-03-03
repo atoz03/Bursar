@@ -2,9 +2,12 @@
   <el-card>
     <template #header>
       <div class="row">
-        <div>
+        <div class="section-title-wrap">
+          <span class="section-icon"><el-icon><List /></el-icon></span>
+          <div>
           <div class="title">排队队列</div>
           <div class="sub">需要管理员登录：GET /api/admin/gpu/queue</div>
+          </div>
         </div>
         <div class="row">
           <el-button :loading="loading" type="primary" @click="reload">刷新</el-button>
@@ -12,7 +15,7 @@
       </div>
     </template>
 
-    <el-space direction="vertical" fill style="width: 100%">
+    <div class="content-stack">
       <el-alert v-if="error" :title="error" type="error" show-icon />
 
       <el-table :data="rows" stripe height="520">
@@ -21,7 +24,7 @@
         <el-table-column prop="count" label="数量" width="100" />
         <el-table-column prop="timestamp" label="时间" />
       </el-table>
-    </el-space>
+    </div>
   </el-card>
 </template>
 
@@ -30,6 +33,7 @@ import { ref } from "vue";
 import { ApiClient } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
+import { List } from "@element-plus/icons-vue";
 
 const loading = ref(false);
 const error = ref("");
@@ -60,8 +64,31 @@ reload();
   justify-content: space-between;
   gap: 12px;
 }
+.content-stack {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
 .title {
   font-weight: 700;
+}
+.section-title-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.section-icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #dbeafe;
+  background: linear-gradient(135deg, #1d4ed8, #2563eb);
+  flex-shrink: 0;
 }
 .sub {
   margin-top: 4px;

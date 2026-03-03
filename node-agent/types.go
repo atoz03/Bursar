@@ -3,18 +3,41 @@ package main
 // 注意：这些结构体与 controller/models.go 的 JSON 字段保持一致，便于直接通信。
 
 type MetricsData struct {
-	NodeID          string        `json:"node_id"`
-	Timestamp       string        `json:"timestamp"` // RFC3339
-	ReportID        string        `json:"report_id"`
-	IntervalSeconds int           `json:"interval_seconds,omitempty"`
-	CPUModel        string        `json:"cpu_model,omitempty"`
-	CPUCount        int           `json:"cpu_count,omitempty"`
-	GPUModel        string        `json:"gpu_model,omitempty"`
-	GPUCount        int           `json:"gpu_count,omitempty"`
-	NetRxBytes      uint64        `json:"net_rx_bytes,omitempty"`
-	NetTxBytes      uint64        `json:"net_tx_bytes,omitempty"`
-	SSHUsers        []string      `json:"ssh_users,omitempty"`
-	Users           []UserProcess `json:"users"`
+	NodeID          string           `json:"node_id"`
+	Timestamp       string           `json:"timestamp"` // RFC3339
+	ReportID        string           `json:"report_id"`
+	IntervalSeconds int              `json:"interval_seconds,omitempty"`
+	CPUModel        string           `json:"cpu_model,omitempty"`
+	CPUCount        int              `json:"cpu_count,omitempty"`
+	GPUModel        string           `json:"gpu_model,omitempty"`
+	GPUCount        int              `json:"gpu_count,omitempty"`
+	DiskTotalGB     float64          `json:"disk_total_gb,omitempty"`
+	DiskUsedGB      float64          `json:"disk_used_gb,omitempty"`
+	HomeTotalGB     float64          `json:"home_total_gb,omitempty"`
+	HomeUsedGB      float64          `json:"home_used_gb,omitempty"`
+	MntTotalGB      float64          `json:"mnt_total_gb,omitempty"`
+	MntUsedGB       float64          `json:"mnt_used_gb,omitempty"`
+	OSVersion       string           `json:"os_version,omitempty"`
+	KernelVersion   string           `json:"kernel_version,omitempty"`
+	NodeIP          string           `json:"node_ip,omitempty"`
+	NodeMAC         string           `json:"node_mac,omitempty"`
+	NetRxBytes      uint64           `json:"net_rx_bytes,omitempty"`
+	NetTxBytes      uint64           `json:"net_tx_bytes,omitempty"`
+	SecuritySignals *SecuritySignals `json:"security_signals,omitempty"`
+	SSHUsers        []string         `json:"ssh_users,omitempty"`
+	LocalUsers      []NodeLocalUser  `json:"local_users,omitempty"`
+	Users           []UserProcess    `json:"users"`
+}
+
+type SecuritySignals struct {
+	SSHFailedCount5m      int      `json:"ssh_failed_count_5m,omitempty"`
+	SSHFailedUsernames    []string `json:"ssh_failed_usernames,omitempty"`
+	SSHFailedSourceIPs    []string `json:"ssh_failed_source_ips,omitempty"`
+	SSHBruteforceDetected bool     `json:"ssh_bruteforce_detected,omitempty"`
+	SSHBruteforceSources  []string `json:"ssh_bruteforce_sources,omitempty"`
+	PortScanDetected      bool     `json:"port_scan_detected,omitempty"`
+	PortScanSources       []string `json:"port_scan_sources,omitempty"`
+	PortScanTargetPorts   []int    `json:"port_scan_target_ports,omitempty"`
 }
 
 type UserProcess struct {
@@ -43,5 +66,15 @@ type Action struct {
 	PIDs            []int32 `json:"pids,omitempty"`
 	Reason          string  `json:"reason,omitempty"`
 	Message         string  `json:"message,omitempty"`
+	PublicKey       string  `json:"public_key,omitempty"`
 	CPUQuotaPercent float64 `json:"cpu_quota_percent,omitempty"`
+}
+
+type NodeLocalUser struct {
+	LocalUsername string  `json:"local_username"`
+	HomeCreatedAt *string `json:"home_created_at,omitempty"`
+	LastLoginAt   *string `json:"last_login_at,omitempty"`
+	HomeUsedGB    float64 `json:"home_used_gb"`
+	HasSudo       bool    `json:"has_sudo"`
+	HasDocker     bool    `json:"has_docker"`
 }

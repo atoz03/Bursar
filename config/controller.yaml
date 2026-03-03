@@ -1,5 +1,5 @@
 # 控制器配置示例（开发环境）
-listen_addr: "0.0.0.0:8000"
+listen_addr: "0.0.0.0:60039"
 
 # PostgreSQL DSN
 database_dsn: "postgres://gpuops:gpuops@127.0.0.1:5432/gpuops?sslmode=disable"
@@ -15,7 +15,7 @@ auth_secret: "<replace-with-auth-secret>"
 
 # 余额阈值
 warning_threshold: 100
-limited_threshold: 10
+limited_threshold: 3
 
 # CPU 计费（按“核分钟”计费：100% CPU ≈ 1 核）
 # 优先从数据库 resource_prices 中读取模型 "CPU_CORE"；不存在时使用该兜底值
@@ -60,3 +60,10 @@ migration_dir: ""
 
 # Web 静态文件目录（为空时自动探测 ../web/dist；不存在则不启用）
 web_dir: ""
+
+# 容灾（主备控制器）配置
+ha_enabled: false
+ha_node: "controller-a"
+ha_role: "primary" # primary / standby
+ha_peer_url: ""    # 例如 http://192.0.2.10:60039
+ha_token: ""       # 主备间状态查询鉴权（建议强随机）

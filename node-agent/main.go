@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -28,20 +29,43 @@ type NodeAgent struct {
 	cpuMinPercent float64
 	numCPU        int
 	lastCPUSample map[int32]cpuSample
+
+	forceSyncMu sync.Mutex
+	forceSyncOn bool
+
+	cacheMu sync.Mutex
+
+	localUsersCache           []NodeLocalUser
+	localUsersCachedAt        time.Time
+	localUsersRefreshInterval time.Duration
+	localUsersCollectTimeout  time.Duration
+	gpuBusMapCache            map[string]int32
+	gpuBusMapCachedAt         time.Time
+	gpuBusMapCacheTTL         time.Duration
+	gpuInventoryModelCache    string
+	gpuInventoryCountCache    int
+	gpuInventoryCachedAt      time.Time
+	gpuInventoryCacheTTL      time.Duration
+	gpuCommandTimeout         time.Duration
 }
 
 func main() {
 	agent := &NodeAgent{
-		nodeID:        strings.TrimSpace(os.Getenv("NODE_ID")),
-		controllerURL: strings.TrimSpace(os.Getenv("CONTROLLER_URL")),
-		agentToken:    strings.TrimSpace(os.Getenv("AGENT_TOKEN")),
-		interval:      60 * time.Second,
-		actionPoll:    1 * time.Second,
-		stateDir:      strings.TrimSpace(os.Getenv("STATE_DIR")),
-		logger:        log.New(os.Stdout, "[node-agent] ", log.LstdFlags|log.Lmicroseconds),
-		cpuMinPercent: 1.0,
-		numCPU:        runtime.NumCPU(),
-		lastCPUSample: map[int32]cpuSample{},
+		nodeID:                    strings.TrimSpace(os.Getenv("NODE_ID")),
+		controllerURL:             strings.TrimSpace(os.Getenv("CONTROLLER_URL")),
+		agentToken:                strings.TrimSpace(os.Getenv("AGENT_TOKEN")),
+		interval:                  60 * time.Second,
+		actionPoll:                1 * time.Second,
+		stateDir:                  strings.TrimSpace(os.Getenv("STATE_DIR")),
+		logger:                    log.New(os.Stdout, "[node-agent] ", log.LstdFlags|log.Lmicroseconds),
+		cpuMinPercent:             1.0,
+		numCPU:                    runtime.NumCPU(),
+		lastCPUSample:             map[int32]cpuSample{},
+		localUsersRefreshInterval: 15 * time.Minute,
+		localUsersCollectTimeout:  8 * time.Second,
+		gpuBusMapCacheTTL:         10 * time.Minute,
+		gpuInventoryCacheTTL:      30 * time.Minute,
+		gpuCommandTimeout:         4 * time.Second,
 	}
 
 	if sec := strings.TrimSpace(os.Getenv("INTERVAL_SECONDS")); sec != "" {
@@ -57,6 +81,31 @@ func main() {
 	if v := strings.TrimSpace(os.Getenv("CPU_MIN_PERCENT")); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 {
 			agent.cpuMinPercent = f
+		}
+	}
+	if sec := strings.TrimSpace(os.Getenv("LOCAL_USERS_REFRESH_SECONDS")); sec != "" {
+		if v, err := strconv.Atoi(sec); err == nil && v > 0 {
+			agent.localUsersRefreshInterval = time.Duration(v) * time.Second
+		}
+	}
+	if sec := strings.TrimSpace(os.Getenv("LOCAL_USERS_COLLECT_TIMEOUT_SECONDS")); sec != "" {
+		if v, err := strconv.Atoi(sec); err == nil && v > 0 {
+			agent.localUsersCollectTimeout = time.Duration(v) * time.Second
+		}
+	}
+	if sec := strings.TrimSpace(os.Getenv("GPU_BUS_MAP_CACHE_SECONDS")); sec != "" {
+		if v, err := strconv.Atoi(sec); err == nil && v > 0 {
+			agent.gpuBusMapCacheTTL = time.Duration(v) * time.Second
+		}
+	}
+	if sec := strings.TrimSpace(os.Getenv("GPU_INVENTORY_CACHE_SECONDS")); sec != "" {
+		if v, err := strconv.Atoi(sec); err == nil && v > 0 {
+			agent.gpuInventoryCacheTTL = time.Duration(v) * time.Second
+		}
+	}
+	if sec := strings.TrimSpace(os.Getenv("GPU_COMMAND_TIMEOUT_SECONDS")); sec != "" {
+		if v, err := strconv.Atoi(sec); err == nil && v > 0 {
+			agent.gpuCommandTimeout = time.Duration(v) * time.Second
 		}
 	}
 
@@ -157,4 +206,29 @@ func (a *NodeAgent) executeActions(ctx context.Context, actions []Action) {
 		}
 		cancel()
 	}
+}
+
+func (a *NodeAgent) triggerForceSync(reason string) {
+	a.forceSyncMu.Lock()
+	if a.forceSyncOn {
+		a.forceSyncMu.Unlock()
+		return
+	}
+	a.forceSyncOn = true
+	a.forceSyncMu.Unlock()
+
+	go func() {
+		defer func() {
+			a.forceSyncMu.Lock()
+			a.forceSyncOn = false
+			a.forceSyncMu.Unlock()
+		}()
+
+		a.logger.Printf("收到 force_sync 动作：%s", strings.TrimSpace(reason))
+		syncCtx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+		defer cancel()
+		if err := a.tick(syncCtx); err != nil {
+			a.logger.Printf("force_sync 失败：%v", err)
+		}
+	}()
 }

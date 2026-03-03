@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS users (
     user_id SERIAL PRIMARY KEY,
     username VARCHAR(50) UNIQUE NOT NULL,
     balance DECIMAL(10,2) NOT NULL DEFAULT 100.0,
+    carryover_balance DOUBLE PRECISION NOT NULL DEFAULT 0,
     status VARCHAR(20) NOT NULL DEFAULT 'normal', -- normal, warning, limited, blocked
     blocked_at TIMESTAMP NULL,
     last_charge_time TIMESTAMP NOT NULL DEFAULT NOW(),
@@ -66,6 +67,16 @@ CREATE TABLE IF NOT EXISTS nodes (
     cpu_count INT NOT NULL DEFAULT 0,
     gpu_model TEXT NOT NULL DEFAULT '',
     gpu_count INT NOT NULL DEFAULT 0,
+    os_version TEXT NOT NULL DEFAULT '',
+    kernel_version TEXT NOT NULL DEFAULT '',
+    node_ip TEXT NOT NULL DEFAULT '',
+    node_mac TEXT NOT NULL DEFAULT '',
+    disk_total_gb DOUBLE PRECISION NOT NULL DEFAULT 0,
+    disk_used_gb DOUBLE PRECISION NOT NULL DEFAULT 0,
+    home_total_gb DOUBLE PRECISION NOT NULL DEFAULT 0,
+    home_used_gb DOUBLE PRECISION NOT NULL DEFAULT 0,
+    mnt_total_gb DOUBLE PRECISION NOT NULL DEFAULT 0,
+    mnt_used_gb DOUBLE PRECISION NOT NULL DEFAULT 0,
     net_rx_bytes BIGINT NOT NULL DEFAULT 0,
     net_tx_bytes BIGINT NOT NULL DEFAULT 0,
     net_rx_mb_month DOUBLE PRECISION NOT NULL DEFAULT 0,
@@ -78,6 +89,67 @@ CREATE TABLE IF NOT EXISTS nodes (
     cost_total DECIMAL(12,4) NOT NULL DEFAULT 0.0,
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS node_local_users (
+    node_id VARCHAR(50) NOT NULL,
+    local_username VARCHAR(64) NOT NULL,
+    home_created_at TIMESTAMP NULL,
+    last_login_at TIMESTAMP NULL,
+    home_used_gb DOUBLE PRECISION NOT NULL DEFAULT 0,
+    has_sudo BOOLEAN NOT NULL DEFAULT FALSE,
+    has_docker BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (node_id, local_username)
+);
+CREATE INDEX IF NOT EXISTS idx_node_local_users_node_updated ON node_local_users(node_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS node_security_events (
+    event_id BIGSERIAL PRIMARY KEY,
+    report_id TEXT NOT NULL DEFAULT '',
+    node_id VARCHAR(50) NOT NULL,
+    event_type VARCHAR(64) NOT NULL,
+    severity VARCHAR(20) NOT NULL DEFAULT 'info',
+    reason TEXT NOT NULL DEFAULT '',
+    related_usernames TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+    details JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_node_security_events_node_time
+    ON node_security_events(node_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_node_security_events_type_time
+    ON node_security_events(event_type, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_node_security_events_users
+    ON node_security_events USING GIN (related_usernames);
+
+CREATE TABLE IF NOT EXISTS node_policies (
+    node_id VARCHAR(50) PRIMARY KEY,
+    ssh_guard_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    ssh_exclusive_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    points_intercept_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    node_price_per_minute DOUBLE PRECISION NULL,
+    node_model_price_overrides JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_by VARCHAR(50) NOT NULL DEFAULT 'admin',
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS node_exclusive_users (
+    node_id VARCHAR(50) NOT NULL,
+    local_username VARCHAR(64) NOT NULL,
+    updated_by VARCHAR(50) NOT NULL DEFAULT 'admin',
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (node_id, local_username)
+);
+CREATE INDEX IF NOT EXISTS idx_node_exclusive_users_node ON node_exclusive_users(node_id);
+
+CREATE TABLE IF NOT EXISTS node_view_acl (
+    node_id VARCHAR(50) NOT NULL,
+    power_username VARCHAR(50) NOT NULL,
+    updated_by VARCHAR(50) NOT NULL DEFAULT 'admin',
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (node_id, power_username)
+);
+CREATE INDEX IF NOT EXISTS idx_node_view_acl_power_username
+    ON node_view_acl(power_username);
 
 -- 管理员账号（Web 登录）
 CREATE TABLE IF NOT EXISTS admin_accounts (
@@ -93,6 +165,7 @@ CREATE TABLE IF NOT EXISTS power_users (
     password_hash TEXT NOT NULL,
     can_view_board BOOLEAN NOT NULL DEFAULT TRUE,
     can_view_nodes BOOLEAN NOT NULL DEFAULT TRUE,
+    can_manage_nodes BOOLEAN NOT NULL DEFAULT FALSE,
     can_review_requests BOOLEAN NOT NULL DEFAULT FALSE,
     created_by VARCHAR(50) NOT NULL DEFAULT 'admin',
     updated_by VARCHAR(50) NOT NULL DEFAULT 'admin',
@@ -100,6 +173,16 @@ CREATE TABLE IF NOT EXISTS power_users (
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS admin_profiles (
+    username VARCHAR(50) PRIMARY KEY,
+    real_name VARCHAR(80) NOT NULL DEFAULT '',
+    email VARCHAR(120) NOT NULL DEFAULT '',
+    phone VARCHAR(40) NOT NULL DEFAULT '',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_admin_profiles_email ON admin_profiles(email);
 
 -- 用户“节点账号”绑定：按节点(node_id=机器编号/端口) + 本地账号(local_username) 映射到计费账号(billing_username)
 CREATE TABLE IF NOT EXISTS user_node_accounts (
@@ -109,6 +192,36 @@ CREATE TABLE IF NOT EXISTS user_node_accounts (
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
     PRIMARY KEY (node_id, local_username)
+);
+
+CREATE TABLE IF NOT EXISTS account_provision_logs (
+    provision_id BIGSERIAL PRIMARY KEY,
+    billing_username VARCHAR(50) NOT NULL,
+    node_id VARCHAR(50) NOT NULL,
+    local_username VARCHAR(50) NOT NULL,
+    email VARCHAR(120) NOT NULL,
+    ssh_host VARCHAR(255) NOT NULL DEFAULT '',
+    ssh_port INT NOT NULL DEFAULT 22,
+    download_filename VARCHAR(255) NOT NULL DEFAULT '',
+    mail_sent BOOLEAN NOT NULL DEFAULT FALSE,
+    mail_error TEXT NOT NULL DEFAULT '',
+    created_by VARCHAR(50) NOT NULL DEFAULT 'admin',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS user_provision_messages (
+    message_id BIGSERIAL PRIMARY KEY,
+    billing_username VARCHAR(50) NOT NULL,
+    node_id VARCHAR(50) NOT NULL,
+    local_username VARCHAR(50) NOT NULL,
+    encrypted_payload TEXT NOT NULL,
+    decrypt_url TEXT NOT NULL DEFAULT '/user/accounts?tool=key-decryptor',
+    ssh_host VARCHAR(255) NOT NULL DEFAULT '',
+    ssh_port INT NOT NULL DEFAULT 22,
+    download_filename VARCHAR(255) NOT NULL DEFAULT '',
+    ssh_command TEXT NOT NULL DEFAULT '',
+    mail_to VARCHAR(120) NOT NULL DEFAULT '',
+    created_by VARCHAR(50) NOT NULL DEFAULT 'admin',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
 -- 用户自助登记/开号申请（管理员审核）
@@ -132,6 +245,10 @@ CREATE INDEX IF NOT EXISTS idx_usage_timestamp ON usage_records(timestamp);
 CREATE INDEX IF NOT EXISTS idx_usage_node ON usage_records(node_id);
 CREATE INDEX IF NOT EXISTS idx_usage_timestamp_username ON usage_records(timestamp, username);
 CREATE INDEX IF NOT EXISTS idx_user_node_accounts_billing ON user_node_accounts(billing_username);
+CREATE INDEX IF NOT EXISTS idx_account_provision_logs_created_at ON account_provision_logs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_account_provision_logs_billing ON account_provision_logs(billing_username, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_account_provision_logs_node_local ON account_provision_logs(node_id, local_username, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_user_provision_messages_user_created ON user_provision_messages(billing_username, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_user_requests_status ON user_requests(status);
 CREATE INDEX IF NOT EXISTS idx_user_requests_billing ON user_requests(billing_username);
 
@@ -144,6 +261,7 @@ CREATE TABLE IF NOT EXISTS user_accounts (
     student_id VARCHAR(40) NOT NULL,
     advisor VARCHAR(80) NOT NULL,
     expected_graduation_year INT NOT NULL,
+    expected_graduation_month INT NOT NULL DEFAULT 12 CHECK (expected_graduation_month BETWEEN 1 AND 12),
     phone VARCHAR(40) NOT NULL,
     role VARCHAR(20) NOT NULL DEFAULT 'user',
     last_login_at TIMESTAMP NULL,
@@ -174,6 +292,18 @@ CREATE TABLE IF NOT EXISTS announcements (
 );
 CREATE INDEX IF NOT EXISTS idx_announcements_created_at ON announcements(created_at DESC);
 
+-- 管理员记事本
+CREATE TABLE IF NOT EXISTS admin_notes (
+    note_id SERIAL PRIMARY KEY,
+    note_date DATE NOT NULL,
+    title VARCHAR(200) NOT NULL DEFAULT '',
+    content TEXT NOT NULL DEFAULT '',
+    updated_by VARCHAR(50) NOT NULL DEFAULT 'admin',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_admin_notes_note_date ON admin_notes(note_date DESC, updated_at DESC);
+
 -- 用户关键信息变更申请（用户名/邮箱/学号）
 CREATE TABLE IF NOT EXISTS profile_change_requests (
     request_id SERIAL PRIMARY KEY,
@@ -194,11 +324,100 @@ CREATE TABLE IF NOT EXISTS profile_change_requests (
 CREATE INDEX IF NOT EXISTS idx_profile_change_requests_status ON profile_change_requests(status);
 CREATE INDEX IF NOT EXISTS idx_profile_change_requests_user ON profile_change_requests(billing_username);
 
+-- 平台账号注册申请（管理员审核后才创建账号）
+CREATE TABLE IF NOT EXISTS registration_requests (
+    request_id SERIAL PRIMARY KEY,
+    username VARCHAR(50) NOT NULL,
+    email VARCHAR(120) NOT NULL,
+    password_hash TEXT NOT NULL,
+    real_name VARCHAR(80) NOT NULL,
+    student_id VARCHAR(40) NOT NULL,
+    advisor VARCHAR(80) NOT NULL,
+    expected_graduation_year INT NOT NULL,
+    expected_graduation_month INT NOT NULL DEFAULT 12 CHECK (expected_graduation_month BETWEEN 1 AND 12),
+    phone VARCHAR(40) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending', -- pending, approved, rejected
+    reviewed_by VARCHAR(50) NULL,
+    reviewed_at TIMESTAMP NULL,
+    reject_reason TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_registration_requests_status ON registration_requests(status);
+CREATE INDEX IF NOT EXISTS idx_registration_requests_created_at ON registration_requests(created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_registration_requests_pending_username
+ON registration_requests(username) WHERE status='pending';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_registration_requests_pending_email
+ON registration_requests(email) WHERE status='pending';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_registration_requests_pending_student_id
+ON registration_requests(student_id) WHERE status='pending';
+
+-- 平台账号注册邮箱验证（点击邮件链接后才会进入 registration_requests）
+CREATE TABLE IF NOT EXISTS registration_email_verifications (
+    verify_id BIGSERIAL PRIMARY KEY,
+    token_hash TEXT NOT NULL UNIQUE,
+    username VARCHAR(50) NOT NULL,
+    email VARCHAR(120) NOT NULL,
+    password_hash TEXT NOT NULL,
+    real_name VARCHAR(80) NOT NULL,
+    student_id VARCHAR(40) NOT NULL,
+    advisor VARCHAR(80) NOT NULL,
+    expected_graduation_year INT NOT NULL,
+    expected_graduation_month INT NOT NULL DEFAULT 12 CHECK (expected_graduation_month BETWEEN 1 AND 12),
+    phone VARCHAR(40) NOT NULL,
+    expire_at TIMESTAMP NOT NULL,
+    consumed_request_id INT NULL REFERENCES registration_requests(request_id) ON DELETE SET NULL,
+    consumed_at TIMESTAMP NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_registration_email_verifications_expire_at ON registration_email_verifications(expire_at ASC);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_registration_email_verifications_pending_username
+ON registration_email_verifications(username) WHERE consumed_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_registration_email_verifications_pending_email
+ON registration_email_verifications(email) WHERE consumed_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_registration_email_verifications_pending_student_id
+ON registration_email_verifications(student_id) WHERE consumed_at IS NULL;
+
+-- 已删除平台账号归档（可恢复）
+CREATE TABLE IF NOT EXISTS deleted_user_accounts (
+    deleted_id BIGSERIAL PRIMARY KEY,
+    username VARCHAR(50) NOT NULL,
+    email VARCHAR(120) NOT NULL,
+    student_id VARCHAR(40) NOT NULL,
+    password_hash TEXT NOT NULL,
+    real_name VARCHAR(80) NOT NULL,
+    advisor VARCHAR(80) NOT NULL,
+    expected_graduation_year INT NOT NULL,
+    expected_graduation_month INT NOT NULL DEFAULT 12 CHECK (expected_graduation_month BETWEEN 1 AND 12),
+    phone VARCHAR(40) NOT NULL,
+    role VARCHAR(20) NOT NULL DEFAULT 'user',
+    last_login_at TIMESTAMP NULL,
+    account_created_at TIMESTAMP NULL,
+    account_updated_at TIMESTAMP NULL,
+    balance DOUBLE PRECISION NOT NULL DEFAULT 0,
+    carryover_balance DOUBLE PRECISION NOT NULL DEFAULT 0,
+    user_status VARCHAR(20) NOT NULL DEFAULT 'normal',
+    blocked_at TIMESTAMP NULL,
+    deleted_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    deleted_by VARCHAR(50) NOT NULL DEFAULT 'admin',
+    delete_reason TEXT NOT NULL DEFAULT '',
+    node_accounts_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+    restored_at TIMESTAMP NULL,
+    restored_by VARCHAR(50) NULL
+);
+CREATE INDEX IF NOT EXISTS idx_deleted_user_accounts_deleted_at ON deleted_user_accounts(deleted_at DESC);
+CREATE INDEX IF NOT EXISTS idx_deleted_user_accounts_restored_at ON deleted_user_accounts(restored_at);
+CREATE INDEX IF NOT EXISTS idx_deleted_user_accounts_username ON deleted_user_accounts(username);
+CREATE INDEX IF NOT EXISTS idx_deleted_user_accounts_email ON deleted_user_accounts(email);
+CREATE INDEX IF NOT EXISTS idx_deleted_user_accounts_student_id ON deleted_user_accounts(student_id);
+
 -- SSH 白名单（允许不注册直接登录）
 CREATE TABLE IF NOT EXISTS ssh_whitelist (
     node_id VARCHAR(50) NOT NULL,  -- 具体节点或 "*" 表示所有节点
     local_username VARCHAR(50) NOT NULL,
     created_by VARCHAR(50) NOT NULL DEFAULT 'admin',
+    reason TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
     PRIMARY KEY (node_id, local_username)
@@ -211,6 +430,7 @@ CREATE TABLE IF NOT EXISTS ssh_blacklist (
     node_id VARCHAR(50) NOT NULL,  -- 具体节点或 "*" 表示所有节点
     local_username VARCHAR(50) NOT NULL,
     created_by VARCHAR(50) NOT NULL DEFAULT 'admin',
+    reason TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
     PRIMARY KEY (node_id, local_username)
@@ -223,6 +443,7 @@ CREATE TABLE IF NOT EXISTS ssh_exemptions (
     node_id VARCHAR(50) NOT NULL,  -- 具体节点或 "*" 表示所有节点
     local_username VARCHAR(50) NOT NULL,
     created_by VARCHAR(50) NOT NULL DEFAULT 'admin',
+    reason TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
     PRIMARY KEY (node_id, local_username)
@@ -232,3 +453,55 @@ CREATE INDEX IF NOT EXISTS idx_ssh_exemptions_user ON ssh_exemptions(local_usern
 INSERT INTO ssh_exemptions(node_id, local_username, created_by)
 VALUES('*', 'gpuops', 'system')
 ON CONFLICT (node_id, local_username) DO NOTHING;
+
+-- SSH 名单来源元信息（记录是按节点账号添加还是按平台账号添加）
+CREATE TABLE IF NOT EXISTS ssh_list_sources (
+    list_type VARCHAR(20) NOT NULL CHECK (list_type IN ('whitelist', 'blacklist', 'exemptions')),
+    node_id VARCHAR(50) NOT NULL,
+    local_username VARCHAR(50) NOT NULL,
+    source_type VARCHAR(20) NOT NULL DEFAULT 'local' CHECK (source_type IN ('local', 'platform')),
+    source_platform_username VARCHAR(50) NOT NULL DEFAULT '',
+    updated_by VARCHAR(50) NOT NULL DEFAULT 'admin',
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (list_type, node_id, local_username)
+);
+CREATE INDEX IF NOT EXISTS idx_ssh_list_sources_node ON ssh_list_sources(list_type, node_id);
+CREATE INDEX IF NOT EXISTS idx_ssh_list_sources_local ON ssh_list_sources(list_type, local_username);
+
+-- 节点运行时快照（用于节点详情页趋势图与 SSH 用户展示）
+CREATE TABLE IF NOT EXISTS node_runtime_snapshots (
+    report_id VARCHAR(64) PRIMARY KEY,
+    node_id VARCHAR(50) NOT NULL,
+    report_ts TIMESTAMP NOT NULL,
+    cpu_percent_sum DOUBLE PRECISION NOT NULL DEFAULT 0,
+    memory_mb_sum DOUBLE PRECISION NOT NULL DEFAULT 0,
+    gpu_process_count INT NOT NULL DEFAULT 0,
+    cpu_process_count INT NOT NULL DEFAULT 0,
+    ssh_user_count INT NOT NULL DEFAULT 0,
+    ssh_users_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+    cost_total DOUBLE PRECISION NOT NULL DEFAULT 0,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_node_runtime_snapshots_node_ts
+ON node_runtime_snapshots(node_id, report_ts DESC);
+
+-- 特殊用户月度积分规则（覆盖默认发放规则）
+CREATE TABLE IF NOT EXISTS special_monthly_points_rules (
+    username VARCHAR(50) PRIMARY KEY,
+    monthly_points DOUBLE PRECISION NOT NULL DEFAULT 0 CHECK (monthly_points >= 0),
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    updated_by VARCHAR(50) NOT NULL DEFAULT 'admin',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- 月初积分重置执行记录（避免重复执行）
+CREATE TABLE IF NOT EXISTS monthly_points_reset_runs (
+    month_key VARCHAR(7) PRIMARY KEY, -- YYYY-MM
+    run_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    run_by VARCHAR(50) NOT NULL DEFAULT 'system',
+    total_users INT NOT NULL DEFAULT 0,
+    changed_users INT NOT NULL DEFAULT 0,
+    forced BOOLEAN NOT NULL DEFAULT FALSE
+);

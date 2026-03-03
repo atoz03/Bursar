@@ -2,13 +2,18 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/csv"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,12 +30,14 @@ type Server struct {
 
 	nodeActionsMu sync.Mutex
 	nodeActions   map[string][]Action
+	pointsResetMu sync.Mutex
 }
 
 const (
 	permViewBoard      = 1
 	permViewNodes      = 2
 	permReviewRequests = 4
+	permManageNodes    = 8
 )
 
 func NewServer(cfg Config, store *Store) *Server {
@@ -82,13 +89,18 @@ func (s *Server) Router() *gin.Engine {
 	api.POST("/auth/login", s.handleAuthLogin)
 	api.POST("/auth/logout", s.handleAuthLogout)
 	api.POST("/auth/register", s.handleAuthRegister)
+	api.GET("/auth/register/check", s.handleAuthRegisterCheck)
+	api.GET("/auth/register/verify", s.handleAuthRegisterVerify)
 	api.POST("/auth/forgot-password", s.handleAuthForgotPassword)
 	api.POST("/auth/reset-password", s.handleAuthResetPassword)
 	api.POST("/auth/change-password", s.authSession(), s.handleAuthChangePassword)
 	api.GET("/announcements", s.handleAnnouncementsList)
+	api.GET("/guideline", s.handleUserGuidelineGet)
+	api.POST("/tools/provision/decrypt", s.authSession(), s.handleToolProvisionDecrypt)
 
 	api.POST("/metrics", s.authAgent(), s.handleMetrics)
 	api.GET("/node/actions", s.authAgent(), s.handleNodeActions)
+	api.GET("/ha/status", s.handleHAStatus)
 
 	api.GET("/users/:username/balance", s.handleBalance)
 	api.GET("/users/:username/usage", s.handleUserUsage)
@@ -102,12 +114,14 @@ func (s *Server) Router() *gin.Engine {
 	user.PUT("/me/profile", s.handleUserMyProfileUpdate)
 	user.GET("/me/profile-change-requests", s.handleUserMyProfileChangeRequests)
 	user.GET("/accounts", s.handleUserAccountsList)
+	user.GET("/provision-messages", s.handleUserProvisionMessagesList)
 	user.POST("/accounts", s.handleUserAccountsUpsert)
 	user.PUT("/accounts", s.handleUserAccountsUpdate)
 	user.DELETE("/accounts", s.handleUserAccountsDelete)
 
 	// 用户注册/绑定与 SSH 登录校验
 	api.GET("/registry/resolve", s.handleRegistryResolve)
+	api.GET("/registry/nodes/:node_id/guard-state", s.handleRegistryNodeGuardState)
 	api.GET("/registry/nodes/:node_id/users.txt", s.handleRegistryNodeUsersTxt)
 	api.GET("/registry/nodes/:node_id/blocked.txt", s.handleRegistryNodeBlockedUsersTxt)
 	api.GET("/registry/nodes/:node_id/exempt.txt", s.handleRegistryNodeExemptUsersTxt)
@@ -125,10 +139,26 @@ func (s *Server) Router() *gin.Engine {
 	admin.POST("/bootstrap", s.requireSuperAdmin(), s.handleAdminBootstrap)
 	admin.GET("/users", s.requireSuperAdmin(), s.handleAdminUsers)
 	admin.GET("/users/details", s.requireSuperAdmin(), s.handleAdminUserDetails)
+	admin.GET("/users/deleted", s.requireSuperAdmin(), s.handleAdminDeletedUsers)
+	admin.GET("/users/duplicates", s.requireSuperAdmin(), s.handleAdminUserDuplicates)
+	admin.GET("/users/:username/profile", s.handleAdminUserProfile)
+	admin.POST("/users/:username/block", s.requireSuperAdmin(), s.handleAdminUserBlock)
+	admin.POST("/users/:username/unblock", s.requireSuperAdmin(), s.handleAdminUserUnblock)
+	admin.POST("/users/:username/delete", s.requireSuperAdmin(), s.handleAdminUserDelete)
+	admin.POST("/users/:username/archive", s.requireSuperAdmin(), s.handleAdminUserDelete)
+	admin.POST("/users/:username/remove", s.requireSuperAdmin(), s.handleAdminUserDelete)
+	admin.POST("/users/deleted/:id/restore", s.requireSuperAdmin(), s.handleAdminDeletedUserRestore)
+	admin.GET("/users/graduation-due", s.requireSuperAdmin(), s.handleAdminGraduationDueUsers)
+	admin.GET("/me/profile", s.handleAdminMyProfileGet)
+	admin.PUT("/me/profile", s.handleAdminMyProfileSet)
+	admin.POST("/users/graduation-reminders/send", s.requireSuperAdmin(), s.handleAdminGraduationRemindersSend)
 	admin.GET("/prices", s.requireSuperAdmin(), s.handleAdminPrices)
 	admin.POST("/prices", s.requireSuperAdmin(), s.handleAdminSetPrice)
 	admin.GET("/gpu/queue", s.requireSuperAdmin(), s.handleAdminGPUQueue)
 	admin.GET("/requests", s.requireReviewPermission(), s.handleAdminRequestsList)
+	admin.GET("/registration-requests/overview", s.requireReviewPermission(), s.handleAdminRegistrationRequestsOverview)
+	admin.POST("/registration-requests/:id/approve", s.requireReviewPermission(), s.handleAdminRegistrationRequestApprove)
+	admin.POST("/registration-requests/:id/reject", s.requireReviewPermission(), s.handleAdminRegistrationRequestReject)
 	admin.POST("/requests/:id/approve", s.requireReviewPermission(), s.handleAdminRequestApprove)
 	admin.POST("/requests/:id/reject", s.requireReviewPermission(), s.handleAdminRequestReject)
 	admin.POST("/requests/batch-review", s.requireReviewPermission(), s.handleAdminRequestsBatchReview)
@@ -137,15 +167,42 @@ func (s *Server) Router() *gin.Engine {
 	admin.POST("/profile-change-requests/:id/reject", s.requireReviewPermission(), s.handleAdminProfileChangeReject)
 	admin.POST("/announcements", s.requireSuperAdmin(), s.handleAnnouncementCreate)
 	admin.DELETE("/announcements/:id", s.requireSuperAdmin(), s.handleAnnouncementDelete)
+	admin.GET("/notes", s.requireSuperAdmin(), s.handleAdminNotesList)
+	admin.POST("/notes", s.requireSuperAdmin(), s.handleAdminNotesCreate)
+	admin.PUT("/notes/:id", s.requireSuperAdmin(), s.handleAdminNotesUpdate)
+	admin.DELETE("/notes/:id", s.requireSuperAdmin(), s.handleAdminNotesDelete)
 	admin.GET("/usage", s.requireSuperAdmin(), s.handleAdminUsage)
 	admin.GET("/nodes", s.requireNodesPermission(), s.handleAdminNodes)
-	admin.POST("/nodes/:id/ssh/disconnect-all", s.requireSuperAdmin(), s.handleAdminNodeDisconnectAllSSH)
+	admin.GET("/nodes/:id/detail", s.requireNodesPermission(), s.handleAdminNodeDetail)
+	admin.GET("/nodes/:id/security-events", s.requireNodesPermission(), s.handleAdminNodeSecurityEvents)
+	admin.POST("/nodes/:id/ssh-guard", s.requireNodesModifyPermission(), s.handleAdminNodeSSHGuardSet)
+	admin.GET("/nodes/:id/points-intercept", s.requireNodesPermission(), s.handleAdminNodePointsInterceptGet)
+	admin.POST("/nodes/:id/points-intercept", s.requireNodesModifyPermission(), s.handleAdminNodePointsInterceptSet)
+	admin.GET("/nodes/:id/price", s.requireNodesPermission(), s.handleAdminNodePriceGet)
+	admin.POST("/nodes/:id/price", s.requireNodesModifyPermission(), s.handleAdminNodePriceSet)
+	admin.GET("/nodes/:id/ssh-exclusive", s.requireNodesPermission(), s.handleAdminNodeSSHExclusiveGet)
+	admin.POST("/nodes/:id/ssh-exclusive", s.requireNodesModifyPermission(), s.handleAdminNodeSSHExclusiveSet)
+	admin.GET("/nodes/:id/view-access", s.requireNodesPermission(), s.handleAdminNodeViewAccessGet)
+	admin.POST("/nodes/:id/view-access", s.requireNodesModifyPermission(), s.handleAdminNodeViewAccessSet)
+	admin.GET("/nodes/:id/ssh-user/:username/platform", s.requireNodesPermission(), s.handleAdminNodeSSHUserPlatform)
+	admin.POST("/nodes/:id/sync-now", s.requireNodesModifyPermission(), s.handleAdminNodeSyncNow)
+	admin.POST("/nodes/:id/ssh/disconnect-user", s.requireNodesModifyPermission(), s.handleAdminNodeDisconnectSSHUser)
+	admin.POST("/nodes/:id/ssh/disconnect-all", s.requireNodesModifyPermission(), s.handleAdminNodeDisconnectAllSSH)
+	admin.POST("/nodes/:id/processes/kill-all-users", s.requireNodesModifyPermission(), s.handleAdminNodeKillAllUserProcesses)
+	admin.GET("/ha/status", s.requireSuperAdmin(), s.handleAdminHAStatus)
 	admin.GET("/usage/export.csv", s.requireSuperAdmin(), s.handleAdminUsageExportCSV)
 	admin.GET("/mail/settings", s.requireSuperAdmin(), s.handleAdminMailSettingsGet)
 	admin.POST("/mail/settings", s.requireSuperAdmin(), s.handleAdminMailSettingsSet)
 	admin.POST("/mail/test", s.requireSuperAdmin(), s.handleAdminMailTest)
+	admin.POST("/mail/send", s.requireSuperAdmin(), s.handleAdminMailSend)
+	admin.GET("/guideline", s.requireSuperAdmin(), s.handleAdminGuidelineGet)
+	admin.POST("/guideline", s.requireSuperAdmin(), s.handleAdminGuidelineSet)
 	admin.GET("/accounts", s.requireSuperAdmin(), s.handleAdminAccountsList)
+	admin.GET("/accounts/provision-logs", s.requireSuperAdmin(), s.handleAdminAccountProvisionLogs)
 	admin.POST("/accounts", s.requireSuperAdmin(), s.handleAdminAccountsUpsert)
+	admin.POST("/accounts/provision", s.requireSuperAdmin(), s.handleAdminAccountProvision)
+	admin.POST("/accounts/disable", s.requireSuperAdmin(), s.handleAdminAccountDisable)
+	admin.POST("/accounts/enable", s.requireSuperAdmin(), s.handleAdminAccountEnable)
 	admin.PUT("/accounts", s.requireSuperAdmin(), s.handleAdminAccountsUpdate)
 	admin.DELETE("/accounts", s.requireSuperAdmin(), s.handleAdminAccountsDelete)
 	admin.GET("/whitelist", s.requireSuperAdmin(), s.handleAdminWhitelistList)
@@ -159,13 +216,26 @@ func (s *Server) Router() *gin.Engine {
 	admin.DELETE("/exemptions", s.requireSuperAdmin(), s.handleAdminExemptionsDelete)
 	admin.GET("/power-users", s.requireSuperAdmin(), s.handleAdminPowerUsersList)
 	admin.POST("/power-users", s.requireSuperAdmin(), s.handleAdminPowerUsersCreate)
+	admin.POST("/power-users/promote", s.requireSuperAdmin(), s.handleAdminPowerUsersPromote)
 	admin.PUT("/power-users/:username/permissions", s.requireSuperAdmin(), s.handleAdminPowerUsersUpdatePermissions)
+	admin.POST("/power-users/:username/demote", s.requireSuperAdmin(), s.handleAdminPowerUsersDemote)
 	admin.DELETE("/power-users/:username", s.requireSuperAdmin(), s.handleAdminPowerUsersDelete)
 	admin.GET("/stats/users", s.requireBoardPermission(), s.handleAdminStatsUsers)
 	admin.GET("/stats/platform-users", s.requireBoardPermission(), s.handleAdminStatsPlatformUsers)
 	admin.GET("/stats/platform-users/:username/nodes", s.requireBoardPermission(), s.handleAdminStatsPlatformUserNodes)
 	admin.GET("/stats/monthly", s.requireBoardPermission(), s.handleAdminStatsMonthly)
 	admin.GET("/stats/recharges", s.requireBoardPermission(), s.handleAdminStatsRecharges)
+	admin.GET("/points/users", s.requireSuperAdmin(), s.handleAdminPointsUsers)
+	admin.GET("/points/records", s.requireSuperAdmin(), s.handleAdminPointsRecords)
+	admin.POST("/points/adjust", s.requireSuperAdmin(), s.handleAdminPointsAdjust)
+	admin.POST("/points/batch-grant", s.requireSuperAdmin(), s.handleAdminPointsBatchGrant)
+	admin.GET("/points/special-rules", s.requireSuperAdmin(), s.handleAdminPointsSpecialRulesList)
+	admin.POST("/points/special-rules", s.requireSuperAdmin(), s.handleAdminPointsSpecialRulesUpsert)
+	admin.DELETE("/points/special-rules/:username", s.requireSuperAdmin(), s.handleAdminPointsSpecialRulesDelete)
+	admin.GET("/points/monthly-config", s.requireSuperAdmin(), s.handleAdminPointsMonthlyConfigGet)
+	admin.POST("/points/monthly-config", s.requireSuperAdmin(), s.handleAdminPointsMonthlyConfigSet)
+	admin.GET("/points/monthly-reset/status", s.requireSuperAdmin(), s.handleAdminPointsMonthlyResetStatus)
+	admin.POST("/points/monthly-reset", s.requireSuperAdmin(), s.handleAdminPointsMonthlyReset)
 
 	s.maybeServeWeb(r)
 	return r
@@ -188,9 +258,18 @@ func (s *Server) authSession() gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 			return
 		}
+		role, perms, ok, err := s.store.ResolveSessionRolePerms(c.Request.Context(), p.Username)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if !ok {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
+		}
 		c.Set("auth_user", p.Username)
-		c.Set("auth_role", p.Role)
-		c.Set("auth_perms", p.Perms)
+		c.Set("auth_role", role)
+		c.Set("auth_perms", perms)
 		c.Set("csrf", p.Nonce)
 
 		if c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead && c.Request.Method != http.MethodOptions {
@@ -224,7 +303,7 @@ func (s *Server) authAdmin() gin.HandlerFunc {
 		if strings.HasPrefix(auth, prefix) && strings.TrimSpace(strings.TrimPrefix(auth, prefix)) == s.cfg.AdminToken {
 			c.Set("auth_method", "token")
 			c.Set("auth_role", "admin")
-			c.Set("auth_perms", uint32(permViewBoard|permViewNodes|permReviewRequests))
+			c.Set("auth_perms", uint32(permViewBoard|permViewNodes|permManageNodes|permReviewRequests))
 			c.Next()
 			return
 		}
@@ -241,14 +320,23 @@ func (s *Server) authAdmin() gin.HandlerFunc {
 			return
 		}
 		p, err := verifySession(secret, cookie, time.Now())
-		if err != nil || (p.Role != "admin" && p.Role != "power_user") {
+		if err != nil || strings.TrimSpace(p.Username) == "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
+		}
+		role, perms, ok, err := s.store.ResolveSessionRolePerms(c.Request.Context(), p.Username)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if !ok || (role != "admin" && role != "power_user") {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 			return
 		}
 		c.Set("auth_method", "session")
 		c.Set("auth_user", p.Username)
-		c.Set("auth_role", p.Role)
-		c.Set("auth_perms", p.Perms)
+		c.Set("auth_role", role)
+		c.Set("auth_perms", perms)
 		c.Set("csrf", p.Nonce)
 
 		// CSRF：仅对“有副作用”的请求要求 header（GET 不需要）
@@ -331,6 +419,86 @@ func (s *Server) requireNodesPermission() gin.HandlerFunc {
 	}
 }
 
+func (s *Server) requireNodesModifyPermission() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		role := getAuthRole(c)
+		if role == "admin" {
+			c.Next()
+			return
+		}
+		if role == "power_user" && (getAuthPerms(c)&permManageNodes) != 0 {
+			c.Next()
+			return
+		}
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+	}
+}
+
+func (s *Server) ensureNodeReadable(c *gin.Context, nodeID string) bool {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id 不能为空"})
+		return false
+	}
+	role := getAuthRole(c)
+	if role == "admin" {
+		return true
+	}
+	if role != "power_user" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return false
+	}
+	username := strings.TrimSpace(c.GetString("auth_user"))
+	if username == "" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return false
+	}
+	ok, err := s.store.CanPowerUserViewNode(c.Request.Context(), nodeID, username)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+			return false
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return false
+	}
+	if !ok {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return false
+	}
+	return true
+}
+
+func (s *Server) visibleNodeIDsForPowerUser(c *gin.Context) ([]string, bool, error) {
+	if getAuthRole(c) != "power_user" {
+		return nil, false, nil
+	}
+	username := strings.TrimSpace(c.GetString("auth_user"))
+	if username == "" {
+		return nil, true, errors.New("forbidden")
+	}
+	visible, err := s.store.ListVisibleNodeIDsForPowerUser(c.Request.Context(), username)
+	if err != nil {
+		return nil, true, err
+	}
+	return visible, true, nil
+}
+
+func (s *Server) adminUsernameSet(ctx context.Context) (map[string]struct{}, error) {
+	rows, err := s.store.ListAdminUsernames(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]struct{}, len(rows))
+	for _, u := range rows {
+		u = strings.TrimSpace(u)
+		if u != "" {
+			out[u] = struct{}{}
+		}
+	}
+	return out, nil
+}
+
 func (s *Server) requireReviewPermission() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		role := getAuthRole(c)
@@ -363,11 +531,20 @@ func (s *Server) handleBalance(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	exclusiveTotal, err := s.store.GetUserExclusiveBalanceTotal(ctx, username)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"username": u.Username,
-		"balance":  u.Balance,
-		"status":   u.Status,
+		"username":          u.Username,
+		"balance":           u.Balance,
+		"general_balance":   u.Balance,
+		"carryover_balance": u.CarryoverBalance,
+		"exclusive_balance": exclusiveTotal,
+		"total_balance":     u.Balance + u.CarryoverBalance + exclusiveTotal,
+		"status":            u.Status,
 	})
 }
 
@@ -423,9 +600,13 @@ func (s *Server) handleRecharge(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"username": res.User.Username,
-		"balance":  res.User.Balance,
-		"status":   res.User.Status,
+		"username":          res.User.Username,
+		"balance":           res.User.Balance,
+		"general_balance":   res.User.Balance,
+		"carryover_balance": res.User.CarryoverBalance,
+		"exclusive_balance": 0,
+		"total_balance":     res.User.Balance + res.User.CarryoverBalance,
+		"status":            res.User.Status,
 	})
 }
 
@@ -454,6 +635,462 @@ func (s *Server) handleAdminUserDetails(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"users": rows})
 }
 
+func (s *Server) handleAdminUserProfile(c *gin.Context) {
+	username := strings.TrimSpace(c.Param("username"))
+	if username == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "username 不能为空"})
+		return
+	}
+	ctx := c.Request.Context()
+	acc, err := s.store.GetUserAccountByUsername(ctx, username)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	role := "user"
+	email := ""
+	realName := ""
+	studentID := ""
+	advisor := ""
+	expectedGradYear := 0
+	expectedGradMonth := 0
+	phone := ""
+	var createdAt any = nil
+	var updatedAt any = nil
+
+	if err == nil {
+		role = acc.Role
+		email = acc.Email
+		realName = acc.RealName
+		studentID = acc.StudentID
+		advisor = acc.Advisor
+		expectedGradYear = acc.ExpectedGraduationYear
+		expectedGradMonth = acc.ExpectedGraduationMonth
+		phone = acc.Phone
+		createdAt = acc.CreatedAt
+		updatedAt = acc.UpdatedAt
+	} else {
+		// 兼容 admin/power_user：这些账号不在 user_accounts 里，也需要可点击查看详情。
+		rows, detailErr := s.store.ListAdminUserDetails(ctx, 5000)
+		if detailErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": detailErr.Error()})
+			return
+		}
+		found := false
+		for _, d := range rows {
+			if strings.TrimSpace(d.Username) != username {
+				continue
+			}
+			found = true
+			role = d.Role
+			email = d.Email
+			realName = d.RealName
+			studentID = d.StudentID
+			advisor = d.Advisor
+			expectedGradYear = d.ExpectedGradYear
+			expectedGradMonth = d.ExpectedGradMonth
+			phone = d.Phone
+			break
+		}
+		if !found {
+			c.JSON(http.StatusNotFound, gin.H{"error": "平台账号不存在"})
+			return
+		}
+		if getAuthRole(c) == "power_user" && role == "admin" {
+			c.JSON(http.StatusNotFound, gin.H{"error": "平台账号不存在"})
+			return
+		}
+		if role == "admin" || role == "power_user" {
+			p, pErr := s.store.GetAdminProfile(ctx, username)
+			if pErr != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": pErr.Error()})
+				return
+			}
+			realName = strings.TrimSpace(p.RealName)
+			email = strings.TrimSpace(p.Email)
+			phone = strings.TrimSpace(p.Phone)
+			createdAt = p.CreatedAt
+			updatedAt = p.UpdatedAt
+		}
+	}
+
+	u, err := s.store.GetUser(ctx, username)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	balance := s.cfg.DefaultBalance
+	carryoverBalance := 0.0
+	status := "normal"
+	if err == nil {
+		balance = u.Balance
+		carryoverBalance = u.CarryoverBalance
+		status = u.Status
+	}
+	exclusiveTotal, err := s.store.GetUserExclusiveBalanceTotal(ctx, username)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	exclusiveRows, err := s.store.ListNodeExclusivePointsByUser(ctx, username, 5000)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	accounts, err := s.store.ListUserNodeAccountsByBilling(ctx, username, 5000)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if getAuthRole(c) == "power_user" {
+		viewer := strings.TrimSpace(c.GetString("auth_user"))
+		if viewer != "" {
+			visible, vErr := s.store.ListVisibleNodeIDsForPowerUser(ctx, viewer)
+			if vErr != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": vErr.Error()})
+				return
+			}
+			allow := map[string]struct{}{}
+			for _, id := range visible {
+				allow[strings.TrimSpace(id)] = struct{}{}
+			}
+			filtered := make([]UserNodeAccount, 0, len(accounts))
+			for _, a := range accounts {
+				if _, ok := allow[strings.TrimSpace(a.NodeID)]; ok {
+					filtered = append(filtered, a)
+				}
+			}
+			accounts = filtered
+			filteredExclusive := make([]NodeExclusivePointsBalance, 0, len(exclusiveRows))
+			exclusiveTotal = 0
+			for _, x := range exclusiveRows {
+				if _, ok := allow[strings.TrimSpace(x.NodeID)]; !ok {
+					continue
+				}
+				filteredExclusive = append(filteredExclusive, x)
+				exclusiveTotal += x.Balance
+			}
+			exclusiveRows = filteredExclusive
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"user": gin.H{
+			"username":                  username,
+			"email":                     email,
+			"real_name":                 realName,
+			"student_id":                studentID,
+			"advisor":                   advisor,
+			"expected_graduation_year":  expectedGradYear,
+			"expected_graduation_month": expectedGradMonth,
+			"phone":                     phone,
+			"role":                      role,
+			"balance":                   balance,
+			"general_balance":           balance,
+			"carryover_balance":         carryoverBalance,
+			"exclusive_balance":         exclusiveTotal,
+			"total_balance":             balance + carryoverBalance + exclusiveTotal,
+			"exclusive_balances":        exclusiveRows,
+			"status":                    status,
+			"created_at":                createdAt,
+			"updated_at":                updatedAt,
+			"node_accounts":             accounts,
+		},
+	})
+}
+
+type adminMyProfileSetReq struct {
+	RealName string `json:"real_name"`
+	Email    string `json:"email"`
+	Phone    string `json:"phone"`
+}
+
+func (s *Server) handleAdminMyProfileGet(c *gin.Context) {
+	username := strings.TrimSpace(c.GetString("auth_user"))
+	if username == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	p, err := s.store.GetAdminProfile(c.Request.Context(), username)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"profile": p})
+}
+
+func (s *Server) handleAdminMyProfileSet(c *gin.Context) {
+	username := strings.TrimSpace(c.GetString("auth_user"))
+	if username == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	var req adminMyProfileSetReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数不合法"})
+		return
+	}
+	p, err := s.store.UpsertAdminProfile(c.Request.Context(), username, req.RealName, req.Email, req.Phone)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "profile": p})
+}
+
+type adminUserDeleteReq struct {
+	Reason string `json:"reason"`
+}
+
+type adminUserBlockReq struct {
+	Reason string `json:"reason"`
+}
+
+func (s *Server) handleAdminUserBlock(c *gin.Context) {
+	username := strings.TrimSpace(c.Param("username"))
+	if username == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "username 不能为空"})
+		return
+	}
+	var req adminUserBlockReq
+	_ = c.ShouldBindJSON(&req)
+	reason := strings.TrimSpace(req.Reason)
+	operator := s.currentOperator(c)
+	if err := s.store.WithTx(c.Request.Context(), func(tx *sql.Tx) error {
+		if _, err := s.store.SetUserManualStatusTx(c.Request.Context(), tx, username, "blocked"); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	entries := []sshListEntry{{NodeID: "*", LocalUsername: username, SourceType: "platform", SourcePlatformUsername: username}}
+	if _, err := s.upsertBlacklistEntries(c.Request.Context(), entries, operator, reason); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	for _, e := range entries {
+		s.enqueueKickSSHUser(c.Request.Context(), e.NodeID, e.LocalUsername, fmt.Sprintf("管理员 %s 拉黑平台账号，已强制断开 SSH 会话", operator))
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "username": username, "status": "blocked", "ssh_blacklisted": true})
+}
+
+func (s *Server) handleAdminUserUnblock(c *gin.Context) {
+	username := strings.TrimSpace(c.Param("username"))
+	if username == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "username 不能为空"})
+		return
+	}
+	if err := s.store.WithTx(c.Request.Context(), func(tx *sql.Tx) error {
+		_, err := s.store.SetUserManualStatusTx(c.Request.Context(), tx, username, "normal")
+		return err
+	}); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	// 清理该账号对应的黑名单条目（包含 * 与具体节点）：
+	// 1) local_username == 平台账号
+	// 2) billing_username == 平台账号（由映射推断）
+	// 3) source_platform_username == 平台账号（按平台账号添加时记录）
+	rows, err := s.store.ListBlacklist(c.Request.Context(), "", 200000)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := s.fillSSHEntryDisplayMeta(c.Request.Context(), "", "blacklist", nil, rows, nil); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	targets := map[string]struct{}{}
+	addTarget := func(nodeID string, localUsername string) {
+		nodeID = strings.TrimSpace(nodeID)
+		localUsername = strings.TrimSpace(localUsername)
+		if nodeID == "" || localUsername == "" {
+			return
+		}
+		targets[nodeID+"|"+localUsername] = struct{}{}
+	}
+	for _, r := range rows {
+		local := strings.TrimSpace(r.LocalUsername)
+		billing := strings.TrimSpace(r.BillingUsername)
+		sourcePlatform := strings.TrimSpace(r.SourcePlatformUsername)
+		if local != username && billing != username && sourcePlatform != username {
+			continue
+		}
+		addTarget(r.NodeID, r.LocalUsername)
+	}
+	for k := range targets {
+		parts := strings.SplitN(k, "|", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		nodeID := parts[0]
+		local := parts[1]
+		_ = s.store.DeleteBlacklistExact(c.Request.Context(), nodeID, local)
+		_ = s.store.DeleteSSHListSource(c.Request.Context(), "blacklist", nodeID, local)
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "username": username, "status": "normal", "ssh_unblacklisted": true})
+}
+
+func (s *Server) handleAdminUserDelete(c *gin.Context) {
+	username := strings.TrimSpace(c.Param("username"))
+	if username == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "username 不能为空"})
+		return
+	}
+	var req adminUserDeleteReq
+	_ = c.ShouldBindJSON(&req)
+	operator := strings.TrimSpace(c.GetString("auth_user"))
+	if operator == "" {
+		operator = "admin"
+	}
+	var deleted DeletedUserAccount
+	if err := s.store.WithTx(c.Request.Context(), func(tx *sql.Tx) error {
+		var txErr error
+		deleted, txErr = s.store.ArchiveUserAccountTx(c.Request.Context(), tx, username, operator, req.Reason)
+		return txErr
+	}); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "平台账号不存在或已删除"})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "deleted": deleted})
+}
+
+func (s *Server) handleAdminDeletedUsers(c *gin.Context) {
+	includeRestored := strings.TrimSpace(c.Query("include_restored")) == "1"
+	limit := parseLimit(c.Query("limit"), 1000, 5000)
+	rows, err := s.store.ListDeletedUserAccounts(c.Request.Context(), includeRestored, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"users": rows})
+}
+
+func (s *Server) handleAdminDeletedUserRestore(c *gin.Context) {
+	id, err := strconv.ParseInt(strings.TrimSpace(c.Param("id")), 10, 64)
+	if err != nil || id <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "id 不合法"})
+		return
+	}
+	operator := strings.TrimSpace(c.GetString("auth_user"))
+	if operator == "" {
+		operator = "admin"
+	}
+	var restored DeletedUserAccount
+	if err := s.store.WithTx(c.Request.Context(), func(tx *sql.Tx) error {
+		var txErr error
+		restored, txErr = s.store.RestoreDeletedUserAccountTx(c.Request.Context(), tx, id, operator)
+		return txErr
+	}); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "restored": restored})
+}
+
+func (s *Server) handleAdminUserDuplicates(c *gin.Context) {
+	username := strings.TrimSpace(c.Query("username"))
+	email := strings.TrimSpace(strings.ToLower(c.Query("email")))
+	studentID := strings.TrimSpace(c.Query("student_id"))
+	limit := parseLimit(c.Query("limit"), 200, 1000)
+	active, deleted, err := s.store.FindPlatformUsersByIdentity(c.Request.Context(), username, email, studentID, limit)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"active_users": active, "deleted_users": deleted})
+}
+
+func (s *Server) handleAdminGraduationDueUsers(c *gin.Context) {
+	limit := parseLimit(c.Query("limit"), 2000, 5000)
+	rows, err := s.store.ListGraduationDueUsers(c.Request.Context(), time.Now(), limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"users": rows})
+}
+
+type graduationRemindersSendReq struct {
+	Usernames []string `json:"usernames"`
+}
+
+type graduationReminderSendResult struct {
+	Username string `json:"username"`
+	Email    string `json:"email"`
+	Success  bool   `json:"success"`
+	Error    string `json:"error,omitempty"`
+}
+
+func (s *Server) handleAdminGraduationRemindersSend(c *gin.Context) {
+	var req graduationRemindersSendReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if len(req.Usernames) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "usernames 不能为空"})
+		return
+	}
+	settings, err := s.store.GetMailSettings(c.Request.Context(), s.cfg)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	monthStart := time.Now().Format("2006-01")
+	results := make([]graduationReminderSendResult, 0, len(req.Usernames))
+	okCount := 0
+	for _, raw := range req.Usernames {
+		username := strings.TrimSpace(raw)
+		if username == "" {
+			continue
+		}
+		r := graduationReminderSendResult{Username: username}
+		email, err := s.store.GetUserEmailByUsername(c.Request.Context(), username)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				r.Success = false
+				r.Error = "未找到该用户邮箱"
+				results = append(results, r)
+				continue
+			}
+			r.Success = false
+			r.Error = err.Error()
+			results = append(results, r)
+			continue
+		}
+		r.Email = email
+		subject := "GPU Ops 数据备份提醒（毕业到期）"
+		body := fmt.Sprintf(
+			"你好 %s，\n\n系统检测到你已达到预计毕业时间（%s）。\n请尽快备份个人数据，平台将在两个月内进行数据清理。\n如需延期，请尽快联系管理员。\n\nGPU Ops 团队",
+			username,
+			monthStart,
+		)
+		if err := sendPlainTextMail(settings, email, subject, body); err != nil {
+			r.Success = false
+			r.Error = "发送失败: " + err.Error()
+			results = append(results, r)
+			continue
+		}
+		r.Success = true
+		okCount++
+		results = append(results, r)
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"ok":      true,
+		"total":   len(results),
+		"success": okCount,
+		"failed":  len(results) - okCount,
+		"results": results,
+	})
+}
+
 func (s *Server) handleAnnouncementsList(c *gin.Context) {
 	limit := 20
 	if v := strings.TrimSpace(c.Query("limit")); v != "" {
@@ -467,6 +1104,19 @@ func (s *Server) handleAnnouncementsList(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"announcements": rows})
+}
+
+func (s *Server) handleUserGuidelineGet(c *gin.Context) {
+	content, updatedBy, updatedAt, err := s.store.GetUserGuideline(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"content":    content,
+		"updated_by": updatedBy,
+		"updated_at": updatedAt,
+	})
 }
 
 type announcementCreateReq struct {
@@ -511,10 +1161,137 @@ func (s *Server) handleAnnouncementDelete(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
+type adminGuidelineSetReq struct {
+	Content string `json:"content"`
+}
+
+type adminNoteUpsertReq struct {
+	NoteDate string `json:"note_date"` // YYYY-MM-DD
+	Title    string `json:"title"`
+	Content  string `json:"content"`
+}
+
+func (s *Server) handleAdminGuidelineGet(c *gin.Context) {
+	s.handleUserGuidelineGet(c)
+}
+
+func (s *Server) handleAdminGuidelineSet(c *gin.Context) {
+	var req adminGuidelineSetReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := s.store.UpsertUserGuideline(c.Request.Context(), req.Content, s.currentOperator(c)); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	content, updatedBy, updatedAt, err := s.store.GetUserGuideline(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"ok":         true,
+		"content":    content,
+		"updated_by": updatedBy,
+		"updated_at": updatedAt,
+	})
+}
+
+func parseDateYYYYMMDD(v string) (time.Time, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return time.Time{}, errors.New("note_date 不能为空")
+	}
+	t, err := time.Parse("2006-01-02", v)
+	if err != nil {
+		return time.Time{}, errors.New("note_date 格式应为 YYYY-MM-DD")
+	}
+	return t, nil
+}
+
+func (s *Server) handleAdminNotesList(c *gin.Context) {
+	from := strings.TrimSpace(c.Query("from"))
+	to := strings.TrimSpace(c.Query("to"))
+	limit := parseLimit(c.Query("limit"), 500, 5000)
+	rows, err := s.store.ListAdminNotes(c.Request.Context(), from, to, limit)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"notes": rows})
+}
+
+func (s *Server) handleAdminNotesCreate(c *gin.Context) {
+	var req adminNoteUpsertReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	noteDate, err := parseDateYYYYMMDD(req.NoteDate)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	operator := s.currentOperator(c)
+	n, err := s.store.CreateAdminNote(c.Request.Context(), noteDate, req.Title, req.Content, operator)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "note": n})
+}
+
+func (s *Server) handleAdminNotesUpdate(c *gin.Context) {
+	id, err := strconv.Atoi(strings.TrimSpace(c.Param("id")))
+	if err != nil || id <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "id 不合法"})
+		return
+	}
+	var req adminNoteUpsertReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	noteDate, err := parseDateYYYYMMDD(req.NoteDate)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	operator := s.currentOperator(c)
+	n, err := s.store.UpdateAdminNote(c.Request.Context(), id, noteDate, req.Title, req.Content, operator)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "记录不存在"})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "note": n})
+}
+
+func (s *Server) handleAdminNotesDelete(c *gin.Context) {
+	id, err := strconv.Atoi(strings.TrimSpace(c.Param("id")))
+	if err != nil || id <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "id 不合法"})
+		return
+	}
+	if err := s.store.DeleteAdminNote(c.Request.Context(), id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "记录不存在"})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
 func (s *Server) handleUserMe(c *gin.Context) {
 	username := strings.TrimSpace(fmt.Sprintf("%v", c.MustGet("auth_user")))
 	role := strings.TrimSpace(fmt.Sprintf("%v", c.MustGet("auth_role")))
-	if role == "admin" || role == "power_user" {
+	if role == "admin" {
 		c.JSON(http.StatusOK, gin.H{
 			"username": username,
 			"role":     role,
@@ -523,24 +1300,71 @@ func (s *Server) handleUserMe(c *gin.Context) {
 	}
 	acc, err := s.store.GetUserAccountByUsername(c.Request.Context(), username)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, acc)
-}
-
-func (s *Server) handleUserMyBalance(c *gin.Context) {
-	username := strings.TrimSpace(fmt.Sprintf("%v", c.MustGet("auth_user")))
-	u, err := s.store.GetUser(c.Request.Context(), username)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			c.JSON(http.StatusOK, gin.H{"username": username, "balance": s.cfg.DefaultBalance, "status": "normal"})
+		if role == "power_user" && errors.Is(err, sql.ErrNoRows) {
+			// 兼容“仅创建在 power_users 表中的高级用户”，保留最小可用信息，避免前端空白报错。
+			c.JSON(http.StatusOK, gin.H{
+				"username": username,
+				"role":     role,
+			})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"username": u.Username, "balance": u.Balance, "status": u.Status})
+	acc.Role = role
+	c.JSON(http.StatusOK, acc)
+}
+
+func (s *Server) handleUserMyBalance(c *gin.Context) {
+	username := strings.TrimSpace(fmt.Sprintf("%v", c.MustGet("auth_user")))
+	balance := s.cfg.DefaultBalance
+	carryoverBalance := 0.0
+	status := "normal"
+	u, err := s.store.GetUser(c.Request.Context(), username)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err == nil {
+		balance = u.Balance
+		carryoverBalance = u.CarryoverBalance
+		status = u.Status
+	}
+	exclusiveTotal, err := s.store.GetUserExclusiveBalanceTotal(c.Request.Context(), username)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	exclusiveRows, err := s.store.ListNodeExclusivePointsByUser(c.Request.Context(), username, 5000)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	accountCreatedAt, err := s.store.GetUserAccountCreatedAt(c.Request.Context(), username)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	monthUsedPoints, totalUsedPoints, err := s.store.GetUserUsageCostSummary(c.Request.Context(), username, time.Now())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	totalBalance := balance + carryoverBalance + exclusiveTotal
+	c.JSON(http.StatusOK, gin.H{
+		"username":               username,
+		"balance":                balance,
+		"general_balance":        balance,
+		"carryover_balance":      carryoverBalance,
+		"exclusive_balance":      exclusiveTotal,
+		"total_balance":          totalBalance,
+		"exclusive_balances":     exclusiveRows,
+		"status":                 status,
+		"account_created_at":     accountCreatedAt,
+		"month_remaining_points": totalBalance,
+		"month_used_points":      monthUsedPoints,
+		"total_used_points":      totalUsedPoints,
+	})
 }
 
 func (s *Server) handleUserMyUsage(c *gin.Context) {
@@ -560,14 +1384,15 @@ func (s *Server) handleUserMyUsage(c *gin.Context) {
 }
 
 type userProfileUpdateReq struct {
-	Email                  string `json:"email"`
-	Username               string `json:"username"`
-	StudentID              string `json:"student_id"`
-	RealName               string `json:"real_name"`
-	Advisor                string `json:"advisor"`
-	ExpectedGraduationYear int    `json:"expected_graduation_year"`
-	Phone                  string `json:"phone"`
-	ChangeReason           string `json:"change_reason"`
+	Email                   string `json:"email"`
+	Username                string `json:"username"`
+	StudentID               string `json:"student_id"`
+	RealName                string `json:"real_name"`
+	Advisor                 string `json:"advisor"`
+	ExpectedGraduationYear  int    `json:"expected_graduation_year"`
+	ExpectedGraduationMonth int    `json:"expected_graduation_month"`
+	Phone                   string `json:"phone"`
+	ChangeReason            string `json:"change_reason"`
 }
 
 func (s *Server) handleUserMyProfileUpdate(c *gin.Context) {
@@ -598,7 +1423,7 @@ func (s *Server) handleUserMyProfileUpdate(c *gin.Context) {
 		return
 	}
 	needReview := req.Username != profile.Username || req.Email != strings.ToLower(profile.Email) || req.StudentID != profile.StudentID
-	if err := s.store.UpdateUserProfileBase(c.Request.Context(), authUsername, req.RealName, req.Advisor, req.ExpectedGraduationYear, req.Phone); err != nil {
+	if err := s.store.UpdateUserProfileBase(c.Request.Context(), authUsername, req.RealName, req.Advisor, req.ExpectedGraduationYear, req.ExpectedGraduationMonth, req.Phone); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "用户不存在"})
 			return
@@ -664,6 +1489,17 @@ func (s *Server) handleUserAccountsList(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"accounts": rows})
 }
 
+func (s *Server) handleUserProvisionMessagesList(c *gin.Context) {
+	billing := strings.TrimSpace(fmt.Sprintf("%v", c.MustGet("auth_user")))
+	limit := parseLimit(c.Query("limit"), 100, 1000)
+	rows, err := s.store.ListUserProvisionMessages(c.Request.Context(), billing, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"messages": rows})
+}
+
 func (s *Server) handleUserAccountsUpsert(c *gin.Context) {
 	billing := strings.TrimSpace(fmt.Sprintf("%v", c.MustGet("auth_user")))
 	var req userAccountUpsertReq
@@ -710,6 +1546,21 @@ func (s *Server) handleUserAccountsDelete(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	// 删除映射后立即收敛该本地账号会话，避免“映射已删但进程/SSH仍在运行”。
+	s.enqueueNodeAction(nodeID, Action{
+		Type:     "kill_all_processes",
+		Username: localUsername,
+		Reason:   fmt.Sprintf("平台用户 %s 删除节点账号映射：强制终止该账号全部进程", billing),
+	})
+	s.enqueueNodeAction(nodeID, Action{
+		Type:     "kick_ssh_user",
+		Username: localUsername,
+		Reason:   fmt.Sprintf("平台用户 %s 删除节点账号映射：强制断开 SSH 会话", billing),
+	})
+	s.enqueueNodeAction(nodeID, Action{
+		Type:   "force_sync",
+		Reason: fmt.Sprintf("平台用户 %s 删除节点账号映射：立即刷新节点 SSH 策略缓存", billing),
+	})
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
@@ -728,6 +1579,34 @@ type adminAccountUpdateReq struct {
 	NewLocalUsername   string `json:"new_local_username"`
 }
 
+type adminAccountProvisionReq struct {
+	BillingUsername string `json:"billing_username"`
+	NodeID          string `json:"node_id"`
+	LocalUsername   string `json:"local_username"`
+	SSHHost         string `json:"ssh_host"`
+	SSHPort         int    `json:"ssh_port"`
+	RotateKey       bool   `json:"rotate_key"`
+}
+
+type toolProvisionDecryptReq struct {
+	EncryptedPayload string `json:"encrypted_payload"`
+	DecryptCode      string `json:"decrypt_code"`
+}
+
+type adminAccountDisableReq struct {
+	BillingUsername string `json:"billing_username"`
+	NodeID          string `json:"node_id"`
+	LocalUsername   string `json:"local_username"`
+	Reason          string `json:"reason"`
+}
+
+type adminAccountEnableReq struct {
+	BillingUsername string `json:"billing_username"`
+	NodeID          string `json:"node_id"`
+	LocalUsername   string `json:"local_username"`
+	Reason          string `json:"reason"`
+}
+
 func (s *Server) handleAdminAccountsList(c *gin.Context) {
 	billing := strings.TrimSpace(c.Query("billing_username"))
 	rows, err := s.store.ListUserNodeAccounts(c.Request.Context(), billing, 5000)
@@ -736,6 +1615,24 @@ func (s *Server) handleAdminAccountsList(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"accounts": rows})
+}
+
+func (s *Server) handleAdminAccountProvisionLogs(c *gin.Context) {
+	billing := strings.TrimSpace(c.Query("billing_username"))
+	nodeID := strings.TrimSpace(c.Query("node_id"))
+	localUsername := strings.TrimSpace(c.Query("local_username"))
+	limit := 200
+	if v := strings.TrimSpace(c.Query("limit")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			limit = n
+		}
+	}
+	rows, err := s.store.ListAccountProvisionLogs(c.Request.Context(), billing, nodeID, localUsername, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"logs": rows})
 }
 
 func (s *Server) handleAdminAccountsUpsert(c *gin.Context) {
@@ -782,18 +1679,450 @@ func (s *Server) handleAdminAccountsDelete(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	operator := s.currentOperator(c)
+	s.enqueueNodeAction(nodeID, Action{
+		Type:     "kill_all_processes",
+		Username: localUsername,
+		Reason:   fmt.Sprintf("管理员 %s 删除节点账号映射：强制终止该账号全部进程", operator),
+	})
+	s.enqueueNodeAction(nodeID, Action{
+		Type:     "kick_ssh_user",
+		Username: localUsername,
+		Reason:   fmt.Sprintf("管理员 %s 删除节点账号映射：强制断开 SSH 会话", operator),
+	})
+	s.enqueueNodeAction(nodeID, Action{
+		Type:   "force_sync",
+		Reason: fmt.Sprintf("管理员 %s 删除节点账号映射：立即刷新节点 SSH 策略缓存", operator),
+	})
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
+func (s *Server) handleAdminAccountDisable(c *gin.Context) {
+	var req adminAccountDisableReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	req.BillingUsername = strings.TrimSpace(req.BillingUsername)
+	req.NodeID = strings.TrimSpace(req.NodeID)
+	req.LocalUsername = strings.TrimSpace(req.LocalUsername)
+	req.Reason = strings.TrimSpace(req.Reason)
+	if req.NodeID == "" || req.LocalUsername == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id/local_username 不能为空"})
+		return
+	}
+
+	mappedBilling, mapped, err := s.store.ResolveBillingUsername(c.Request.Context(), req.NodeID, req.LocalUsername)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !mapped {
+		c.JSON(http.StatusNotFound, gin.H{"error": "该节点账号映射不存在"})
+		return
+	}
+	if req.BillingUsername != "" && req.BillingUsername != mappedBilling {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "映射校验失败：该节点账号不属于指定平台账号"})
+		return
+	}
+
+	operator := s.currentOperator(c)
+	reason := req.Reason
+	if reason == "" {
+		reason = fmt.Sprintf("管理员 %s 禁用了该节点账号映射", operator)
+	}
+	entries := []sshListEntry{{
+		NodeID:                 req.NodeID,
+		LocalUsername:          req.LocalUsername,
+		SourceType:             "platform",
+		SourcePlatformUsername: mappedBilling,
+	}}
+	result, err := s.upsertBlacklistEntries(c.Request.Context(), entries, operator, reason)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	s.enqueueNodeAction(req.NodeID, Action{
+		Type:     "kill_all_processes",
+		Username: req.LocalUsername,
+		Reason:   fmt.Sprintf("管理员 %s 禁用映射：强制终止该账号所有进程", operator),
+	})
+	s.enqueueNodeAction(req.NodeID, Action{
+		Type:     "kick_ssh_user",
+		Username: req.LocalUsername,
+		Reason:   fmt.Sprintf("管理员 %s 禁用映射：强制断开 SSH 会话", operator),
+	})
+	s.enqueueNodeAction(req.NodeID, Action{
+		Type:   "force_sync",
+		Reason: fmt.Sprintf("管理员 %s 禁用映射，立即刷新节点 SSH 策略缓存", operator),
+	})
+
+	c.JSON(http.StatusOK, gin.H{
+		"ok":                        true,
+		"billing_username":          mappedBilling,
+		"node_id":                   req.NodeID,
+		"local_username":            req.LocalUsername,
+		"blacklisted":               true,
+		"killed_processes":          true,
+		"kicked_ssh":                true,
+		"removed_from_whitelist":    result.RemovedFromWhitelist,
+		"removed_from_exemptions":   result.RemovedFromExemptions,
+		"message":                   "已禁用该节点账号映射，并下发强制下线与进程终止指令",
+		"blacklist_reason_recorded": reason,
+	})
+}
+
+func (s *Server) handleAdminAccountEnable(c *gin.Context) {
+	var req adminAccountEnableReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	req.BillingUsername = strings.TrimSpace(req.BillingUsername)
+	req.NodeID = strings.TrimSpace(req.NodeID)
+	req.LocalUsername = strings.TrimSpace(req.LocalUsername)
+	req.Reason = strings.TrimSpace(req.Reason)
+	if req.NodeID == "" || req.LocalUsername == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id/local_username 不能为空"})
+		return
+	}
+
+	mappedBilling, mapped, err := s.store.ResolveBillingUsername(c.Request.Context(), req.NodeID, req.LocalUsername)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !mapped {
+		c.JSON(http.StatusNotFound, gin.H{"error": "该节点账号映射不存在"})
+		return
+	}
+	if req.BillingUsername != "" && req.BillingUsername != mappedBilling {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "映射校验失败：该节点账号不属于指定平台账号"})
+		return
+	}
+
+	rows, err := s.store.ListBlacklist(c.Request.Context(), req.NodeID, 5000)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	exactBlacklisted := false
+	for _, r := range rows {
+		if strings.TrimSpace(r.NodeID) == req.NodeID && strings.TrimSpace(r.LocalUsername) == req.LocalUsername {
+			exactBlacklisted = true
+			break
+		}
+	}
+	if !exactBlacklisted {
+		c.JSON(http.StatusOK, gin.H{
+			"ok":               true,
+			"billing_username": mappedBilling,
+			"node_id":          req.NodeID,
+			"local_username":   req.LocalUsername,
+			"unblacklisted":    false,
+			"message":          "该映射当前未被禁用",
+		})
+		return
+	}
+
+	_ = s.store.DeleteBlacklistExact(c.Request.Context(), req.NodeID, req.LocalUsername)
+	_ = s.store.DeleteSSHListSource(c.Request.Context(), "blacklist", req.NodeID, req.LocalUsername)
+
+	operator := s.currentOperator(c)
+	reason := req.Reason
+	if reason == "" {
+		reason = fmt.Sprintf("管理员 %s 解除禁用该节点账号映射", operator)
+	}
+	s.enqueueNodeAction(req.NodeID, Action{
+		Type:   "force_sync",
+		Reason: fmt.Sprintf("%s：立即刷新节点 SSH 策略缓存", reason),
+	})
+	c.JSON(http.StatusOK, gin.H{
+		"ok":               true,
+		"billing_username": mappedBilling,
+		"node_id":          req.NodeID,
+		"local_username":   req.LocalUsername,
+		"unblacklisted":    true,
+		"message":          "已解除禁用并刷新节点 SSH 策略缓存",
+	})
+}
+
+func (s *Server) handleAdminAccountProvision(c *gin.Context) {
+	var req adminAccountProvisionReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	req.BillingUsername = strings.TrimSpace(req.BillingUsername)
+	req.NodeID = strings.TrimSpace(req.NodeID)
+	req.LocalUsername = strings.TrimSpace(req.LocalUsername)
+	req.SSHHost = strings.TrimSpace(req.SSHHost)
+	if req.BillingUsername == "" || req.NodeID == "" || req.LocalUsername == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "平台账号、节点编号、节点账号不能为空"})
+		return
+	}
+	if !provisionLocalUsernamePattern.MatchString(req.LocalUsername) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "节点账号格式不合法：仅支持小写字母/数字/下划线/短横线，且必须以字母或下划线开头"})
+		return
+	}
+
+	userAcc, err := s.store.GetUserAccountByUsername(c.Request.Context(), req.BillingUsername)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "平台账号不存在，或该账号不是可接收邮件的普通平台用户"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	userEmail := strings.TrimSpace(userAcc.Email)
+	if userEmail == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "该平台账号未配置邮箱，无法发送密钥邮件"})
+		return
+	}
+
+	node, err := s.store.GetNodeStatus(c.Request.Context(), req.NodeID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	mappedBilling, mapped, err := s.store.ResolveBillingUsername(c.Request.Context(), req.NodeID, req.LocalUsername)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	wasReissued := false
+	if mapped {
+		mappedBilling = strings.TrimSpace(mappedBilling)
+		if mappedBilling != "" && mappedBilling != req.BillingUsername {
+			c.JSON(http.StatusConflict, gin.H{
+				"error":                   fmt.Sprintf("节点 %s 的账号 %s 已绑定到平台账号 %s，请更换节点账号名或先调整映射", req.NodeID, req.LocalUsername, mappedBilling),
+				"reason":                  "mapping_exists_other_user",
+				"node_id":                 req.NodeID,
+				"local_username":          req.LocalUsername,
+				"mapped_billing_username": mappedBilling,
+			})
+			return
+		}
+		if !req.RotateKey {
+			displayBilling := req.BillingUsername
+			if mappedBilling != "" {
+				displayBilling = mappedBilling
+			}
+			c.JSON(http.StatusConflict, gin.H{
+				"error":                   fmt.Sprintf("节点 %s 的账号 %s 已绑定到平台账号 %s。若该用户丢失密钥，请确认“重新生成新密钥并重发”。", req.NodeID, req.LocalUsername, displayBilling),
+				"reason":                  "mapping_exists_same_user",
+				"node_id":                 req.NodeID,
+				"local_username":          req.LocalUsername,
+				"mapped_billing_username": displayBilling,
+			})
+			return
+		}
+		wasReissued = true
+	}
+
+	sshPort := inferSSHPort(req.NodeID, req.SSHPort)
+	sshHost := strings.TrimSpace(req.SSHHost)
+	if sshHost == "" {
+		sshHost = strings.TrimSpace(node.NodeIP)
+	}
+	if sshHost == "" {
+		sshHost = "<请向管理员确认节点IP>"
+	}
+
+	keyCtx, cancel := context.WithTimeout(c.Request.Context(), 8*time.Second)
+	defer cancel()
+	privateKey, publicKey, err := generateOpenSSHEd25519KeyPair(keyCtx)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "生成 ed25519 密钥失败: " + err.Error()})
+		return
+	}
+
+	decryptCode, err := randomDecryptCode()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "生成密钥提取码失败: " + err.Error()})
+		return
+	}
+	encryptedPayload, err := buildEncryptedPrivateKeyPayload(
+		privateKey,
+		decryptCode,
+		req.NodeID,
+		req.LocalUsername,
+		req.BillingUsername,
+		sshHost,
+		sshPort,
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加密私钥失败: " + err.Error()})
+		return
+	}
+
+	if err := s.store.UpsertUserNodeAccount(c.Request.Context(), req.NodeID, req.LocalUsername, req.BillingUsername); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	operator := s.currentOperator(c)
+	s.enqueueNodeAction(req.NodeID, Action{
+		Type:      "create_local_account",
+		Username:  req.LocalUsername,
+		PublicKey: publicKey,
+		Reason: func() string {
+			if wasReissued {
+				return fmt.Sprintf("管理员 %s 重新生成节点账号密钥，并刷新平台账号 %s 的 authorized_keys", operator, req.BillingUsername)
+			}
+			return fmt.Sprintf("管理员 %s 开通节点账号，并分配给平台账号 %s", operator, req.BillingUsername)
+		}(),
+	})
+	s.enqueueNodeAction(req.NodeID, Action{
+		Type:   "force_sync",
+		Reason: fmt.Sprintf("管理员 %s 开通了节点账号，要求节点立即同步本地用户清单", operator),
+	})
+
+	baseURL := inferRequestBaseURL(c)
+	decryptPath := "/user/accounts?tool=key-decryptor"
+	decryptURL := decryptPath
+	if baseURL != "" {
+		decryptURL = baseURL + decryptPath
+	}
+	fileName := fmt.Sprintf("%d_%s.txt", sshPort, req.LocalUsername)
+	sshCommand := fmt.Sprintf("ssh -i %s %s@%s -p %d", fileName, req.LocalUsername, sshHost, sshPort)
+	noticeErrMsg := ""
+	if err := s.store.InsertUserProvisionMessage(
+		c.Request.Context(),
+		req.BillingUsername,
+		req.NodeID,
+		req.LocalUsername,
+		encryptedPayload,
+		decryptPath,
+		sshHost,
+		sshPort,
+		fileName,
+		sshCommand,
+		userEmail,
+		operator,
+	); err != nil {
+		noticeErrMsg = "平台内密钥通知写入失败: " + err.Error()
+	}
+
+	mailSent := false
+	mailErrMsg := ""
+	settings, err := s.store.GetMailSettings(c.Request.Context(), s.cfg)
+	if err != nil {
+		mailErrMsg = "读取邮件配置失败: " + err.Error()
+	} else {
+		subject := fmt.Sprintf("【GPU Ops】节点账号已开通：%s@%s", req.LocalUsername, req.NodeID)
+		body := strings.Join([]string{
+			fmt.Sprintf("你好 %s（%s）：", strings.TrimSpace(userAcc.RealName), req.BillingUsername),
+			"",
+			"管理员已为你开通计算节点账号。",
+			"私钥密文和解密步骤已发送到平台内（我的节点账号映射页面）。",
+			"本邮件只发送提取码，用于和平台内密文组合解密。",
+			"",
+			"节点信息：",
+			fmt.Sprintf("- 节点编号：%s", req.NodeID),
+			fmt.Sprintf("- 节点账号：%s", req.LocalUsername),
+			fmt.Sprintf("- SSH 地址：%s:%d", sshHost, sshPort),
+			fmt.Sprintf("- 平台内解密入口：%s", decryptURL),
+			"",
+			"提取码（请妥善保管，不要外传）：",
+			decryptCode,
+			"",
+			"注意：邮件不包含私钥密文，密文只在平台内展示。",
+		}, "\n")
+		if err := sendPlainTextMail(settings, userEmail, subject, body); err != nil {
+			mailErrMsg = "发送邮件失败: " + err.Error()
+		} else {
+			mailSent = true
+		}
+	}
+	logErrMsg := ""
+	if err := s.store.InsertAccountProvisionLog(
+		c.Request.Context(),
+		req.BillingUsername,
+		req.NodeID,
+		req.LocalUsername,
+		userEmail,
+		sshHost,
+		sshPort,
+		fileName,
+		mailSent,
+		mailErrMsg,
+		operator,
+	); err != nil {
+		logErrMsg = "开通历史记录写入失败: " + err.Error()
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"ok":                true,
+		"node_id":           req.NodeID,
+		"local_username":    req.LocalUsername,
+		"billing_username":  req.BillingUsername,
+		"reissued_key":      wasReissued,
+		"email":             userEmail,
+		"ssh_host":          sshHost,
+		"ssh_port":          sshPort,
+		"download_filename": fileName,
+		"ssh_command":       sshCommand,
+		"decrypt_url":       decryptURL,
+		"decrypt_code":      decryptCode,
+		"encrypted_payload": encryptedPayload,
+		"mail_sent":         mailSent,
+		"mail_error":        mailErrMsg,
+		"log_error":         logErrMsg,
+		"notice_error":      noticeErrMsg,
+		"message": func() string {
+			if wasReissued {
+				return "新密钥重发指令已下发，节点将在下一个心跳周期内刷新账号公钥"
+			}
+			return "节点账号开通指令已下发，节点将在下一个心跳周期内创建账号并写入公钥"
+		}(),
+	})
+}
+
+func (s *Server) handleToolProvisionDecrypt(c *gin.Context) {
+	var req toolProvisionDecryptReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	privateKey, env, err := decryptProvisionPrivateKeyPayload(req.EncryptedPayload, req.DecryptCode)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"ok":          true,
+		"private_key": privateKey,
+		"envelope":    env,
+	})
+}
+
 type sshListUpsertReq struct {
-	NodeID           string   `json:"node_id"`
-	Usernames        []string `json:"usernames"`
-	BillingUsernames []string `json:"billing_usernames"`
+	NodeID           string                   `json:"node_id"`
+	Usernames        []string                 `json:"usernames"`
+	BillingUsernames []string                 `json:"billing_usernames"`
+	PlatformAccounts []sshListPlatformAccount `json:"platform_accounts"`
+	Reason           string                   `json:"reason"`
+}
+
+type sshListPlatformAccount struct {
+	BillingUsername string `json:"billing_username"`
+	NodeID          string `json:"node_id"`
+	LocalUsername   string `json:"local_username"`
 }
 
 type sshListEntry struct {
-	NodeID        string
-	LocalUsername string
+	NodeID                 string
+	LocalUsername          string
+	SourceType             string
+	SourcePlatformUsername string
 }
 
 func trimUniq(items []string) []string {
@@ -830,30 +2159,67 @@ func (s *Server) resolveSSHListEntries(ctx context.Context, req sshListUpsertReq
 	}
 	manualUsers := trimUniq(req.Usernames)
 	billingUsers := trimUniq(req.BillingUsernames)
-	if len(manualUsers) == 0 && len(billingUsers) == 0 {
-		return nil, errors.New("usernames/billing_usernames 至少填写一项")
+	if len(manualUsers) == 0 && len(billingUsers) == 0 && len(req.PlatformAccounts) == 0 {
+		return nil, errors.New("usernames/billing_usernames/platform_accounts 至少填写一项")
 	}
 
 	entries := map[string]sshListEntry{}
-	addEntry := func(node, local string) {
+	addEntry := func(node, local string, sourceType string, sourcePlatformUsername string) {
 		node = strings.TrimSpace(node)
 		local = strings.TrimSpace(local)
 		if node == "" || local == "" {
 			return
 		}
+		if sourceType != "platform" {
+			sourceType = "local"
+			sourcePlatformUsername = ""
+		}
 		k := node + "|" + local
-		entries[k] = sshListEntry{NodeID: node, LocalUsername: local}
+		if old, ok := entries[k]; ok {
+			// 同一条目若同时命中“节点账号添加”和“平台账号添加”，优先记录为平台账号来源。
+			if old.SourceType == "platform" {
+				return
+			}
+		}
+		entries[k] = sshListEntry{
+			NodeID:                 node,
+			LocalUsername:          local,
+			SourceType:             sourceType,
+			SourcePlatformUsername: strings.TrimSpace(sourcePlatformUsername),
+		}
 	}
 
 	for _, local := range manualUsers {
 		if nodeID == "*" {
-			addEntry("*", local)
+			addEntry("*", local, "local", "")
 		} else {
-			addEntry(nodeID, local)
+			addEntry(nodeID, local, "local", "")
 		}
 	}
 
+	selectedByBilling := make(map[string][]sshListPlatformAccount)
+	for _, it := range req.PlatformAccounts {
+		billing := strings.TrimSpace(it.BillingUsername)
+		accNode := strings.TrimSpace(it.NodeID)
+		accLocal := strings.TrimSpace(it.LocalUsername)
+		if billing == "" || accNode == "" || accLocal == "" {
+			continue
+		}
+		if nodeID != "*" && accNode != nodeID {
+			continue
+		}
+		selectedByBilling[billing] = append(selectedByBilling[billing], sshListPlatformAccount{
+			BillingUsername: billing,
+			NodeID:          accNode,
+			LocalUsername:   accLocal,
+		})
+		addEntry(accNode, accLocal, "platform", billing)
+	}
+
 	for _, billing := range billingUsers {
+		if selected, ok := selectedByBilling[billing]; ok && len(selected) > 0 {
+			continue
+		}
 		accounts, err := s.store.ListUserNodeAccountsByBilling(ctx, billing, 5000)
 		if err != nil {
 			return nil, err
@@ -868,14 +2234,14 @@ func (s *Server) resolveSSHListEntries(ctx context.Context, req sshListUpsertReq
 			if nodeID != "*" && accNode != nodeID {
 				continue
 			}
-			addEntry(accNode, accLocal)
+			addEntry(accNode, accLocal, "platform", billing)
 			matched++
 		}
 		if matched == 0 {
 			if nodeID == "*" {
-				addEntry("*", billing)
+				addEntry("*", billing, "platform", billing)
 			} else {
-				addEntry(nodeID, billing)
+				addEntry(nodeID, billing, "platform", billing)
 			}
 		}
 	}
@@ -887,41 +2253,164 @@ func (s *Server) resolveSSHListEntries(ctx context.Context, req sshListUpsertReq
 	return out, nil
 }
 
-func (s *Server) upsertWhitelistEntries(ctx context.Context, entries []sshListEntry, createdBy string) error {
-	grouped := map[string][]string{}
-	for _, e := range entries {
-		grouped[e.NodeID] = append(grouped[e.NodeID], e.LocalUsername)
-	}
-	for nodeID, users := range grouped {
-		if err := s.store.UpsertWhitelist(ctx, nodeID, trimUniq(users), createdBy); err != nil {
-			return err
-		}
-	}
-	return nil
+type sshUpsertResult struct {
+	Applied               int      `json:"applied"`
+	SkippedDueBlacklist   []string `json:"skipped_due_blacklist"`
+	RemovedFromWhitelist  int      `json:"removed_from_whitelist"`
+	RemovedFromExemptions int      `json:"removed_from_exemptions"`
 }
 
-func (s *Server) upsertBlacklistEntries(ctx context.Context, entries []sshListEntry, createdBy string) error {
-	grouped := map[string][]string{}
+func (s *Server) upsertWhitelistEntries(ctx context.Context, entries []sshListEntry, createdBy string, reason string) (sshUpsertResult, error) {
+	result := sshUpsertResult{}
+	allowed := make([]sshListEntry, 0, len(entries))
 	for _, e := range entries {
+		blacklisted, err := s.store.IsBlacklisted(ctx, e.NodeID, e.LocalUsername)
+		if err != nil {
+			return result, err
+		}
+		if blacklisted {
+			result.SkippedDueBlacklist = append(result.SkippedDueBlacklist, e.NodeID+":"+e.LocalUsername)
+			continue
+		}
+		allowed = append(allowed, e)
+	}
+	grouped := map[string][]string{}
+	for _, e := range allowed {
 		grouped[e.NodeID] = append(grouped[e.NodeID], e.LocalUsername)
 	}
 	for nodeID, users := range grouped {
-		if err := s.store.UpsertBlacklist(ctx, nodeID, trimUniq(users), createdBy); err != nil {
-			return err
+		if err := s.store.UpsertWhitelist(ctx, nodeID, trimUniq(users), createdBy, reason); err != nil {
+			return result, err
 		}
 	}
-	return nil
+	for _, e := range allowed {
+		if err := s.store.UpsertSSHListSource(ctx, "whitelist", e.NodeID, e.LocalUsername, e.SourceType, e.SourcePlatformUsername, createdBy); err != nil {
+			return result, err
+		}
+	}
+	result.Applied = len(allowed)
+	result.SkippedDueBlacklist = trimUniq(result.SkippedDueBlacklist)
+	return result, nil
 }
 
-func (s *Server) upsertExemptionEntries(ctx context.Context, entries []sshListEntry, createdBy string) error {
+func (s *Server) upsertBlacklistEntries(ctx context.Context, entries []sshListEntry, createdBy string, reason string) (sshUpsertResult, error) {
+	result := sshUpsertResult{}
+	for _, e := range entries {
+		if nodes, err := s.store.DeleteWhitelistWithNodes(ctx, e.NodeID, e.LocalUsername); err == nil {
+			result.RemovedFromWhitelist += len(nodes)
+		}
+		_ = s.store.DeleteSSHListSource(ctx, "whitelist", e.NodeID, e.LocalUsername)
+		if nodes, err := s.store.DeleteExemptionsWithNodes(ctx, e.NodeID, e.LocalUsername); err == nil {
+			result.RemovedFromExemptions += len(nodes)
+		}
+		_ = s.store.DeleteSSHListSource(ctx, "exemptions", e.NodeID, e.LocalUsername)
+	}
 	grouped := map[string][]string{}
 	for _, e := range entries {
 		grouped[e.NodeID] = append(grouped[e.NodeID], e.LocalUsername)
 	}
 	for nodeID, users := range grouped {
-		if err := s.store.UpsertExemptions(ctx, nodeID, trimUniq(users), createdBy); err != nil {
-			return err
+		if err := s.store.UpsertBlacklist(ctx, nodeID, trimUniq(users), createdBy, reason); err != nil {
+			return result, err
 		}
+	}
+	for _, e := range entries {
+		if err := s.store.UpsertSSHListSource(ctx, "blacklist", e.NodeID, e.LocalUsername, e.SourceType, e.SourcePlatformUsername, createdBy); err != nil {
+			return result, err
+		}
+	}
+	result.Applied = len(entries)
+	return result, nil
+}
+
+func (s *Server) upsertExemptionEntries(ctx context.Context, entries []sshListEntry, createdBy string, reason string) (sshUpsertResult, error) {
+	result := sshUpsertResult{}
+	allowed := make([]sshListEntry, 0, len(entries))
+	for _, e := range entries {
+		blacklisted, err := s.store.IsBlacklisted(ctx, e.NodeID, e.LocalUsername)
+		if err != nil {
+			return result, err
+		}
+		if blacklisted {
+			result.SkippedDueBlacklist = append(result.SkippedDueBlacklist, e.NodeID+":"+e.LocalUsername)
+			continue
+		}
+		allowed = append(allowed, e)
+	}
+	grouped := map[string][]string{}
+	for _, e := range allowed {
+		grouped[e.NodeID] = append(grouped[e.NodeID], e.LocalUsername)
+	}
+	for nodeID, users := range grouped {
+		if err := s.store.UpsertExemptions(ctx, nodeID, trimUniq(users), createdBy, reason); err != nil {
+			return result, err
+		}
+	}
+	for _, e := range allowed {
+		if err := s.store.UpsertSSHListSource(ctx, "exemptions", e.NodeID, e.LocalUsername, e.SourceType, e.SourcePlatformUsername, createdBy); err != nil {
+			return result, err
+		}
+	}
+	result.Applied = len(allowed)
+	result.SkippedDueBlacklist = trimUniq(result.SkippedDueBlacklist)
+	return result, nil
+}
+
+func (s *Server) fillSSHEntryDisplayMeta(ctx context.Context, nodeID string, listType string, whitelist []SSHWhitelistEntry, blacklist []SSHBlacklistEntry, exemptions []SSHExemptionEntry) error {
+	sources, err := s.store.ListSSHListSources(ctx, listType, nodeID, 200000)
+	if err != nil {
+		return err
+	}
+	srcMap := make(map[string]SSHListSource, len(sources))
+	for _, it := range sources {
+		srcMap[it.NodeID+"|"+it.LocalUsername] = it
+	}
+	accounts, err := s.store.ListUserNodeAccounts(ctx, "", 200000)
+	if err != nil {
+		return err
+	}
+	accMap := make(map[string]string, len(accounts))
+	localAnyMap := map[string]string{}
+	for _, a := range accounts {
+		key := strings.TrimSpace(a.NodeID) + "|" + strings.TrimSpace(a.LocalUsername)
+		b := strings.TrimSpace(a.BillingUsername)
+		if key != "|" && b != "" {
+			accMap[key] = b
+			localUser := strings.TrimSpace(a.LocalUsername)
+			if _, ok := localAnyMap[localUser]; !ok {
+				localAnyMap[localUser] = b
+			}
+		}
+	}
+	applyMeta := func(nodeID string, localUsername string, sourceType *string, sourcePlatformUsername *string, billingUsername *string) {
+		k := strings.TrimSpace(nodeID) + "|" + strings.TrimSpace(localUsername)
+		if src, ok := srcMap[k]; ok {
+			*sourceType = strings.TrimSpace(src.SourceType)
+			*sourcePlatformUsername = strings.TrimSpace(src.SourcePlatformUsername)
+		}
+		if strings.TrimSpace(*sourceType) != "platform" {
+			*sourceType = "local"
+			*sourcePlatformUsername = ""
+		}
+		if b, ok := accMap[k]; ok && b != "" {
+			*billingUsername = b
+		} else if strings.TrimSpace(nodeID) == "*" {
+			if b, ok := localAnyMap[strings.TrimSpace(localUsername)]; ok && b != "" {
+				*billingUsername = b
+			}
+		}
+		if strings.TrimSpace(*billingUsername) == "" && strings.TrimSpace(*sourcePlatformUsername) != "" {
+			*billingUsername = strings.TrimSpace(*sourcePlatformUsername)
+		}
+	}
+	for i := range whitelist {
+		applyMeta(whitelist[i].NodeID, whitelist[i].LocalUsername, &whitelist[i].SourceType, &whitelist[i].SourcePlatformUsername, &whitelist[i].BillingUsername)
+	}
+	for i := range blacklist {
+		applyMeta(blacklist[i].NodeID, blacklist[i].LocalUsername, &blacklist[i].SourceType, &blacklist[i].SourcePlatformUsername, &blacklist[i].BillingUsername)
+	}
+	for i := range exemptions {
+		applyMeta(exemptions[i].NodeID, exemptions[i].LocalUsername, &exemptions[i].SourceType, &exemptions[i].SourcePlatformUsername, &exemptions[i].BillingUsername)
 	}
 	return nil
 }
@@ -972,6 +2461,10 @@ func (s *Server) handleAdminWhitelistList(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	if err := s.fillSSHEntryDisplayMeta(c.Request.Context(), nodeID, "whitelist", rows, nil, nil); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"entries": rows})
 }
 
@@ -986,11 +2479,18 @@ func (s *Server) handleAdminWhitelistUpsert(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if err := s.upsertWhitelistEntries(c.Request.Context(), entries, s.currentOperator(c)); err != nil {
+	result, err := s.upsertWhitelistEntries(c.Request.Context(), entries, s.currentOperator(c), strings.TrimSpace(req.Reason))
+	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"ok": true, "entries": len(entries)})
+	c.JSON(http.StatusOK, gin.H{
+		"ok":                    true,
+		"entries":               len(entries),
+		"applied":               result.Applied,
+		"skipped_due_blacklist": result.SkippedDueBlacklist,
+		"message":               "黑名单优先：与黑名单冲突的账号已自动跳过",
+	})
 }
 
 func (s *Server) handleAdminWhitelistDelete(c *gin.Context) {
@@ -1007,6 +2507,7 @@ func (s *Server) handleAdminWhitelistDelete(c *gin.Context) {
 	}
 	operator := s.currentOperator(c)
 	for _, n := range nodes {
+		_ = s.store.DeleteSSHListSource(c.Request.Context(), "whitelist", n, localUsername)
 		s.enqueueKickSSHUser(c.Request.Context(), n, localUsername, fmt.Sprintf("管理员 %s 删除白名单，已强制断开该账号 SSH 会话", operator))
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true, "kicked": true})
@@ -1016,6 +2517,10 @@ func (s *Server) handleAdminBlacklistList(c *gin.Context) {
 	nodeID := strings.TrimSpace(c.Query("node_id"))
 	rows, err := s.store.ListBlacklist(c.Request.Context(), nodeID, 5000)
 	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := s.fillSSHEntryDisplayMeta(c.Request.Context(), nodeID, "blacklist", nil, rows, nil); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -1034,26 +2539,39 @@ func (s *Server) handleAdminBlacklistUpsert(c *gin.Context) {
 		return
 	}
 	operator := s.currentOperator(c)
-	if err := s.upsertBlacklistEntries(c.Request.Context(), entries, operator); err != nil {
+	result, err := s.upsertBlacklistEntries(c.Request.Context(), entries, operator, strings.TrimSpace(req.Reason))
+	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	for _, e := range entries {
 		s.enqueueKickSSHUser(c.Request.Context(), e.NodeID, e.LocalUsername, fmt.Sprintf("管理员 %s 加入 SSH 黑名单，已强制断开该账号 SSH 会话", operator))
 	}
-	c.JSON(http.StatusOK, gin.H{"ok": true, "entries": len(entries), "kicked": true})
+	c.JSON(http.StatusOK, gin.H{
+		"ok":                      true,
+		"entries":                 len(entries),
+		"applied":                 result.Applied,
+		"kicked":                  true,
+		"removed_from_whitelist":  result.RemovedFromWhitelist,
+		"removed_from_exemptions": result.RemovedFromExemptions,
+		"message":                 "黑名单优先：冲突项已从白名单/豁免名单自动移除",
+	})
 }
 
 func (s *Server) handleAdminBlacklistDelete(c *gin.Context) {
 	nodeID := strings.TrimSpace(c.Query("node_id"))
 	localUsername := strings.TrimSpace(c.Query("local_username"))
-	if err := s.store.DeleteBlacklist(c.Request.Context(), nodeID, localUsername); err != nil {
+	nodes, err := s.store.DeleteBlacklistWithNodes(c.Request.Context(), nodeID, localUsername)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "记录不存在"})
 			return
 		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+	for _, n := range nodes {
+		_ = s.store.DeleteSSHListSource(c.Request.Context(), "blacklist", n, localUsername)
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
@@ -1062,6 +2580,10 @@ func (s *Server) handleAdminExemptionsList(c *gin.Context) {
 	nodeID := strings.TrimSpace(c.Query("node_id"))
 	rows, err := s.store.ListExemptions(c.Request.Context(), nodeID, 5000)
 	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := s.fillSSHEntryDisplayMeta(c.Request.Context(), nodeID, "exemptions", nil, nil, rows); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -1080,23 +2602,34 @@ func (s *Server) handleAdminExemptionsUpsert(c *gin.Context) {
 		return
 	}
 	operator := s.currentOperator(c)
-	if err := s.upsertExemptionEntries(c.Request.Context(), entries, operator); err != nil {
+	result, err := s.upsertExemptionEntries(c.Request.Context(), entries, operator, strings.TrimSpace(req.Reason))
+	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"ok": true, "entries": len(entries)})
+	c.JSON(http.StatusOK, gin.H{
+		"ok":                    true,
+		"entries":               len(entries),
+		"applied":               result.Applied,
+		"skipped_due_blacklist": result.SkippedDueBlacklist,
+		"message":               "黑名单优先：与黑名单冲突的账号已自动跳过",
+	})
 }
 
 func (s *Server) handleAdminExemptionsDelete(c *gin.Context) {
 	nodeID := strings.TrimSpace(c.Query("node_id"))
 	localUsername := strings.TrimSpace(c.Query("local_username"))
-	if err := s.store.DeleteExemptions(c.Request.Context(), nodeID, localUsername); err != nil {
+	nodes, err := s.store.DeleteExemptionsWithNodes(c.Request.Context(), nodeID, localUsername)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "记录不存在"})
 			return
 		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+	for _, n := range nodes {
+		_ = s.store.DeleteSSHListSource(c.Request.Context(), "exemptions", n, localUsername)
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
@@ -1106,12 +2639,22 @@ type powerUserCreateReq struct {
 	Password          string `json:"password"`
 	CanViewBoard      bool   `json:"can_view_board"`
 	CanViewNodes      bool   `json:"can_view_nodes"`
+	CanManageNodes    bool   `json:"can_manage_nodes"`
+	CanReviewRequests bool   `json:"can_review_requests"`
+}
+
+type powerUserPromoteReq struct {
+	Username          string `json:"username"`
+	CanViewBoard      bool   `json:"can_view_board"`
+	CanViewNodes      bool   `json:"can_view_nodes"`
+	CanManageNodes    bool   `json:"can_manage_nodes"`
 	CanReviewRequests bool   `json:"can_review_requests"`
 }
 
 type powerUserPermReq struct {
 	CanViewBoard      bool `json:"can_view_board"`
 	CanViewNodes      bool `json:"can_view_nodes"`
+	CanManageNodes    bool `json:"can_manage_nodes"`
 	CanReviewRequests bool `json:"can_review_requests"`
 }
 
@@ -1136,7 +2679,33 @@ func (s *Server) handleAdminPowerUsersCreate(c *gin.Context) {
 	if createdBy == "" {
 		createdBy = "admin"
 	}
-	if err := s.store.CreatePowerUser(c.Request.Context(), req.Username, req.Password, req.CanViewBoard, req.CanViewNodes, req.CanReviewRequests, createdBy); err != nil {
+	if err := s.store.CreatePowerUser(c.Request.Context(), req.Username, req.Password, req.CanViewBoard, req.CanViewNodes, req.CanManageNodes, req.CanReviewRequests, createdBy); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func (s *Server) handleAdminPowerUsersPromote(c *gin.Context) {
+	var req powerUserPromoteReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	req.Username = strings.TrimSpace(req.Username)
+	operator := strings.TrimSpace(fmt.Sprintf("%v", c.GetString("auth_user")))
+	if operator == "" {
+		operator = "admin"
+	}
+	if err := s.store.PromotePlatformUserToPowerUser(
+		c.Request.Context(),
+		req.Username,
+		req.CanViewBoard,
+		req.CanViewNodes,
+		req.CanManageNodes,
+		req.CanReviewRequests,
+		operator,
+	); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -1158,7 +2727,7 @@ func (s *Server) handleAdminPowerUsersUpdatePermissions(c *gin.Context) {
 	if updatedBy == "" {
 		updatedBy = "admin"
 	}
-	if err := s.store.UpdatePowerUserPermissions(c.Request.Context(), username, req.CanViewBoard, req.CanViewNodes, req.CanReviewRequests, updatedBy); err != nil {
+	if err := s.store.UpdatePowerUserPermissions(c.Request.Context(), username, req.CanViewBoard, req.CanViewNodes, req.CanManageNodes, req.CanReviewRequests, updatedBy); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "记录不存在"})
 			return
@@ -1176,6 +2745,23 @@ func (s *Server) handleAdminPowerUsersDelete(c *gin.Context) {
 		return
 	}
 	if err := s.store.DeletePowerUser(c.Request.Context(), username); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "记录不存在"})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func (s *Server) handleAdminPowerUsersDemote(c *gin.Context) {
+	username := strings.TrimSpace(c.Param("username"))
+	if username == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "username 不能为空"})
+		return
+	}
+	if err := s.store.DemotePowerUserToPlatformUser(c.Request.Context(), username); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "记录不存在"})
 			return
@@ -1242,7 +2828,20 @@ func (s *Server) handleAdminStatsUsers(c *gin.Context) {
 		return
 	}
 	limit := parseLimit(c.Query("limit"), 1000, 10000)
-	rows, err := s.store.ListUsageSummaryByUser(c.Request.Context(), from, to, limit)
+	visibleNodes, restricted, err := s.visibleNodeIDsForPowerUser(c)
+	if err != nil {
+		if strings.TrimSpace(err.Error()) == "forbidden" {
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if restricted && len(visibleNodes) == 0 {
+		c.JSON(http.StatusOK, gin.H{"from": from.Format(time.RFC3339), "to": to.Format(time.RFC3339), "rows": []UsageUserSummary{}})
+		return
+	}
+	rows, err := s.store.ListUsageSummaryByUser(c.Request.Context(), from, to, limit, visibleNodes)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -1257,10 +2856,38 @@ func (s *Server) handleAdminStatsPlatformUsers(c *gin.Context) {
 		return
 	}
 	limit := parseLimit(c.Query("limit"), 1000, 10000)
-	rows, err := s.store.ListPlatformUsageSummaryByUser(c.Request.Context(), from, to, limit)
+	visibleNodes, restricted, err := s.visibleNodeIDsForPowerUser(c)
+	if err != nil {
+		if strings.TrimSpace(err.Error()) == "forbidden" {
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if restricted && len(visibleNodes) == 0 {
+		c.JSON(http.StatusOK, gin.H{"from": from.Format(time.RFC3339), "to": to.Format(time.RFC3339), "rows": []PlatformUsageUserSummary{}})
+		return
+	}
+	rows, err := s.store.ListPlatformUsageSummaryByUser(c.Request.Context(), from, to, limit, visibleNodes)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+	if getAuthRole(c) == "power_user" {
+		adminSet, setErr := s.adminUsernameSet(c.Request.Context())
+		if setErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": setErr.Error()})
+			return
+		}
+		filtered := make([]PlatformUsageUserSummary, 0, len(rows))
+		for _, r := range rows {
+			if _, isAdmin := adminSet[strings.TrimSpace(r.PlatformUsername)]; isAdmin {
+				continue
+			}
+			filtered = append(filtered, r)
+		}
+		rows = filtered
 	}
 	c.JSON(http.StatusOK, gin.H{"from": from.Format(time.RFC3339), "to": to.Format(time.RFC3339), "rows": rows})
 }
@@ -1276,8 +2903,32 @@ func (s *Server) handleAdminStatsPlatformUserNodes(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "username 不能为空"})
 		return
 	}
+	if getAuthRole(c) == "power_user" {
+		isAdmin, aErr := s.store.IsAdminAccount(c.Request.Context(), username)
+		if aErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": aErr.Error()})
+			return
+		}
+		if isAdmin {
+			c.JSON(http.StatusNotFound, gin.H{"error": "平台账号不存在"})
+			return
+		}
+	}
 	limit := parseLimit(c.Query("limit"), 2000, 20000)
-	rows, err := s.store.ListPlatformUsageNodeDetails(c.Request.Context(), username, from, to, limit)
+	visibleNodes, restricted, err := s.visibleNodeIDsForPowerUser(c)
+	if err != nil {
+		if strings.TrimSpace(err.Error()) == "forbidden" {
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if restricted && len(visibleNodes) == 0 {
+		c.JSON(http.StatusOK, gin.H{"from": from.Format(time.RFC3339), "to": to.Format(time.RFC3339), "username": username, "rows": []PlatformUsageNodeDetail{}})
+		return
+	}
+	rows, err := s.store.ListPlatformUsageNodeDetails(c.Request.Context(), username, from, to, limit, visibleNodes)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -1336,10 +2987,38 @@ func (s *Server) handleAdminStatsMonthly(c *gin.Context) {
 		return
 	}
 	limit := parseLimit(c.Query("limit"), 20000, 200000)
-	rows, err := s.store.ListUsageMonthlyByUser(c.Request.Context(), from, to, limit)
+	visibleNodes, restricted, err := s.visibleNodeIDsForPowerUser(c)
+	if err != nil {
+		if strings.TrimSpace(err.Error()) == "forbidden" {
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if restricted && len(visibleNodes) == 0 {
+		c.JSON(http.StatusOK, gin.H{"from": from.Format(time.RFC3339), "to": to.Format(time.RFC3339), "rows": []UsageMonthlySummary{}})
+		return
+	}
+	rows, err := s.store.ListUsageMonthlyByUser(c.Request.Context(), from, to, limit, visibleNodes)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+	if getAuthRole(c) == "power_user" {
+		adminSet, setErr := s.adminUsernameSet(c.Request.Context())
+		if setErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": setErr.Error()})
+			return
+		}
+		filtered := make([]UsageMonthlySummary, 0, len(rows))
+		for _, r := range rows {
+			if _, isAdmin := adminSet[strings.TrimSpace(r.Username)]; isAdmin {
+				continue
+			}
+			filtered = append(filtered, r)
+		}
+		rows = filtered
 	}
 	c.JSON(http.StatusOK, gin.H{"from": from.Format(time.RFC3339), "to": to.Format(time.RFC3339), "rows": rows})
 }
@@ -1356,6 +3035,21 @@ func (s *Server) handleAdminStatsRecharges(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	if getAuthRole(c) == "power_user" {
+		adminSet, setErr := s.adminUsernameSet(c.Request.Context())
+		if setErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": setErr.Error()})
+			return
+		}
+		filtered := make([]RechargeSummary, 0, len(rows))
+		for _, r := range rows {
+			if _, isAdmin := adminSet[strings.TrimSpace(r.Username)]; isAdmin {
+				continue
+			}
+			filtered = append(filtered, r)
+		}
+		rows = filtered
+	}
 	c.JSON(http.StatusOK, gin.H{"from": from.Format(time.RFC3339), "to": to.Format(time.RFC3339), "rows": rows})
 }
 
@@ -1371,7 +3065,639 @@ func (s *Server) handleAdminNodes(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	if getAuthRole(c) == "power_user" {
+		username := strings.TrimSpace(c.GetString("auth_user"))
+		visible, err := s.store.ListVisibleNodeIDsForPowerUser(c.Request.Context(), username)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		visibleSet := make(map[string]struct{}, len(visible))
+		for _, id := range visible {
+			visibleSet[id] = struct{}{}
+		}
+		filtered := make([]NodeStatus, 0, len(nodes))
+		for _, n := range nodes {
+			if _, ok := visibleSet[strings.TrimSpace(n.NodeID)]; ok {
+				filtered = append(filtered, n)
+			}
+		}
+		nodes = filtered
+	}
 	c.JSON(http.StatusOK, gin.H{"nodes": nodes})
+}
+
+func (s *Server) handleAdminNodeDetail(c *gin.Context) {
+	nodeID := strings.TrimSpace(c.Param("id"))
+	if !s.ensureNodeReadable(c, nodeID) {
+		return
+	}
+	minutes := 180
+	if v := strings.TrimSpace(c.Query("minutes")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			minutes = n
+		}
+	}
+	if minutes <= 0 {
+		minutes = 180
+	}
+	if minutes > 24*7*60 {
+		minutes = 24 * 7 * 60
+	}
+	limit := parseLimit(c.Query("limit"), 360, 5000)
+
+	node, err := s.store.GetNodeStatus(c.Request.Context(), nodeID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 统一使用 UTC，避免本地时区导致 report_ts 时间窗口错位，出现 history 为空。
+	to := time.Now().UTC()
+	from := to.Add(-time.Duration(minutes) * time.Minute)
+	history, err := s.store.ListNodeRuntimeSnapshots(c.Request.Context(), nodeID, from, to, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	latest := NodeRuntimeSnapshot{}
+	if len(history) > 0 {
+		latest = history[0]
+	} else {
+		// 兼容：节点状态已更新但快照尚未入库时，至少返回 SSH 在线人数，避免前端显示 0。
+		latest.NodeID = node.NodeID
+		latest.ReportTS = node.LastReportTS
+		latest.SSHUserCount = node.SSHActiveCount
+		latest.GPUProcessCount = node.GPUProcessCount
+		latest.CPUProcessCount = node.CPUProcessCount
+		latest.CostTotal = node.CostTotal
+	}
+	// 返回升序，便于前端直接画时间序列图
+	for i, j := 0, len(history)-1; i < j; i, j = i+1, j-1 {
+		history[i], history[j] = history[j], history[i]
+	}
+	localUsers, err := s.store.ListNodeLocalUsersWithPlatformMapping(c.Request.Context(), nodeID, 3000)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	nowLocal := time.Now()
+	monthStart := time.Date(nowLocal.Year(), nowLocal.Month(), 1, 0, 0, 0, 0, nowLocal.Location())
+	monthlyUserCosts, err := s.store.ListNodeMonthlyUserCosts(c.Request.Context(), nodeID, monthStart, nowLocal, 5000)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	securityEvents, err := s.store.ListNodeSecurityEvents(c.Request.Context(), nodeID, "", 200)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	suspiciousUsers, err := s.store.ListNodeSuspiciousUsers(c.Request.Context(), nodeID, 7, 200)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"node":               node,
+		"latest":             latest,
+		"history":            history,
+		"local_users":        localUsers,
+		"monthly_user_costs": monthlyUserCosts,
+		"monthly_from":       monthStart.Format(time.RFC3339),
+		"monthly_to":         nowLocal.Format(time.RFC3339),
+		"security_events":    securityEvents,
+		"suspicious_users":   suspiciousUsers,
+		"from":               from.Format(time.RFC3339),
+		"to":                 to.Format(time.RFC3339),
+	})
+}
+
+func (s *Server) handleAdminNodeSecurityEvents(c *gin.Context) {
+	nodeID := strings.TrimSpace(c.Param("id"))
+	if !s.ensureNodeReadable(c, nodeID) {
+		return
+	}
+	eventType := strings.TrimSpace(c.Query("event_type"))
+	limit := parseLimit(c.Query("limit"), 200, 2000)
+	events, err := s.store.ListNodeSecurityEvents(c.Request.Context(), nodeID, eventType, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	users, err := s.store.ListNodeSuspiciousUsers(c.Request.Context(), nodeID, 7, 500)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"node_id":          nodeID,
+		"event_type":       eventType,
+		"events":           events,
+		"suspicious_users": users,
+	})
+}
+
+type adminNodeSSHGuardSetReq struct {
+	Enabled bool `json:"enabled"`
+}
+
+type adminNodePointsInterceptSetReq struct {
+	Enabled bool `json:"enabled"`
+}
+
+type adminNodeModelPriceOverride struct {
+	GPUModel       string  `json:"gpu_model"`
+	PricePerMinute float64 `json:"price_per_minute"`
+}
+
+type adminNodePriceSetReq struct {
+	PricePerMinute      *float64                      `json:"price_per_minute"`
+	UseDefault          bool                          `json:"use_default"`
+	ModelPriceOverrides []adminNodeModelPriceOverride `json:"model_price_overrides"`
+}
+
+func nodeModelPriceOverridesToRespRows(in map[string]float64) []gin.H {
+	if len(in) == 0 {
+		return []gin.H{}
+	}
+	keys := make([]string, 0, len(in))
+	for model := range in {
+		keys = append(keys, model)
+	}
+	sort.Strings(keys)
+	out := make([]gin.H, 0, len(keys))
+	for _, model := range keys {
+		out = append(out, gin.H{
+			"gpu_model":        model,
+			"price_per_minute": in[model],
+		})
+	}
+	return out
+}
+
+func (s *Server) handleAdminNodeSSHGuardSet(c *gin.Context) {
+	nodeID := strings.TrimSpace(c.Param("id"))
+	if nodeID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id 不能为空"})
+		return
+	}
+	var req adminNodeSSHGuardSetReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	prevEnabled, err := s.store.IsNodeSSHGuardEnabled(c.Request.Context(), nodeID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	operator := strings.TrimSpace(c.GetString("auth_user"))
+	if operator == "" {
+		operator = "admin"
+	}
+	if err := s.store.UpsertNodeSSHGuardPolicy(c.Request.Context(), nodeID, req.Enabled, operator); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	kickTriggered := false
+	if !prevEnabled && req.Enabled {
+		kickTriggered = true
+		s.enqueueNodeAction(nodeID, Action{
+			Type:   "kick_ssh_all",
+			Reason: fmt.Sprintf("管理员 %s 开启了未注册用户拦截，要求全部 SSH 会话重新登录", operator),
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"ok":             true,
+		"node_id":        nodeID,
+		"enabled":        req.Enabled,
+		"previous":       prevEnabled,
+		"kick_triggered": kickTriggered,
+	})
+}
+
+func (s *Server) handleAdminNodePointsInterceptGet(c *gin.Context) {
+	nodeID := strings.TrimSpace(c.Param("id"))
+	if nodeID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id 不能为空"})
+		return
+	}
+	if _, err := s.store.GetNodeStatus(c.Request.Context(), nodeID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	enabled, err := s.store.GetNodePointsInterceptPolicy(c.Request.Context(), nodeID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"ok":      true,
+		"node_id": nodeID,
+		"enabled": enabled,
+	})
+}
+
+func (s *Server) handleAdminNodePointsInterceptSet(c *gin.Context) {
+	nodeID := strings.TrimSpace(c.Param("id"))
+	if nodeID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id 不能为空"})
+		return
+	}
+	if _, err := s.store.GetNodeStatus(c.Request.Context(), nodeID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	var req adminNodePointsInterceptSetReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	prevEnabled, err := s.store.GetNodePointsInterceptPolicy(c.Request.Context(), nodeID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	operator := strings.TrimSpace(c.GetString("auth_user"))
+	if operator == "" {
+		operator = "admin"
+	}
+	if err := s.store.UpsertNodePointsInterceptPolicy(c.Request.Context(), nodeID, req.Enabled, operator); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	quotaResetTargets := 0
+	// 语义：关闭积分拦截开关 => 不扣分且不限速，需要主动清理本节点历史 CPU 限速残留。
+	if !req.Enabled {
+		if localUsers, err := s.store.ListNodeLocalUsersWithPlatformMapping(c.Request.Context(), nodeID, 5000); err == nil {
+			seen := map[string]struct{}{}
+			for _, u := range localUsers {
+				local := strings.TrimSpace(u.LocalUsername)
+				if local == "" {
+					continue
+				}
+				if _, ok := seen[local]; ok {
+					continue
+				}
+				seen[local] = struct{}{}
+				quotaResetTargets++
+				s.enqueueNodeAction(nodeID, Action{
+					Type:            "set_cpu_quota",
+					Username:        local,
+					CPUQuotaPercent: 0,
+					Reason:          fmt.Sprintf("管理员 %s 关闭积分拦截，按节点策略解除 CPU 限速", operator),
+				})
+			}
+		}
+	}
+	s.enqueueNodeAction(nodeID, Action{
+		Type:   "force_sync",
+		Reason: fmt.Sprintf("管理员 %s 更新积分拦截策略，立即刷新节点策略", operator),
+	})
+	c.JSON(http.StatusOK, gin.H{
+		"ok":                  true,
+		"node_id":             nodeID,
+		"enabled":             req.Enabled,
+		"previous":            prevEnabled,
+		"quota_reset_targets": quotaResetTargets,
+	})
+}
+
+func (s *Server) handleAdminNodePriceGet(c *gin.Context) {
+	nodeID := strings.TrimSpace(c.Param("id"))
+	if nodeID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id 不能为空"})
+		return
+	}
+	if _, err := s.store.GetNodeStatus(c.Request.Context(), nodeID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	price, modelOverrides, err := s.store.GetNodePricePolicy(c.Request.Context(), nodeID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	mode := "default"
+	if price != nil {
+		mode = "custom"
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"ok":                       true,
+		"node_id":                  nodeID,
+		"price_per_minute":         price,
+		"model_price_overrides":    nodeModelPriceOverridesToRespRows(modelOverrides),
+		"mode":                     mode,
+		"default_price_per_minute": s.cfg.DefaultPricePerMinute,
+	})
+}
+
+func (s *Server) handleAdminNodePriceSet(c *gin.Context) {
+	nodeID := strings.TrimSpace(c.Param("id"))
+	if nodeID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id 不能为空"})
+		return
+	}
+	if _, err := s.store.GetNodeStatus(c.Request.Context(), nodeID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	var req adminNodePriceSetReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.PricePerMinute != nil && *req.PricePerMinute < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "price_per_minute 不能为负数"})
+		return
+	}
+	if req.PricePerMinute == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "price_per_minute 不能为空（请按节点设置单价）"})
+		return
+	}
+	if req.UseDefault {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "已不支持 use_default，请直接设置该节点单价"})
+		return
+	}
+	if len(req.ModelPriceOverrides) > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "已不支持 model_price_overrides，请仅设置节点单价"})
+		return
+	}
+
+	prevPrice, prevModelOverrides, err := s.store.GetNodePricePolicy(c.Request.Context(), nodeID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	targetPrice := req.PricePerMinute
+	targetModelOverrides := map[string]float64{}
+	operator := strings.TrimSpace(c.GetString("auth_user"))
+	if operator == "" {
+		operator = "admin"
+	}
+	if err := s.store.UpsertNodePricePolicy(c.Request.Context(), nodeID, targetPrice, targetModelOverrides, operator); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	mode := "custom"
+	c.JSON(http.StatusOK, gin.H{
+		"ok":                             true,
+		"node_id":                        nodeID,
+		"previous_price_per_minute":      prevPrice,
+		"previous_model_price_overrides": nodeModelPriceOverridesToRespRows(prevModelOverrides),
+		"price_per_minute":               targetPrice,
+		"model_price_overrides":          nodeModelPriceOverridesToRespRows(targetModelOverrides),
+		"mode":                           mode,
+		"default_price_per_minute":       s.cfg.DefaultPricePerMinute,
+	})
+}
+
+func (s *Server) handleAdminNodeSSHExclusiveGet(c *gin.Context) {
+	nodeID := strings.TrimSpace(c.Param("id"))
+	if nodeID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id 不能为空"})
+		return
+	}
+	if _, err := s.store.GetNodeStatus(c.Request.Context(), nodeID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	enabled, err := s.store.GetNodeSSHExclusivePolicy(c.Request.Context(), nodeID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	users, err := s.store.ListNodeExclusiveUsers(c.Request.Context(), nodeID, 5000)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	candidates, err := s.store.ListNodeExclusiveCandidates(c.Request.Context(), nodeID, 10000)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"node_id":               nodeID,
+		"enabled":               enabled,
+		"exclusive_users":       users,
+		"candidate_local_users": candidates,
+	})
+}
+
+type adminNodeSSHExclusiveSetReq struct {
+	Enabled        bool     `json:"enabled"`
+	ExclusiveUsers []string `json:"exclusive_users"`
+}
+
+func (s *Server) handleAdminNodeSSHExclusiveSet(c *gin.Context) {
+	nodeID := strings.TrimSpace(c.Param("id"))
+	if nodeID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id 不能为空"})
+		return
+	}
+	if _, err := s.store.GetNodeStatus(c.Request.Context(), nodeID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	var req adminNodeSSHExclusiveSetReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	operator := strings.TrimSpace(c.GetString("auth_user"))
+	if operator == "" {
+		operator = "admin"
+	}
+	if err := s.store.ReplaceNodeExclusiveUsers(c.Request.Context(), nodeID, req.Enabled, req.ExclusiveUsers, operator); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	s.enqueueNodeAction(nodeID, Action{
+		Type:   "force_sync",
+		Reason: fmt.Sprintf("管理员 %s 更新节点独享策略，立即刷新 SSH 策略缓存", operator),
+	})
+	c.JSON(http.StatusOK, gin.H{
+		"ok":              true,
+		"node_id":         nodeID,
+		"enabled":         req.Enabled,
+		"exclusive_users": uniqTrim(req.ExclusiveUsers),
+	})
+}
+
+func (s *Server) handleAdminNodeViewAccessGet(c *gin.Context) {
+	nodeID := strings.TrimSpace(c.Param("id"))
+	if nodeID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id 不能为空"})
+		return
+	}
+	if _, err := s.store.GetNodeStatus(c.Request.Context(), nodeID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	allowed, err := s.store.ListNodeViewACL(c.Request.Context(), nodeID, 5000)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	powerUsers, err := s.store.ListPowerUsers(c.Request.Context(), 5000)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	candidates := make([]string, 0, len(powerUsers))
+	for _, p := range powerUsers {
+		if p.CanViewNodes {
+			candidates = append(candidates, p.Username)
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"node_id":             nodeID,
+		"restricted":          len(allowed) > 0,
+		"allowed_power_users": allowed,
+		"candidates":          candidates,
+	})
+}
+
+type adminNodeViewAccessSetReq struct {
+	Restricted        bool     `json:"restricted"`
+	AllowedPowerUsers []string `json:"allowed_power_users"`
+}
+
+func (s *Server) handleAdminNodeViewAccessSet(c *gin.Context) {
+	nodeID := strings.TrimSpace(c.Param("id"))
+	if nodeID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id 不能为空"})
+		return
+	}
+	if _, err := s.store.GetNodeStatus(c.Request.Context(), nodeID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	var req adminNodeViewAccessSetReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	operator := strings.TrimSpace(c.GetString("auth_user"))
+	if operator == "" {
+		operator = "admin"
+	}
+	allowed := []string{}
+	if req.Restricted {
+		allowed = req.AllowedPowerUsers
+	}
+	if err := s.store.ReplaceNodeViewACL(c.Request.Context(), nodeID, allowed, operator); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"ok":                  true,
+		"node_id":             nodeID,
+		"restricted":          len(allowed) > 0,
+		"allowed_power_users": uniqTrim(allowed),
+	})
+}
+
+func (s *Server) handleAdminNodeSSHUserPlatform(c *gin.Context) {
+	nodeID := strings.TrimSpace(c.Param("id"))
+	localUsername := strings.TrimSpace(c.Param("username"))
+	if !s.ensureNodeReadable(c, nodeID) {
+		return
+	}
+	if nodeID == "" || localUsername == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id/local_username 不能为空"})
+		return
+	}
+	billing, mapped, err := s.store.ResolveBillingUsername(c.Request.Context(), nodeID, localUsername)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	candidate := localUsername
+	if mapped && strings.TrimSpace(billing) != "" {
+		candidate = strings.TrimSpace(billing)
+	}
+	exists, err := s.store.IsPlatformUserExists(c.Request.Context(), candidate)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	platform := ""
+	realName := ""
+	msg := "未在平台开通"
+	if exists {
+		platform = candidate
+		if acc, err := s.store.GetUserAccountByUsername(c.Request.Context(), candidate); err == nil {
+			realName = strings.TrimSpace(acc.RealName)
+		}
+		if mapped {
+			msg = "已映射到平台账号"
+		} else {
+			msg = "节点账号与平台账号同名"
+		}
+	} else if mapped {
+		msg = "映射存在，但平台账号不存在"
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"node_id":           nodeID,
+		"local_username":    localUsername,
+		"mapping_exists":    mapped,
+		"mapped_username":   billing,
+		"platform_exists":   exists,
+		"platform_username": platform,
+		"real_name":         realName,
+		"message":           msg,
+	})
 }
 
 func (s *Server) handleAdminNodeDisconnectAllSSH(c *gin.Context) {
@@ -1404,6 +3730,133 @@ func (s *Server) handleAdminNodeDisconnectAllSSH(c *gin.Context) {
 		"message":          "已下发清理指令，节点会在约 1 秒内执行",
 		"requested_by":     operator,
 		"requested_at":     time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+func (s *Server) handleAdminNodeKillAllUserProcesses(c *gin.Context) {
+	nodeID := strings.TrimSpace(c.Param("id"))
+	if nodeID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id 不能为空"})
+		return
+	}
+	if _, err := s.store.GetNodeStatus(c.Request.Context(), nodeID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	operator := strings.TrimSpace(fmt.Sprintf("%v", c.GetString("auth_user")))
+	if operator == "" {
+		operator = "admin"
+	}
+	s.enqueueNodeAction(nodeID, Action{
+		Type:   "kill_all_user_processes",
+		Reason: fmt.Sprintf("管理员 %s 发起：清理节点全部用户进程", operator),
+	})
+	c.JSON(http.StatusOK, gin.H{
+		"ok":           true,
+		"node_id":      nodeID,
+		"message":      "已下发清理全部用户进程指令，节点会在约 1 秒内执行",
+		"requested_by": operator,
+		"requested_at": time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+type adminNodeDisconnectUserReq struct {
+	LocalUsername string `json:"local_username"`
+}
+
+func (s *Server) handleAdminNodeDisconnectSSHUser(c *gin.Context) {
+	nodeID := strings.TrimSpace(c.Param("id"))
+	if nodeID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id 不能为空"})
+		return
+	}
+	if _, err := s.store.GetNodeStatus(c.Request.Context(), nodeID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	var req adminNodeDisconnectUserReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数不合法"})
+		return
+	}
+	localUsername := strings.TrimSpace(req.LocalUsername)
+	if localUsername == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "local_username 不能为空"})
+		return
+	}
+
+	exempted, err := s.store.IsExempted(c.Request.Context(), nodeID, localUsername)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if exempted {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "该账号属于 SSH 豁免账号，已跳过强制下线"})
+		return
+	}
+
+	operator := strings.TrimSpace(fmt.Sprintf("%v", c.GetString("auth_user")))
+	if operator == "" {
+		operator = "admin"
+	}
+	s.enqueueNodeAction(nodeID, Action{
+		Type:     "kick_ssh_user",
+		Username: localUsername,
+		Reason:   fmt.Sprintf("管理员 %s 发起：强制下线 SSH 账号 %s", operator, localUsername),
+	})
+
+	c.JSON(http.StatusOK, gin.H{
+		"ok":             true,
+		"node_id":        nodeID,
+		"local_username": localUsername,
+		"message":        "已下发强制下线指令，节点会在约 1 秒内执行",
+		"requested_by":   operator,
+		"requested_at":   time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+func (s *Server) handleAdminNodeSyncNow(c *gin.Context) {
+	nodeID := strings.TrimSpace(c.Param("id"))
+	if !s.ensureNodeReadable(c, nodeID) {
+		return
+	}
+	if nodeID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id 不能为空"})
+		return
+	}
+	if _, err := s.store.GetNodeStatus(c.Request.Context(), nodeID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	operator := strings.TrimSpace(fmt.Sprintf("%v", c.GetString("auth_user")))
+	if operator == "" {
+		operator = "admin"
+	}
+	s.enqueueNodeAction(nodeID, Action{
+		Type:   "force_sync",
+		Reason: fmt.Sprintf("管理员 %s 发起：立即同步节点状态", operator),
+	})
+
+	c.JSON(http.StatusOK, gin.H{
+		"ok":           true,
+		"node_id":      nodeID,
+		"message":      "已下发立即同步指令，节点会在约 1 秒内执行",
+		"requested_by": operator,
+		"requested_at": time.Now().UTC().Format(time.RFC3339),
 	})
 }
 
@@ -1481,6 +3934,20 @@ type adminMailTestReq struct {
 	Username string `json:"username"`
 }
 
+type adminMailSendReq struct {
+	AllUsers  bool     `json:"all_users"`
+	Usernames []string `json:"usernames"`
+	Subject   string   `json:"subject"`
+	Body      string   `json:"body"`
+}
+
+type adminMailSendResult struct {
+	Username string `json:"username"`
+	Email    string `json:"email"`
+	Success  bool   `json:"success"`
+	Error    string `json:"error,omitempty"`
+}
+
 func (s *Server) handleAdminMailTest(c *gin.Context) {
 	var req adminMailTestReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -1513,6 +3980,91 @@ func (s *Server) handleAdminMailTest(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true, "email": email})
+}
+
+func (s *Server) handleAdminMailSend(c *gin.Context) {
+	var req adminMailSendReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	req.Subject = strings.TrimSpace(req.Subject)
+	req.Body = strings.TrimSpace(req.Body)
+	if req.Subject == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "subject 不能为空"})
+		return
+	}
+	if req.Body == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "body 不能为空"})
+		return
+	}
+	if !req.AllUsers && len(req.Usernames) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请选择收件用户，或勾选发送给全部用户"})
+		return
+	}
+
+	settings, err := s.store.GetMailSettings(c.Request.Context(), s.cfg)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	usernames := req.Usernames
+	if req.AllUsers {
+		usernames = nil
+	}
+	recipients, err := s.store.ListUserMailRecipients(c.Request.Context(), usernames, 20000)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if len(recipients) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "没有可发送的收件用户（请检查目标用户是否存在且填写了邮箱）"})
+		return
+	}
+
+	results := make([]adminMailSendResult, 0, len(recipients))
+	okCount := 0
+	failCount := 0
+	for _, u := range recipients {
+		to := strings.TrimSpace(u.Email)
+		if to == "" {
+			failCount++
+			results = append(results, adminMailSendResult{
+				Username: u.Username,
+				Email:    to,
+				Success:  false,
+				Error:    "该用户未配置邮箱",
+			})
+			continue
+		}
+		body := req.Body
+		body = strings.ReplaceAll(body, "{{username}}", u.Username)
+		body = strings.ReplaceAll(body, "{{real_name}}", u.RealName)
+		if err := sendPlainTextMail(settings, to, req.Subject, body); err != nil {
+			failCount++
+			results = append(results, adminMailSendResult{
+				Username: u.Username,
+				Email:    to,
+				Success:  false,
+				Error:    err.Error(),
+			})
+			continue
+		}
+		okCount++
+		results = append(results, adminMailSendResult{
+			Username: u.Username,
+			Email:    to,
+			Success:  true,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"ok":      failCount == 0,
+		"total":   len(recipients),
+		"success": okCount,
+		"failed":  failCount,
+		"results": results,
+	})
 }
 
 func (s *Server) handleMetrics(c *gin.Context) {
@@ -1567,6 +4119,179 @@ func (s *Server) handleNodeActions(c *gin.Context) {
 	}
 	actions := s.popNodeActions(nodeID)
 	c.JSON(http.StatusOK, ControllerResponse{Actions: actions})
+}
+
+type haSummary struct {
+	UsersCount          int64  `json:"users_count"`
+	UserAccountsCount   int64  `json:"user_accounts_count"`
+	NodeAccountsCount   int64  `json:"node_accounts_count"`
+	WhitelistCount      int64  `json:"whitelist_count"`
+	BlacklistCount      int64  `json:"blacklist_count"`
+	ExemptionsCount     int64  `json:"exemptions_count"`
+	UsageRecordsCount   int64  `json:"usage_records_count"`
+	PendingRequests     int64  `json:"pending_requests_count"`
+	ProfilePendingCount int64  `json:"profile_pending_count"`
+	LatestUsageAt       string `json:"latest_usage_at"`
+	LatestNodeSeenAt    string `json:"latest_node_seen_at"`
+	Digest              string `json:"digest"`
+}
+
+type haNodeStatus struct {
+	Enabled    bool      `json:"enabled"`
+	Node       string    `json:"node"`
+	Role       string    `json:"role"`
+	ListenAddr string    `json:"listen_addr"`
+	CheckedAt  time.Time `json:"checked_at"`
+	Summary    haSummary `json:"summary"`
+}
+
+func (s *Server) queryCount(ctx context.Context, q string) int64 {
+	var n int64
+	if err := s.store.db.QueryRowContext(ctx, q).Scan(&n); err != nil {
+		return 0
+	}
+	return n
+}
+
+func (s *Server) queryMaxTime(ctx context.Context, q string) string {
+	var t sql.NullTime
+	if err := s.store.db.QueryRowContext(ctx, q).Scan(&t); err != nil {
+		return ""
+	}
+	if !t.Valid {
+		return ""
+	}
+	return t.Time.UTC().Format(time.RFC3339)
+}
+
+func (s *Server) buildHASummary(ctx context.Context) haSummary {
+	out := haSummary{
+		UsersCount:          s.queryCount(ctx, `SELECT COUNT(1) FROM users`),
+		UserAccountsCount:   s.queryCount(ctx, `SELECT COUNT(1) FROM user_accounts`),
+		NodeAccountsCount:   s.queryCount(ctx, `SELECT COUNT(1) FROM user_node_accounts`),
+		WhitelistCount:      s.queryCount(ctx, `SELECT COUNT(1) FROM ssh_whitelist`),
+		BlacklistCount:      s.queryCount(ctx, `SELECT COUNT(1) FROM ssh_blacklist`),
+		ExemptionsCount:     s.queryCount(ctx, `SELECT COUNT(1) FROM ssh_exemptions`),
+		UsageRecordsCount:   s.queryCount(ctx, `SELECT COUNT(1) FROM usage_records`),
+		PendingRequests:     s.queryCount(ctx, `SELECT COUNT(1) FROM user_requests WHERE status='pending'`),
+		ProfilePendingCount: s.queryCount(ctx, `SELECT COUNT(1) FROM profile_change_requests WHERE status='pending'`),
+		LatestUsageAt:       s.queryMaxTime(ctx, `SELECT MAX(timestamp) FROM usage_records`),
+		LatestNodeSeenAt:    s.queryMaxTime(ctx, `SELECT MAX(last_seen_at) FROM nodes`),
+	}
+	raw := fmt.Sprintf("%d|%d|%d|%d|%d|%d|%d|%d|%d|%s|%s",
+		out.UsersCount,
+		out.UserAccountsCount,
+		out.NodeAccountsCount,
+		out.WhitelistCount,
+		out.BlacklistCount,
+		out.ExemptionsCount,
+		out.UsageRecordsCount,
+		out.PendingRequests,
+		out.ProfilePendingCount,
+		out.LatestUsageAt,
+		out.LatestNodeSeenAt,
+	)
+	sum := sha256.Sum256([]byte(raw))
+	out.Digest = hex.EncodeToString(sum[:])
+	return out
+}
+
+func (s *Server) localHAStatus(ctx context.Context) haNodeStatus {
+	return haNodeStatus{
+		Enabled:    s.cfg.HAEnabled,
+		Node:       strings.TrimSpace(s.cfg.HANode),
+		Role:       strings.TrimSpace(strings.ToLower(s.cfg.HARole)),
+		ListenAddr: strings.TrimSpace(s.cfg.ListenAddr),
+		CheckedAt:  time.Now().UTC(),
+		Summary:    s.buildHASummary(ctx),
+	}
+}
+
+func (s *Server) handleHAStatus(c *gin.Context) {
+	// 主备之间状态查询：启用 token 时必须校验
+	want := strings.TrimSpace(s.cfg.HAToken)
+	if want != "" {
+		got := strings.TrimSpace(c.GetHeader("X-HA-Token"))
+		if got == "" || got != want {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"status": s.localHAStatus(c.Request.Context())})
+}
+
+func (s *Server) handleAdminHAStatus(c *gin.Context) {
+	local := s.localHAStatus(c.Request.Context())
+	peerURL := strings.TrimSpace(s.cfg.HAPeerURL)
+	if !s.cfg.HAEnabled || peerURL == "" {
+		c.JSON(http.StatusOK, gin.H{
+			"enabled": s.cfg.HAEnabled,
+			"local":   local,
+			"peer":    nil,
+			"in_sync": false,
+			"message": "未配置容灾对端",
+		})
+		return
+	}
+
+	peerEndpoint := strings.TrimRight(peerURL, "/") + "/api/ha/status"
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, peerEndpoint, nil)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"enabled": s.cfg.HAEnabled,
+			"local":   local,
+			"peer":    gin.H{"reachable": false, "error": err.Error(), "url": peerURL},
+			"in_sync": false,
+		})
+		return
+	}
+	if tok := strings.TrimSpace(s.cfg.HAToken); tok != "" {
+		req.Header.Set("X-HA-Token", tok)
+	}
+	client := &http.Client{Timeout: 1500 * time.Millisecond}
+	resp, err := client.Do(req)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"enabled": s.cfg.HAEnabled,
+			"local":   local,
+			"peer":    gin.H{"reachable": false, "error": err.Error(), "url": peerURL},
+			"in_sync": false,
+		})
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
+		c.JSON(http.StatusOK, gin.H{
+			"enabled": s.cfg.HAEnabled,
+			"local":   local,
+			"peer":    gin.H{"reachable": false, "error": fmt.Sprintf("status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body))), "url": peerURL},
+			"in_sync": false,
+		})
+		return
+	}
+	var peerWrap struct {
+		Status haNodeStatus `json:"status"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&peerWrap); err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"enabled": s.cfg.HAEnabled,
+			"local":   local,
+			"peer":    gin.H{"reachable": false, "error": "解析对端状态失败: " + err.Error(), "url": peerURL},
+			"in_sync": false,
+		})
+		return
+	}
+	inSync := peerWrap.Status.Summary.Digest != "" && peerWrap.Status.Summary.Digest == local.Summary.Digest
+	c.JSON(http.StatusOK, gin.H{
+		"enabled":  s.cfg.HAEnabled,
+		"local":    local,
+		"peer":     gin.H{"reachable": true, "url": peerURL, "status": peerWrap.Status},
+		"in_sync":  inSync,
+		"note":     "建议主备控制器连接同一个 PostgreSQL 数据库以实现自动同步与恢复后一致性",
+		"checked":  time.Now().UTC().Format(time.RFC3339),
+		"peer_url": peerURL,
+	})
 }
 
 type gpuRequestReq struct {
@@ -1634,6 +4359,8 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 	gpuProcCount := 0
 	cpuProcCount := 0
 	costTotal := 0.0
+	cpuPercentSum := 0.0
+	memoryMBSum := 0.0
 
 	var actions []Action
 	duplicate := false
@@ -1657,14 +4384,42 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 		if v, ok := priceIndex.MatchPrice("CPU_CORE"); ok {
 			cpuPricePerCoreMinute = v
 		}
+		nodePriceOverride, nodeModelPriceOverrides, err := s.store.GetNodePricePolicyTx(ctx, tx, data.NodeID)
+		if err != nil {
+			return err
+		}
+		nodeModelPriceRows := make([]PriceRow, 0, len(nodeModelPriceOverrides))
+		for model, price := range nodeModelPriceOverrides {
+			nodeModelPriceRows = append(nodeModelPriceRows, PriceRow{Model: model, Price: price})
+		}
+		nodeModelPriceIndex := NewPriceIndex(nodeModelPriceRows)
+		nodePointsInterceptEnabled, err := s.store.GetNodePointsInterceptPolicyTx(ctx, tx, data.NodeID)
+		if err != nil {
+			return err
+		}
+		// 语义约定：积分拦截开关“开启” => 正常扣分与限速；“关闭” => 不扣分且不限速。
+		nodePointsBillingEnabled := nodePointsInterceptEnabled
 
 		// 同一台节点的映射在一次上报内复用，避免对每个进程重复查库
 		resolveCache := make(map[string]string) // local_username -> billing_username（未绑定时为自身）
+		miningEvidenceByUser := make(map[string][]map[string]any)
 
 		for _, proc := range data.Users {
 			localUsername := strings.TrimSpace(proc.Username)
 			if localUsername == "" {
 				continue
+			}
+			cmdRaw := strings.TrimSpace(proc.Command)
+			if indicators := detectMiningIndicators(cmdRaw); len(indicators) > 0 {
+				if len(miningEvidenceByUser[localUsername]) < 5 {
+					miningEvidenceByUser[localUsername] = append(miningEvidenceByUser[localUsername], map[string]any{
+						"pid":            proc.PID,
+						"command":        cmdRaw,
+						"indicators":     indicators,
+						"cpu_percent":    round4(proc.CPUPercent),
+						"gpu_card_count": len(proc.GPUUsage),
+					})
+				}
 			}
 
 			billingUsername, ok := resolveCache[localUsername]
@@ -1683,14 +4438,18 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 
 			gpuCost := 0.0
 			if len(proc.GPUUsage) > 0 {
-				gpuCost = CalculateProcessCost(proc, priceIndex, s.cfg.DefaultPricePerMinute)
+				gpuCost = CalculateProcessCostWithPolicy(proc, nodeModelPriceIndex, nodePriceOverride, priceIndex, s.cfg.DefaultPricePerMinute)
 			}
-			proc.Command = strings.TrimSpace(proc.Command)
+			proc.Command = cmdRaw
 			if len(proc.Command) > 256 {
 				proc.Command = proc.Command[:256]
 			}
 			cpuCost := (proc.CPUPercent / 100.0) * cpuPricePerCoreMinute * intervalMinutes
 			cost := round4(gpuCost + cpuCost)
+			if !nodePointsBillingEnabled {
+				// 积分拦截关闭：保留使用记录，但不计入积分消耗。
+				cost = 0
+			}
 
 			// 如果既没有 GPU，也几乎不占 CPU，就不计费也不落库（避免噪声与膨胀）
 			if len(proc.GPUUsage) == 0 && proc.CPUPercent < 1.0 {
@@ -1704,6 +4463,8 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 			}
 			usageRecords++
 			costTotal += cost
+			cpuPercentSum += proc.CPUPercent
+			memoryMBSum += proc.MemoryMB
 			if len(proc.GPUUsage) > 0 {
 				gpuProcCount++
 			} else {
@@ -1723,9 +4484,133 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 			}
 			la.pids = append(la.pids, proc.PID)
 		}
+		if len(miningEvidenceByUser) > 0 {
+			relatedUsers := make([]string, 0, len(miningEvidenceByUser))
+			summary := make([]string, 0, len(miningEvidenceByUser))
+			detailsUsers := make([]map[string]any, 0, len(miningEvidenceByUser))
+			for username, hits := range miningEvidenceByUser {
+				relatedUsers = append(relatedUsers, username)
+				summary = append(summary, fmt.Sprintf("%s(%d 进程)", username, len(hits)))
+				detailsUsers = append(detailsUsers, map[string]any{
+					"username":         username,
+					"suspicious_count": len(hits),
+					"samples":          hits,
+				})
+			}
+			sort.Strings(relatedUsers)
+			sort.Strings(summary)
+			sort.Slice(detailsUsers, func(i, j int) bool {
+				li := strings.TrimSpace(fmt.Sprintf("%v", detailsUsers[i]["username"]))
+				lj := strings.TrimSpace(fmt.Sprintf("%v", detailsUsers[j]["username"]))
+				return li < lj
+			})
+			reason := "检测到疑似挖矿进程特征：" + strings.Join(summary, "，")
+			if _, err := s.store.InsertNodeSecurityEventTx(
+				ctx,
+				tx,
+				data.ReportID,
+				data.NodeID,
+				"suspected_mining",
+				"critical",
+				reason,
+				relatedUsers,
+				map[string]any{
+					"node_id":               data.NodeID,
+					"report_ts":             reportTS.UTC().Format(time.RFC3339),
+					"related_usernames":     relatedUsers,
+					"judgement":             "疑似挖矿",
+					"suspicious_user_count": len(relatedUsers),
+					"users":                 detailsUsers,
+					"security_signal_input": "process.command",
+				},
+				2*time.Minute,
+			); err != nil {
+				return err
+			}
+		}
+
+		// 节点总体 CPU 高负载告警（默认阈值 95%）：用于追踪疑似恶意账号并形成审计日志。
+		type userCPUStat struct {
+			username   string
+			cpuPercent float64
+		}
+		cpuByUser := map[string]float64{}
+		for _, proc := range data.Users {
+			user := strings.TrimSpace(proc.Username)
+			if user == "" {
+				continue
+			}
+			cpuByUser[user] += proc.CPUPercent
+		}
+		topUsers := make([]userCPUStat, 0, len(cpuByUser))
+		for user, sum := range cpuByUser {
+			topUsers = append(topUsers, userCPUStat{username: user, cpuPercent: round4(sum)})
+		}
+		sort.Slice(topUsers, func(i, j int) bool {
+			if topUsers[i].cpuPercent == topUsers[j].cpuPercent {
+				return topUsers[i].username < topUsers[j].username
+			}
+			return topUsers[i].cpuPercent > topUsers[j].cpuPercent
+		})
+		topN := 10
+		if len(topUsers) < topN {
+			topN = len(topUsers)
+		}
+		topPayload := make([]map[string]any, 0, topN)
+		relatedUsers := make([]string, 0, topN)
+		for i := 0; i < topN; i++ {
+			topPayload = append(topPayload, map[string]any{
+				"username":    topUsers[i].username,
+				"cpu_percent": topUsers[i].cpuPercent,
+			})
+			relatedUsers = append(relatedUsers, topUsers[i].username)
+		}
+		nodeCPUCount := data.CPUCount
+		if nodeCPUCount <= 0 {
+			nodeCPUCount = 1
+		}
+		totalCPUPercent := float64(nodeCPUCount) * 100.0
+		usageRatio := 0.0
+		if totalCPUPercent > 0 {
+			usageRatio = cpuPercentSum / totalCPUPercent
+		}
+		if usageRatio >= 0.95 {
+			reason := fmt.Sprintf("节点 CPU 总负载 %.2f%%（阈值 95%%）", usageRatio*100.0)
+			_, err := s.store.InsertNodeSecurityEventTx(
+				ctx,
+				tx,
+				data.ReportID,
+				data.NodeID,
+				"high_cpu_load",
+				"warning",
+				reason,
+				relatedUsers,
+				map[string]any{
+					"node_id":                data.NodeID,
+					"report_ts":              reportTS.UTC().Format(time.RFC3339),
+					"cpu_percent_sum":        round4(cpuPercentSum),
+					"node_cpu_count":         nodeCPUCount,
+					"threshold_percent":      95.0,
+					"node_capacity_percent":  round4(totalCPUPercent),
+					"usage_ratio_percent":    round4(usageRatio * 100.0),
+					"top_user_cpu_breakdown": topPayload,
+				},
+				5*time.Minute,
+			)
+			if err != nil {
+				return err
+			}
+		}
+		if err := s.recordNodeSecuritySignalsTx(ctx, tx, data, reportTS); err != nil {
+			return err
+		}
 
 		for billingUsername, b := range billingAggs {
-			res, err := s.store.DeductBalanceTx(ctx, tx, billingUsername, b.cost, now, s.cfg)
+			if !nodePointsBillingEnabled {
+				// 积分拦截关闭时：不扣减积分，也不触发欠费状态动作。
+				continue
+			}
+			res, err := s.store.DeductBalanceOnNodeTx(ctx, tx, billingUsername, data.NodeID, b.cost, now, s.cfg)
 			if err != nil {
 				return err
 			}
@@ -1734,7 +4619,15 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 			for localUsername, la := range b.locals {
 				uLocal := res.User
 				uLocal.Username = localUsername
+				uLocal.Balance = res.User.Balance + res.User.CarryoverBalance
 				actions = append(actions, DecideActions(now, res.PrevStatus, uLocal, s.cfg.WarningThreshold, s.cfg.LimitedThreshold, grace, la.pids)...)
+				if res.User.Balance+res.User.CarryoverBalance <= hardInterruptBalanceThreshold {
+					actions = append(actions, Action{
+						Type:     "kill_all_processes",
+						Username: localUsername,
+						Reason:   fmt.Sprintf("余额低于 %.2f 积分，强制中断进程", hardInterruptBalanceThreshold),
+					})
+				}
 
 				if s.cfg.EnableCPUControl {
 					if res.User.Status == "limited" {
@@ -1764,6 +4657,22 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 		}
 
 		// 更新节点状态（用于运维查看在线/上报情况）
+		if err := s.store.UpsertNodeRuntimeSnapshotTx(
+			ctx,
+			tx,
+			data.ReportID,
+			data.NodeID,
+			reportTS,
+			round4(cpuPercentSum),
+			round4(memoryMBSum),
+			gpuProcCount,
+			cpuProcCount,
+			data.SSHUsers,
+			round4(costTotal),
+		); err != nil {
+			return err
+		}
+
 		if err := s.store.UpsertNodeStatusTx(
 			ctx,
 			tx,
@@ -1776,6 +4685,16 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 			data.CPUCount,
 			data.GPUModel,
 			data.GPUCount,
+			data.OSVersion,
+			data.KernelVersion,
+			data.NodeIP,
+			data.NodeMAC,
+			data.DiskTotalGB,
+			data.DiskUsedGB,
+			data.HomeTotalGB,
+			data.HomeUsedGB,
+			data.MntTotalGB,
+			data.MntUsedGB,
 			data.NetRxBytes,
 			data.NetTxBytes,
 			gpuProcCount,
@@ -1784,6 +4703,9 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 			len(data.SSHUsers),
 			round4(costTotal),
 		); err != nil {
+			return err
+		}
+		if err := s.store.ReplaceNodeLocalUsersTx(ctx, tx, data.NodeID, data.LocalUsers); err != nil {
 			return err
 		}
 		return nil
@@ -1804,6 +4726,269 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 func round4(v float64) float64 {
 	// 避免引入更多依赖，使用 billing.go 同样的舍入策略
 	return float64(int64(v*10000+0.5)) / 10000
+}
+
+func detectMiningIndicators(command string) []string {
+	cmd := strings.ToLower(strings.TrimSpace(command))
+	if cmd == "" {
+		return nil
+	}
+	rules := []struct {
+		Needle string
+		Label  string
+	}{
+		{Needle: "xmrig", Label: "命中 xmrig 特征"},
+		{Needle: "cpuminer", Label: "命中 cpuminer 特征"},
+		{Needle: "minerd", Label: "命中 minerd 特征"},
+		{Needle: "ethminer", Label: "命中 ethminer 特征"},
+		{Needle: "phoenixminer", Label: "命中 phoenixminer 特征"},
+		{Needle: "lolminer", Label: "命中 lolminer 特征"},
+		{Needle: "nbminer", Label: "命中 nbminer 特征"},
+		{Needle: "gminer", Label: "命中 gminer 特征"},
+		{Needle: "teamredminer", Label: "命中 teamredminer 特征"},
+		{Needle: "nanominer", Label: "命中 nanominer 特征"},
+		{Needle: "t-rex", Label: "命中 t-rex 特征"},
+		{Needle: "stratum+tcp", Label: "命中 stratum 协议特征"},
+		{Needle: "stratum://", Label: "命中 stratum 协议特征"},
+		{Needle: "nicehash", Label: "命中 nicehash 特征"},
+		{Needle: "randomx", Label: "命中 randomx 挖矿算法特征"},
+		{Needle: "ethash", Label: "命中 ethash 挖矿算法特征"},
+		{Needle: "kawpow", Label: "命中 kawpow 挖矿算法特征"},
+		{Needle: "cryptonight", Label: "命中 cryptonight 挖矿算法特征"},
+	}
+	set := map[string]struct{}{}
+	out := make([]string, 0, 4)
+	for _, rule := range rules {
+		if !strings.Contains(cmd, rule.Needle) {
+			continue
+		}
+		if _, ok := set[rule.Label]; ok {
+			continue
+		}
+		set[rule.Label] = struct{}{}
+		out = append(out, rule.Label)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (s *Server) recordNodeSecuritySignalsTx(ctx context.Context, tx *sql.Tx, data MetricsData, reportTS time.Time) error {
+	const sshFailThreshold5m = 20
+	if sig := data.SecuritySignals; sig != nil {
+		if sig.SSHFailedCount5m > sshFailThreshold5m {
+			reason := fmt.Sprintf("5 分钟内 SSH 失败登录 %d 次（阈值 %d 次）", sig.SSHFailedCount5m, sshFailThreshold5m)
+			if _, err := s.store.InsertNodeSecurityEventTx(
+				ctx,
+				tx,
+				data.ReportID,
+				data.NodeID,
+				"ssh_failed_login_spike",
+				"critical",
+				reason,
+				sig.SSHFailedUsernames,
+				map[string]any{
+					"node_id":               data.NodeID,
+					"report_ts":             reportTS.UTC().Format(time.RFC3339),
+					"window_minutes":        5,
+					"failed_count":          sig.SSHFailedCount5m,
+					"threshold":             sshFailThreshold5m,
+					"failed_source_ips":     sig.SSHFailedSourceIPs,
+					"failed_usernames":      sig.SSHFailedUsernames,
+					"judgement":             "恶意登录失败峰值",
+					"security_signal_input": "agent.security_signals",
+				},
+				2*time.Minute,
+			); err != nil {
+				return err
+			}
+		}
+		if sig.SSHBruteforceDetected {
+			reason := "检测到 SSH 爆破行为"
+			if len(sig.SSHBruteforceSources) > 0 {
+				reason = fmt.Sprintf("检测到 SSH 爆破行为：来源 %s", strings.Join(sig.SSHBruteforceSources, ", "))
+			}
+			if _, err := s.store.InsertNodeSecurityEventTx(
+				ctx,
+				tx,
+				data.ReportID,
+				data.NodeID,
+				"ssh_bruteforce",
+				"critical",
+				reason,
+				sig.SSHFailedUsernames,
+				map[string]any{
+					"node_id":               data.NodeID,
+					"report_ts":             reportTS.UTC().Format(time.RFC3339),
+					"window_minutes":        5,
+					"bruteforce_sources":    sig.SSHBruteforceSources,
+					"failed_count":          sig.SSHFailedCount5m,
+					"failed_source_ips":     sig.SSHFailedSourceIPs,
+					"failed_usernames":      sig.SSHFailedUsernames,
+					"judgement":             "SSH 爆破",
+					"security_signal_input": "agent.security_signals",
+				},
+				2*time.Minute,
+			); err != nil {
+				return err
+			}
+		}
+		if sig.PortScanDetected {
+			reason := "检测到异常端口扫描"
+			if len(sig.PortScanSources) > 0 {
+				reason = fmt.Sprintf("检测到异常端口扫描：来源 %s", strings.Join(sig.PortScanSources, ", "))
+			}
+			if _, err := s.store.InsertNodeSecurityEventTx(
+				ctx,
+				tx,
+				data.ReportID,
+				data.NodeID,
+				"abnormal_port_scan",
+				"critical",
+				reason,
+				nil,
+				map[string]any{
+					"node_id":               data.NodeID,
+					"report_ts":             reportTS.UTC().Format(time.RFC3339),
+					"scan_sources":          sig.PortScanSources,
+					"scan_target_ports":     sig.PortScanTargetPorts,
+					"judgement":             "异常端口扫描",
+					"security_signal_input": "agent.security_signals",
+				},
+				2*time.Minute,
+			); err != nil {
+				return err
+			}
+		}
+	}
+
+	riskyMounts := collectRiskyDiskMounts(data)
+	if len(riskyMounts) == 0 {
+		return nil
+	}
+	reasonParts := make([]string, 0, len(riskyMounts))
+	detailsMounts := make([]map[string]any, 0, len(riskyMounts))
+	for _, m := range riskyMounts {
+		reasonParts = append(reasonParts, fmt.Sprintf("%s 使用率 %.2f%%（剩余 %.2fGB）", m.Name, m.UsedPercent, m.FreeGB))
+		detailsMounts = append(detailsMounts, map[string]any{
+			"name":         m.Name,
+			"total_gb":     round4(m.TotalGB),
+			"used_gb":      round4(m.UsedGB),
+			"free_gb":      round4(m.FreeGB),
+			"used_percent": round4(m.UsedPercent),
+		})
+	}
+	relatedUsers := topHomeHeavyUsers(data.LocalUsers, 10)
+	reason := "检测到磁盘打满风险：" + strings.Join(reasonParts, "；")
+	_, err := s.store.InsertNodeSecurityEventTx(
+		ctx,
+		tx,
+		data.ReportID,
+		data.NodeID,
+		"disk_full_risk",
+		"critical",
+		reason,
+		relatedUsers,
+		map[string]any{
+			"node_id":               data.NodeID,
+			"report_ts":             reportTS.UTC().Format(time.RFC3339),
+			"risk_mounts":           detailsMounts,
+			"related_usernames":     relatedUsers,
+			"threshold_percent":     98.0,
+			"threshold_free_gb":     1.0,
+			"judgement":             "磁盘打满风险",
+			"security_signal_input": "node_storage_usage",
+		},
+		10*time.Minute,
+	)
+	return err
+}
+
+type diskMountRisk struct {
+	Name        string
+	TotalGB     float64
+	UsedGB      float64
+	FreeGB      float64
+	UsedPercent float64
+}
+
+func collectRiskyDiskMounts(data MetricsData) []diskMountRisk {
+	checks := []struct {
+		name  string
+		total float64
+		used  float64
+	}{
+		{name: "/", total: data.DiskTotalGB, used: data.DiskUsedGB},
+		{name: "/home", total: data.HomeTotalGB, used: data.HomeUsedGB},
+		{name: "/mnt", total: data.MntTotalGB, used: data.MntUsedGB},
+	}
+	out := make([]diskMountRisk, 0, len(checks))
+	for _, x := range checks {
+		if x.total <= 0 {
+			continue
+		}
+		used := x.used
+		if used < 0 {
+			used = 0
+		}
+		if used > x.total {
+			used = x.total
+		}
+		free := x.total - used
+		if free < 0 {
+			free = 0
+		}
+		usedPercent := 0.0
+		if x.total > 0 {
+			usedPercent = (used / x.total) * 100.0
+		}
+		if usedPercent >= 98.0 || free <= 1.0 {
+			out = append(out, diskMountRisk{
+				Name:        x.name,
+				TotalGB:     x.total,
+				UsedGB:      used,
+				FreeGB:      free,
+				UsedPercent: usedPercent,
+			})
+		}
+	}
+	return out
+}
+
+func topHomeHeavyUsers(localUsers []NodeLocalUser, limit int) []string {
+	if limit <= 0 || len(localUsers) == 0 {
+		return nil
+	}
+	type item struct {
+		username string
+		homeGB   float64
+	}
+	items := make([]item, 0, len(localUsers))
+	for _, u := range localUsers {
+		username := strings.TrimSpace(u.LocalUsername)
+		if username == "" || u.HomeUsedGB <= 0 {
+			continue
+		}
+		items = append(items, item{username: username, homeGB: u.HomeUsedGB})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].homeGB == items[j].homeGB {
+			return items[i].username < items[j].username
+		}
+		return items[i].homeGB > items[j].homeGB
+	})
+	out := make([]string, 0, limit)
+	seen := map[string]struct{}{}
+	for _, x := range items {
+		if len(out) >= limit {
+			break
+		}
+		if _, ok := seen[x.username]; ok {
+			continue
+		}
+		seen[x.username] = struct{}{}
+		out = append(out, x.username)
+	}
+	return out
 }
 
 func parseTimeFlexible(v string) (time.Time, error) {
