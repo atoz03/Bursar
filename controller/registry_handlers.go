@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -273,6 +274,19 @@ type openRequestCreateReq struct {
 	Message         string `json:"message"`
 }
 
+func validateOpenRequestReason(message string) error {
+	message = strings.TrimSpace(message)
+	if utf8.RuneCountInString(message) < 20 {
+		return errors.New("请详细填写开通理由（至少 20 个字，并说明研究方向）")
+	}
+	if !strings.Contains(message, "研究方向") &&
+		!strings.Contains(message, "研究课题") &&
+		!strings.Contains(message, "课题方向") {
+		return errors.New("开通理由必须包含“研究方向”描述（例如研究方向/研究课题/课题方向）")
+	}
+	return nil
+}
+
 func (s *Server) handleUserOpenRequestCreate(c *gin.Context) {
 	var req openRequestCreateReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -284,12 +298,18 @@ func (s *Server) handleUserOpenRequestCreate(c *gin.Context) {
 	req.LocalUsername = strings.TrimSpace(req.LocalUsername)
 	req.Message = strings.TrimSpace(req.Message)
 
-	if req.BillingUsername == "" || req.NodeID == "" || req.LocalUsername == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "billing_username/node_id/local_username 不能为空"})
+	if req.BillingUsername == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "billing_username 不能为空"})
 		return
 	}
-	if utf8.RuneCountInString(req.Message) < 10 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请详细填写开通理由（至少 10 个字）"})
+	if req.NodeID == "" {
+		req.NodeID = "待分配"
+	}
+	if req.LocalUsername == "" {
+		req.LocalUsername = "待分配"
+	}
+	if err := validateOpenRequestReason(req.Message); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -392,6 +412,37 @@ func (s *Server) handleAdminRequestReject(c *gin.Context) {
 	s.handleAdminRequestReview(c, "rejected")
 }
 
+func (s *Server) handleAdminRequestReopen(c *gin.Context) {
+	idStr := strings.TrimSpace(c.Param("id"))
+	id, err := strconv.Atoi(idStr)
+	if err != nil || id <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "id 不合法"})
+		return
+	}
+	reviewedBy := "admin"
+	if v, ok := c.Get("auth_user"); ok {
+		if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+			reviewedBy = strings.TrimSpace(s)
+		}
+	} else if v, ok := c.Get("auth_method"); ok {
+		if m, ok := v.(string); ok && m == "token" {
+			reviewedBy = "admin_token"
+		}
+	}
+	ctx := c.Request.Context()
+	now := time.Now()
+	var updated UserRequest
+	if err := s.store.WithTx(ctx, func(tx *sql.Tx) error {
+		var txErr error
+		updated, txErr = s.store.ReopenUserOpenRequestTx(ctx, tx, id, reviewedBy, now)
+		return txErr
+	}); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "request": updated})
+}
+
 func (s *Server) handleAdminRequestReview(c *gin.Context, newStatus string) {
 	idStr := strings.TrimSpace(c.Param("id"))
 	id, err := strconv.Atoi(idStr)
@@ -439,17 +490,71 @@ type registrationRequestRejectReq struct {
 	Reason string `json:"reason"`
 }
 
+func registrationRequestMatchFilter(r RegistrationRequest, field string, keyword string) bool {
+	keyword = strings.TrimSpace(strings.ToLower(keyword))
+	if keyword == "" {
+		return true
+	}
+	field = strings.TrimSpace(strings.ToLower(field))
+	if field == "" {
+		field = "all"
+	}
+	matches := func(v string) bool {
+		return strings.Contains(strings.ToLower(strings.TrimSpace(v)), keyword)
+	}
+	switch field {
+	case "username":
+		return matches(r.Username)
+	case "email":
+		return matches(r.Email)
+	case "student_id":
+		return matches(r.StudentID)
+	case "real_name":
+		return matches(r.RealName)
+	case "advisor":
+		return matches(r.Advisor)
+	case "phone":
+		return matches(r.Phone)
+	case "status":
+		return matches(r.Status)
+	case "all":
+		return matches(r.Username) ||
+			matches(r.Email) ||
+			matches(r.StudentID) ||
+			matches(r.RealName) ||
+			matches(r.Advisor) ||
+			matches(r.Phone) ||
+			matches(r.Status)
+	default:
+		return true
+	}
+}
+
 func (s *Server) handleAdminRegistrationRequestsOverview(c *gin.Context) {
-	limit := parseLimit(c.Query("limit"), 500, 5000)
-	pending, err := s.store.ListRegistrationRequestsAdmin(c.Request.Context(), "pending", limit)
+	limit := parseLimit(c.Query("limit"), 1000, 50000)
+	field := strings.TrimSpace(c.Query("field"))
+	keyword := strings.TrimSpace(c.Query("keyword"))
+	pendingRaw, err := s.store.ListRegistrationRequestsAdmin(c.Request.Context(), "pending", limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	rejected, err := s.store.ListRegistrationRequestsAdmin(c.Request.Context(), "rejected", limit)
+	rejectedRaw, err := s.store.ListRegistrationRequestsAdmin(c.Request.Context(), "rejected", limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+	pending := make([]RegistrationRequest, 0, len(pendingRaw))
+	for _, row := range pendingRaw {
+		if registrationRequestMatchFilter(row, field, keyword) {
+			pending = append(pending, row)
+		}
+	}
+	rejected := make([]RegistrationRequest, 0, len(rejectedRaw))
+	for _, row := range rejectedRaw {
+		if registrationRequestMatchFilter(row, field, keyword) {
+			rejected = append(rejected, row)
+		}
 	}
 
 	pendingNameCount := map[string]int{}

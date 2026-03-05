@@ -114,7 +114,7 @@ python3() {
 }
 
 nvidia-smi() {
-  gpuops_check_balance || true
+  gpuops_check_balance || return 1
   command nvidia-smi "$@"
 }
 
@@ -122,4 +122,3 @@ export -f python
 export -f python3
 export -f nvidia-smi
 export -f gpuops_check_balance
-

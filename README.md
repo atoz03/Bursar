@@ -37,8 +37,9 @@
 - 记录内容：节点、触发时间、相关用户、Top CPU 用户占比、触发原因。
 - 作用：在“节点状态监控 -> 节点详情”中生成“疑似恶意用户名单”和“安全审计日志”，支持管理员一键拉黑（SSH 黑名单）。
 
-### 4) CPU 预留策略
-- 节点安装时默认给 `user.slice` 设置 CPU 上限约 `95%`，预留约 `5%` 给系统，降低 SSH 卡顿风险。
+### 4) 资源预留策略
+- 可选 CPU 预留：`ENABLE_USER_SLICE_CPU_RESERVE=1` 时给 `user.slice` 设置 CPU 上限（默认关闭）。
+- 默认内存预留：给系统保留 `8G`（`USER_SLICE_MEMORY_RESERVE_GB=8`），避免用户任务把节点内存打满导致卡死。
 
 ---
 
@@ -61,7 +62,7 @@
 
 补充说明：
 - `install_agent_local.sh` 默认支持 `NODE_ID` 自动识别（按本机 IP 匹配 `my_ssh_keys/server_ssh_map.csv`）。
-- `install_agent_local.sh` 已内置 SSH 防爆破（`fail2ban`）和 `user.slice` CPU 预留（默认给系统保留约 5%）。
+- `install_agent_local.sh` 已内置 SSH 防爆破（`fail2ban`）和 `user.slice` 资源预留（默认保留 `8G` 内存，可通过 `USER_SLICE_MEMORY_RESERVE_GB` 调整）。
 - `install_agent_local.sh` 与 `install_controller_local.sh` 会自动调用 `install_home_reserve_guard.sh`，可通过 `HOME_RESERVE_GB` 一行调整预留空间。
 - `distribute_workspace.sh` 支持并发，默认 `PARALLEL=6`。
 - `distribute_workspace.sh`/`check_server_connectivity.sh` 默认都是全量读取 `my_ssh_keys/server_ssh_map.csv`，不是只跑单节点。
@@ -273,12 +274,12 @@ echo "gpuops ALL=(root) NOPASSWD: /bin/bash /home/gpuops/gpu-ops/scripts/install
 sudo chmod 440 /etc/sudoers.d/gpu-deploy && \
 sudo chown root:root /etc/sudoers.d/gpu-deploy && \
 sudo visudo -cf /etc/sudoers.d/gpu-deploy && \
-SSH_GUARD_EXCLUDE_USERS="root gpuops" HOME_RESERVE_GB=8 CONTROLLER_URL=http://192.0.2.10:60039 AGENT_TOKEN=6af5911256a62c73d8ecaaf60ffec363f23247a0cf262a8f7c78b188fdeaaf4b bash scripts/install_agent_local.sh && \
+SSH_GUARD_EXCLUDE_USERS="root gpuops" USER_SLICE_MEMORY_RESERVE_GB=8 HOME_RESERVE_GB=8 CONTROLLER_URL=http://192.0.2.10:60039 AGENT_TOKEN=6af5911256a62c73d8ecaaf60ffec363f23247a0cf262a8f7c78b188fdeaaf4b bash scripts/install_agent_local.sh && \
 sudo systemctl enable --now gpu-node-agent && \
 sudo systemctl status gpu-node-agent --no-pager
 ```
 
-说明：`scripts/install_agent_local.sh` 默认已经会安装并启用 `gpu-node-agent`，上述命令用于手动确认或补开启；`HOME_RESERVE_GB` 可改成任意整数（单位 GB），例如 `HOME_RESERVE_GB=12`。
+说明：`scripts/install_agent_local.sh` 默认已经会安装并启用 `gpu-node-agent`，上述命令用于手动确认或补开启。`USER_SLICE_MEMORY_RESERVE_GB` 默认 `8`，按节点实际情况可改为 `6`、`10` 等；`HOME_RESERVE_GB` 可改成任意整数（单位 GB），例如 `HOME_RESERVE_GB=12`。
 
 ---
 
@@ -288,7 +289,7 @@ sudo systemctl status gpu-node-agent --no-pager
 # 分发最新版脚本给计算节点
 bash ./scripts/distribute_workspace.sh
 # 一键并发分发并“仅重装已安装过 agent 的节点”，结果写入当前目录“计算节点部署情况.txt”
-cd /home/gpuops/gpu-ops && CONTROLLER_URL=http://192.0.2.10:60039 AGENT_TOKEN=6af5911256a62c73d8ecaaf60ffec363f23247a0cf262a8f7c78b188fdeaaf4b SSH_GUARD_EXCLUDE_USERS="root gpuops" HOME_RESERVE_GB=8 PARALLEL=8 bash scripts/deploy_installed_nodes_only.sh
+cd /home/gpuops/gpu-ops && CONTROLLER_URL=http://192.0.2.10:60039 AGENT_TOKEN=6af5911256a62c73d8ecaaf60ffec363f23247a0cf262a8f7c78b188fdeaaf4b SSH_GUARD_EXCLUDE_USERS="root gpuops" USER_SLICE_MEMORY_RESERVE_GB=8 HOME_RESERVE_GB=8 PARALLEL=8 bash scripts/deploy_installed_nodes_only.sh
 # 计算节点服务开机自启（在每个计算节点执行一次）
 sudo systemctl enable --now gpu-node-agent
 sudo systemctl status gpu-node-agent --no-pager
@@ -315,7 +316,7 @@ systemctl list-timers --all | grep -E 'gpu-ssh-guard-(sync|enforce)\.timer|gpu-h
 ```
 
 说明：
-- 计算节点安全防护由 `install_agent_local.sh` 安装并启用（SSH Guard + fail2ban + user.slice CPU 预留）。
+- 计算节点安全防护由 `install_agent_local.sh` 安装并启用（SSH Guard + fail2ban + user.slice 资源预留）。
 - 计算节点需启用 `gpu-node-agent` 开机自启（上面的 `systemctl enable --now gpu-node-agent`）。
 - 控制节点需启用 `gpu-controller` 开机自启（`install_controller_local.sh` 会配置并启用 systemd 服务）。
 - 两类节点都会安装 `/home` 预留保护（默认 `HOME_RESERVE_GB=8`，`HOME_RESERVE_EXEMPT_USERS` 默认 `root gpuops`）。

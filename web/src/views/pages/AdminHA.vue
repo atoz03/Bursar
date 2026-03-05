@@ -37,7 +37,7 @@
         <div class="v">
           <el-tag :type="status.in_sync ? 'success' : 'warning'">{{ status.in_sync ? "已同步" : "存在差异" }}</el-tag>
         </div>
-        <div class="s">检查时间：{{ status.checked || "-" }}</div>
+        <div class="s">检查时间：{{ fmtTime(status.checked) }}</div>
       </el-card>
     </div>
 
@@ -50,8 +50,8 @@
       <el-descriptions-item label="黑名单">{{ status.local.summary.blacklist_count }}</el-descriptions-item>
       <el-descriptions-item label="豁免名单">{{ status.local.summary.exemptions_count }}</el-descriptions-item>
       <el-descriptions-item label="使用记录总数">{{ status.local.summary.usage_records_count }}</el-descriptions-item>
-      <el-descriptions-item label="最近使用记录">{{ status.local.summary.latest_usage_at || "-" }}</el-descriptions-item>
-      <el-descriptions-item label="最近节点上报">{{ status.local.summary.latest_node_seen_at || "-" }}</el-descriptions-item>
+      <el-descriptions-item label="最近使用记录">{{ fmtTime(status.local.summary.latest_usage_at) }}</el-descriptions-item>
+      <el-descriptions-item label="最近节点上报">{{ fmtTime(status.local.summary.latest_node_seen_at) }}</el-descriptions-item>
       <el-descriptions-item label="摘要哈希" :span="3">
         <code>{{ status.local.summary.digest }}</code>
       </el-descriptions-item>
@@ -82,6 +82,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient, type HAStatusResp } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
+import { formatServerHMS } from "../../lib/time";
 import { Connection } from "@element-plus/icons-vue";
 
 const loading = ref(false);
@@ -100,10 +101,12 @@ const peerLabel = computed(() => {
 const lastRefreshText = computed(() => {
   const v = String(lastRefreshAt.value || "").trim();
   if (!v) return "尚未刷新";
-  const d = new Date(v);
-  if (Number.isNaN(d.getTime())) return v;
-  return d.toLocaleString();
+  return formatServerHMS(v);
 });
+
+function fmtTime(v?: string): string {
+  return formatServerHMS(v || "");
+}
 
 function stopAutoRefresh() {
   if (autoTimer) {

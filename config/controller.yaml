@@ -28,6 +28,8 @@ sample_interval_seconds: 60
 enable_cpu_control: true
 cpu_limit_percent_limited: 50
 cpu_limit_percent_blocked: 10
+# 超过每月欠费上限后，对用户施加内存上限（单位：GB；0 表示关闭）
+overdraft_memory_limit_gb: 8
 
 # 欠费后宽限期（秒）：到期后才下发 kill
 kill_grace_period_seconds: 600

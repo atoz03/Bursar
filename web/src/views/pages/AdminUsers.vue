@@ -108,7 +108,9 @@
         <el-table-column prop="email" label="邮箱" min-width="220" />
         <el-table-column prop="delete_reason" label="删除原因" min-width="220" />
         <el-table-column prop="deleted_by" label="删除人" width="120" />
-        <el-table-column prop="deleted_at" label="删除时间" width="180" />
+        <el-table-column label="删除时间" width="180">
+          <template #default="{ row }">{{ fmtTime(row.deleted_at) }}</template>
+        </el-table-column>
         <el-table-column label="操作" width="150" fixed="right">
           <template #default="{ row }">
             <el-button size="small" type="primary" @click="restoreUser(row)">恢复</el-button>
@@ -215,7 +217,9 @@
         <el-table :data="profileData.node_accounts || []" stripe max-height="220" empty-text="暂无映射">
           <el-table-column prop="node_id" label="节点编号" width="140" />
           <el-table-column prop="local_username" label="节点账号" width="160" />
-          <el-table-column prop="updated_at" label="更新时间" min-width="180" />
+          <el-table-column label="更新时间" min-width="180">
+            <template #default="{ row }">{{ fmtTime(row.updated_at) }}</template>
+          </el-table-column>
           <el-table-column label="操作" width="120">
             <template #default="{ row: acc }">
               <el-button
@@ -272,7 +276,9 @@
           <el-table-column prop="real_name" label="真实姓名" width="120" />
           <el-table-column prop="student_id" label="学号" width="140" />
           <el-table-column prop="email" label="邮箱" min-width="220" />
-          <el-table-column prop="deleted_at" label="删除时间" width="180" />
+          <el-table-column label="删除时间" width="180">
+            <template #default="{ row }">{{ fmtTime(row.deleted_at) }}</template>
+          </el-table-column>
         </el-table>
       </template>
     </el-dialog>
@@ -285,6 +291,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { ApiClient, type AdminUserDetail, type DeletedUserAccount, type GraduationDueUser, type UserProfile } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
+import { formatServerDateTime } from "../../lib/time";
 import { Bell, Connection, Delete, List, UserFilled, WarningFilled } from "@element-plus/icons-vue";
 
 const loading = ref(false);
@@ -381,9 +388,15 @@ function buildIdentitySet(entries: Array<{
 }>): Set<string> {
   const out = new Set<string>();
   for (const e of entries ?? []) {
-    pushIdentity(out, String(e?.local_username || ""));
-    pushIdentity(out, String(e?.billing_username || ""));
-    pushIdentity(out, String(e?.source_platform_username || ""));
+    const sourcePlatform = String(e?.source_platform_username || "").trim();
+    const billing = String(e?.billing_username || "").trim();
+    if (sourcePlatform) {
+      pushIdentity(out, sourcePlatform);
+      continue;
+    }
+    if (billing) {
+      pushIdentity(out, billing);
+    }
   }
   return out;
 }
@@ -427,10 +440,7 @@ function fmtGrad(year: number, month: number): string {
 }
 
 function fmtTime(v: string): string {
-  if (!v) return "-";
-  const d = new Date(v);
-  if (Number.isNaN(d.getTime())) return v;
-  return d.toLocaleString();
+  return formatServerDateTime(v);
 }
 
 async function reload() {

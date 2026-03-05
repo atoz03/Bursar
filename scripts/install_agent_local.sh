@@ -45,6 +45,8 @@ SSH_FAIL2BAN_BANTIME="${SSH_FAIL2BAN_BANTIME:-12h}"
 SSH_FAIL2BAN_IGNOREIP="${SSH_FAIL2BAN_IGNOREIP:-}"
 ENABLE_USER_SLICE_CPU_RESERVE="${ENABLE_USER_SLICE_CPU_RESERVE:-0}"
 USER_SLICE_CPU_RESERVE_PERCENT="${USER_SLICE_CPU_RESERVE_PERCENT:-95}"
+ENABLE_USER_SLICE_MEMORY_RESERVE="${ENABLE_USER_SLICE_MEMORY_RESERVE:-1}"
+USER_SLICE_MEMORY_RESERVE_GB="${USER_SLICE_MEMORY_RESERVE_GB:-8}"
 RESET_USER_CPU_QUOTA_ON_INSTALL="${RESET_USER_CPU_QUOTA_ON_INSTALL:-1}"
 HOME_RESERVE_GB="${HOME_RESERVE_GB:-8}"
 HOME_RESERVE_CHECK_PATH="${HOME_RESERVE_CHECK_PATH:-/home}"
@@ -212,6 +214,8 @@ usage() {
   SSH_FAIL2BAN_IGNOREIP="..."      fail2ban 忽略网段（默认空，不忽略 localhost）
   ENABLE_USER_SLICE_CPU_RESERVE=0  为 user.slice 预留 5% CPU（默认 0，关闭）
   USER_SLICE_CPU_RESERVE_PERCENT=95 user.slice CPU 上限百分比（默认 95）
+  ENABLE_USER_SLICE_MEMORY_RESERVE=1 是否为系统保留内存（默认 1，开启）
+  USER_SLICE_MEMORY_RESERVE_GB=8     为系统保留内存（GB，默认 8）
   RESET_USER_CPU_QUOTA_ON_INSTALL=1 安装时清理历史用户 CPU 限速残留（默认 1）
   HOME_RESERVE_GB=8                /home 最低保留空间（GB，默认 8；0 表示关闭）
   HOME_RESERVE_CHECK_PATH=/home    保护检测路径（默认 /home）
@@ -264,6 +268,7 @@ echo "CONTROLLER_URL=${CONTROLLER_URL}"
 echo "SERVICE_NAME=${SERVICE_NAME}"
 echo "SYNC_TIME_WITH_CONTROLLER=${SYNC_TIME_WITH_CONTROLLER}"
 echo "ENABLE_SSH_GUARD=${ENABLE_SSH_GUARD} (FAIL_OPEN=${SSH_GUARD_FAIL_OPEN})"
+echo "ENABLE_USER_SLICE_MEMORY_RESERVE=${ENABLE_USER_SLICE_MEMORY_RESERVE} (USER_SLICE_MEMORY_RESERVE_GB=${USER_SLICE_MEMORY_RESERVE_GB})"
 echo "INSTALL_NODE_DEPS=${INSTALL_NODE_DEPS}"
 echo "INSTALL_DOCKER_DEPS=${INSTALL_DOCKER_DEPS}"
 echo "NODE_ID_AUTO_DETECT=${NODE_ID_AUTO_DETECT}"
@@ -789,6 +794,9 @@ EOF_FAIL2BAN
     echo "警告：未安装 fail2ban，跳过 SSH 防爆破基线"
   fi
 
+  # 兼容旧版文件名，避免和新拆分的 CPU/内存配置冲突。
+  ${SUDO} rm -f /etc/systemd/system/user.slice.d/20-gpu-reserve.conf || true
+
   if [[ "${ENABLE_USER_SLICE_CPU_RESERVE}" == "1" ]]; then
     cpu_cnt="$(nproc 2>/dev/null || echo 1)"
     if [[ ! "${cpu_cnt}" =~ ^[0-9]+$ || "${cpu_cnt}" -le 0 ]]; then
@@ -800,20 +808,59 @@ EOF_FAIL2BAN
     fi
     quota_pct=$((cpu_cnt * reserve_pct))
     ${SUDO} mkdir -p /etc/systemd/system/user.slice.d
-    ${SUDO} tee /etc/systemd/system/user.slice.d/20-gpu-reserve.conf >/dev/null <<EOF_USER_SLICE
+    ${SUDO} tee /etc/systemd/system/user.slice.d/20-gpu-cpu-reserve.conf >/dev/null <<EOF_USER_SLICE_CPU
 [Slice]
 CPUAccounting=true
 CPUQuota=${quota_pct}%
-EOF_USER_SLICE
+EOF_USER_SLICE_CPU
     ${SUDO} systemctl daemon-reload || true
     ${SUDO} systemctl set-property --runtime user.slice "CPUQuota=${quota_pct}%" >/dev/null 2>&1 || true
     echo "已设置 user.slice CPUQuota=${quota_pct}%（约保留 ${100-reserve_pct}% CPU 给系统）"
   else
     # 默认不限制 user.slice，避免普通 SSH 会话出现明显卡顿。
-    ${SUDO} rm -f /etc/systemd/system/user.slice.d/20-gpu-reserve.conf || true
+    ${SUDO} rm -f /etc/systemd/system/user.slice.d/20-gpu-cpu-reserve.conf || true
     ${SUDO} systemctl daemon-reload || true
     ${SUDO} systemctl set-property --runtime user.slice "CPUQuota=infinity" >/dev/null 2>&1 || true
     echo "已关闭 user.slice CPUQuota 预留（恢复为不限制）"
+  fi
+
+  if [[ "${ENABLE_USER_SLICE_MEMORY_RESERVE}" == "1" ]]; then
+    reserve_gb_raw="${USER_SLICE_MEMORY_RESERVE_GB}"
+    if [[ ! "${reserve_gb_raw}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+      reserve_gb_raw="8"
+    fi
+
+    total_mem_kb="$(awk '/MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || true)"
+    if [[ ! "${total_mem_kb}" =~ ^[0-9]+$ || "${total_mem_kb}" -le 0 ]]; then
+      echo "警告：读取总内存失败，跳过 user.slice 内存预留设置"
+    else
+      reserve_bytes="$(awk -v gb="${reserve_gb_raw}" 'BEGIN{printf "%.0f", gb*1024*1024*1024}')"
+      total_bytes="$((total_mem_kb * 1024))"
+      memory_max_bytes="$((total_bytes - reserve_bytes))"
+      min_bytes=$((512 * 1024 * 1024))
+      if (( memory_max_bytes < min_bytes )); then
+        memory_max_bytes="${min_bytes}"
+      fi
+
+      ${SUDO} mkdir -p /etc/systemd/system/user.slice.d
+      ${SUDO} tee /etc/systemd/system/user.slice.d/30-gpu-memory-reserve.conf >/dev/null <<EOF_USER_SLICE_MEM
+[Slice]
+MemoryAccounting=true
+MemoryMax=${memory_max_bytes}
+EOF_USER_SLICE_MEM
+
+      ${SUDO} systemctl daemon-reload || true
+      ${SUDO} systemctl set-property --runtime user.slice "MemoryMax=${memory_max_bytes}" >/dev/null 2>&1 || true
+
+      memory_max_gb="$(awk -v b="${memory_max_bytes}" 'BEGIN{printf "%.2f", b/1024/1024/1024}')"
+      total_mem_gb="$(awk -v kb="${total_mem_kb}" 'BEGIN{printf "%.2f", kb/1024/1024}')"
+      echo "已设置 user.slice MemoryMax=${memory_max_gb}G（总内存约 ${total_mem_gb}G，系统保留 ${reserve_gb_raw}G）"
+    fi
+  else
+    ${SUDO} rm -f /etc/systemd/system/user.slice.d/30-gpu-memory-reserve.conf || true
+    ${SUDO} systemctl daemon-reload || true
+    ${SUDO} systemctl set-property --runtime user.slice "MemoryMax=infinity" >/dev/null 2>&1 || true
+    echo "已关闭 user.slice 内存预留（恢复为不限制）"
   fi
 fi
 

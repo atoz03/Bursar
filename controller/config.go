@@ -32,6 +32,7 @@ type Config struct {
 	EnableCPUControl       bool    `yaml:"enable_cpu_control"`
 	CPULimitPercentLimited float64 `yaml:"cpu_limit_percent_limited"`
 	CPULimitPercentBlocked float64 `yaml:"cpu_limit_percent_blocked"`
+	OverdraftMemoryLimitGB float64 `yaml:"overdraft_memory_limit_gb"`
 
 	KillGracePeriodSeconds int `yaml:"kill_grace_period_seconds"`
 
@@ -87,6 +88,9 @@ func (c *Config) Validate() error {
 	}
 	if c.CPULimitPercentBlocked < 1 || c.CPULimitPercentBlocked > 100 {
 		return errors.New("cpu_limit_percent_blocked 必须在 [1, 100] 范围内")
+	}
+	if c.OverdraftMemoryLimitGB < 0 {
+		return errors.New("overdraft_memory_limit_gb 不能为负数（0 表示关闭）")
 	}
 	if c.KillGracePeriodSeconds < 0 {
 		return errors.New("kill_grace_period_seconds 不能为负数")

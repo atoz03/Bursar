@@ -9,6 +9,7 @@
 
     <el-alert v-if="error" :title="error" type="error" show-icon class="mb" />
     <el-alert v-if="success" :title="success" type="success" show-icon class="mb" />
+    <el-alert :title="passwordRuleText" type="info" show-icon :closable="false" class="mb" />
 
     <el-form label-position="top" style="max-width: 520px">
       <el-form-item label="当前密码">
@@ -28,16 +29,23 @@ import { ref } from "vue";
 import { ApiClient } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { Key } from "@element-plus/icons-vue";
+import { STRONG_PASSWORD_RULE_TEXT, checkStrongPassword } from "../../lib/passwordPolicy";
 
 const loading = ref(false);
 const error = ref("");
 const success = ref("");
 const currentPassword = ref("");
 const newPassword = ref("");
+const passwordRuleText = STRONG_PASSWORD_RULE_TEXT;
 
 async function submit() {
   error.value = "";
   success.value = "";
+  const pwdErr = checkStrongPassword(newPassword.value);
+  if (pwdErr) {
+    error.value = pwdErr;
+    return;
+  }
   loading.value = true;
   try {
     const client = new ApiClient(settingsState.baseUrl);
