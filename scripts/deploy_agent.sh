@@ -153,6 +153,7 @@ SVC'"
     ssh ${SSH_OPTS} "${target}" "${REMOTE_SUDO} bash -lc 'cat > /etc/gpu-cluster/ssh_guard.conf <<CONF
 CONTROLLER_URL=\"${CONTROLLER_URL}\"
 NODE_ID=\"${node_id}\"
+AGENT_TOKEN=\"${AGENT_TOKEN}\"
 EXCLUDE_USERS=\"${SSH_GUARD_EXCLUDE_USERS}\"
 FAIL_OPEN=\"${SSH_GUARD_FAIL_OPEN}\"
 ALLOWLIST_FILE=\"/var/lib/gpu-cluster/registered_users.txt\"
@@ -171,6 +172,7 @@ fi
 
 CONTROLLER_URL=\"${CONTROLLER_URL:-}\"
 NODE_ID=\"${NODE_ID:-}\"
+AGENT_TOKEN=\"${AGENT_TOKEN:-}\"
 ALLOWLIST_FILE=\"${ALLOWLIST_FILE:-/var/lib/gpu-cluster/registered_users.txt}\"
 DENYLIST_FILE=\"${DENYLIST_FILE:-/var/lib/gpu-cluster/blocked_users.txt}\"
 EXEMPT_FILE=\"${EXEMPT_FILE:-/var/lib/gpu-cluster/exempt_users.txt}\"
@@ -187,13 +189,18 @@ mkdir -p \"$(dirname \"${ALLOWLIST_FILE}\")\"
 mkdir -p \"$(dirname \"${DENYLIST_FILE}\")\"
 mkdir -p \"$(dirname \"${EXEMPT_FILE}\")\"
 
-curl -fsS \"${CONTROLLER_URL}/api/registry/nodes/${NODE_ID}/users.txt\" -o \"${tmp}\"
+curl_auth=()
+if [[ -n \"${AGENT_TOKEN}\" ]]; then
+  curl_auth=(-H \"X-Agent-Token: ${AGENT_TOKEN}\")
+fi
+
+curl -fsS \"${curl_auth[@]}\" \"${CONTROLLER_URL}/api/registry/nodes/${NODE_ID}/users.txt\" -o \"${tmp}\"
 mv \"${tmp}\" \"${ALLOWLIST_FILE}\"
 chmod 0644 \"${ALLOWLIST_FILE}\"
-curl -fsS \"${CONTROLLER_URL}/api/registry/nodes/${NODE_ID}/blocked.txt\" -o \"${tmp_deny}\"
+curl -fsS \"${curl_auth[@]}\" \"${CONTROLLER_URL}/api/registry/nodes/${NODE_ID}/blocked.txt\" -o \"${tmp_deny}\"
 mv \"${tmp_deny}\" \"${DENYLIST_FILE}\"
 chmod 0644 \"${DENYLIST_FILE}\"
-curl -fsS \"${CONTROLLER_URL}/api/registry/nodes/${NODE_ID}/exempt.txt\" -o \"${tmp_exempt}\"
+curl -fsS \"${curl_auth[@]}\" \"${CONTROLLER_URL}/api/registry/nodes/${NODE_ID}/exempt.txt\" -o \"${tmp_exempt}\"
 mv \"${tmp_exempt}\" \"${EXEMPT_FILE}\"
 chmod 0644 \"${EXEMPT_FILE}\"
 EOF2'"
@@ -226,6 +233,7 @@ done
 
 CONTROLLER_URL=\"${CONTROLLER_URL:-}\"
 NODE_ID=\"${NODE_ID:-}\"
+AGENT_TOKEN=\"${AGENT_TOKEN:-}\"
 FAIL_OPEN=\"${FAIL_OPEN:-1}\"
 ALLOWLIST_FILE=\"${ALLOWLIST_FILE:-/var/lib/gpu-cluster/registered_users.txt}\"
 DENYLIST_FILE=\"${DENYLIST_FILE:-/var/lib/gpu-cluster/blocked_users.txt}\"
@@ -235,10 +243,15 @@ if [[ -z \"${NODE_ID}\" ]]; then
   exit 0
 fi
 
+curl_auth=()
+if [[ -n \"${AGENT_TOKEN}\" ]]; then
+  curl_auth=(-H \"X-Agent-Token: ${AGENT_TOKEN}\")
+fi
+
 resp=\"\"
 if [[ -n \"${CONTROLLER_URL}\" ]]; then
   # 优先实时校验：保证白名单撤销立即生效
-  resp=\"$(curl -fsS --max-time 2 \"${CONTROLLER_URL}/api/registry/resolve?node_id=${NODE_ID}&local_username=${user}\" 2>/dev/null || true)\"
+  resp=\"$(curl -fsS --max-time 2 \"${curl_auth[@]}\" \"${CONTROLLER_URL}/api/registry/resolve?node_id=${NODE_ID}&local_username=${user}\" 2>/dev/null || true)\"
   if echo \"${resp}\" | grep -q '\"registered\":true'; then
     exit 0
   fi
@@ -285,6 +298,7 @@ fi
 
 CONTROLLER_URL=\"${CONTROLLER_URL:-}\"
 NODE_ID=\"${NODE_ID:-}\"
+AGENT_TOKEN=\"${AGENT_TOKEN:-}\"
 FAIL_OPEN=\"${FAIL_OPEN:-1}\"
 EXCLUDE_USERS=\"${EXCLUDE_USERS:-root}\"
 ALLOWLIST_FILE=\"${ALLOWLIST_FILE:-/var/lib/gpu-cluster/registered_users.txt}\"
@@ -293,6 +307,11 @@ EXEMPT_FILE=\"${EXEMPT_FILE:-/var/lib/gpu-cluster/exempt_users.txt}\"
 
 if [[ -z \"${NODE_ID}\" ]]; then
   exit 0
+fi
+
+curl_auth=()
+if [[ -n \"${AGENT_TOKEN}\" ]]; then
+  curl_auth=(-H \"X-Agent-Token: ${AGENT_TOKEN}\")
 fi
 
 is_excluded() {
@@ -312,7 +331,7 @@ check_allowed() {
   local u=\"$1\"
   if [[ -n \"${CONTROLLER_URL}\" ]]; then
     local resp
-    resp=\"$(curl -fsS --max-time 2 \"${CONTROLLER_URL}/api/registry/resolve?node_id=${NODE_ID}&local_username=${u}\" 2>/dev/null || true)\"
+    resp=\"$(curl -fsS --max-time 2 \"${curl_auth[@]}\" \"${CONTROLLER_URL}/api/registry/resolve?node_id=${NODE_ID}&local_username=${u}\" 2>/dev/null || true)\"
     if [[ -n \"${resp}\" ]]; then
       if echo \"${resp}\" | grep -q '\"registered\":true'; then
         return 0
