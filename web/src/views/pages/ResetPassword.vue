@@ -4,6 +4,7 @@
       <template #header><h2>重置密码</h2></template>
       <el-alert v-if="error" :title="error" type="error" show-icon class="mb" />
       <el-alert v-if="success" :title="success" type="success" show-icon class="mb" />
+      <el-alert :title="passwordRuleText" type="info" show-icon :closable="false" class="mb" />
       <el-form label-position="top">
         <el-form-item label="用户名"><el-input v-model="username" /></el-form-item>
         <el-form-item label="重置令牌"><el-input v-model="token" /></el-form-item>
@@ -20,6 +21,7 @@ import { ref } from "vue";
 import { useRoute } from "vue-router";
 import { ApiClient } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
+import { STRONG_PASSWORD_RULE_TEXT, checkStrongPassword } from "../../lib/passwordPolicy";
 
 const route = useRoute();
 const loading = ref(false);
@@ -28,10 +30,16 @@ const success = ref("");
 const username = ref(String(route.query.username ?? ""));
 const token = ref(String(route.query.token ?? ""));
 const newPassword = ref("");
+const passwordRuleText = STRONG_PASSWORD_RULE_TEXT;
 
 async function submit() {
   error.value = "";
   success.value = "";
+  const pwdErr = checkStrongPassword(newPassword.value);
+  if (pwdErr) {
+    error.value = pwdErr;
+    return;
+  }
   loading.value = true;
   try {
     const client = new ApiClient(settingsState.baseUrl);

@@ -86,6 +86,8 @@ CREATE TABLE IF NOT EXISTS nodes (
     cpu_process_count INT NOT NULL DEFAULT 0,
     usage_records_count INT NOT NULL DEFAULT 0,
     ssh_active_count INT NOT NULL DEFAULT 0,
+    disk_quota_installed BOOLEAN NOT NULL DEFAULT FALSE,
+    disk_quota_mounts TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
     cost_total DECIMAL(12,4) NOT NULL DEFAULT 0.0,
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
@@ -102,6 +104,19 @@ CREATE TABLE IF NOT EXISTS node_local_users (
     PRIMARY KEY (node_id, local_username)
 );
 CREATE INDEX IF NOT EXISTS idx_node_local_users_node_updated ON node_local_users(node_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS node_user_disk_quotas (
+    node_id VARCHAR(50) NOT NULL,
+    local_username VARCHAR(64) NOT NULL,
+    mountpoint TEXT NOT NULL,
+    used_mb DOUBLE PRECISION NOT NULL DEFAULT 0,
+    soft_mb DOUBLE PRECISION NOT NULL DEFAULT 0,
+    hard_mb DOUBLE PRECISION NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (node_id, local_username, mountpoint)
+);
+CREATE INDEX IF NOT EXISTS idx_node_user_disk_quotas_node_mount
+    ON node_user_disk_quotas(node_id, mountpoint, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS node_security_events (
     event_id BIGSERIAL PRIMARY KEY,
@@ -125,7 +140,15 @@ CREATE TABLE IF NOT EXISTS node_policies (
     node_id VARCHAR(50) PRIMARY KEY,
     ssh_guard_enabled BOOLEAN NOT NULL DEFAULT FALSE,
     ssh_exclusive_enabled BOOLEAN NOT NULL DEFAULT FALSE,
-    points_intercept_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    points_intercept_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    points_throttle_threshold DOUBLE PRECISION NULL,
+    points_limited_cpu_quota_percent DOUBLE PRECISION NULL,
+    points_blocked_cpu_quota_percent DOUBLE PRECISION NULL,
+    points_overdraft_memory_limit_gb DOUBLE PRECISION NULL,
+    disk_quota_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    disk_quota_mountpoint TEXT NULL,
+    disk_quota_soft_mb DOUBLE PRECISION NULL,
+    disk_quota_hard_mb DOUBLE PRECISION NULL,
     node_price_per_minute DOUBLE PRECISION NULL,
     node_model_price_overrides JSONB NOT NULL DEFAULT '{}'::jsonb,
     updated_by VARCHAR(50) NOT NULL DEFAULT 'admin',
@@ -194,6 +217,23 @@ CREATE TABLE IF NOT EXISTS user_node_accounts (
     PRIMARY KEY (node_id, local_username)
 );
 
+CREATE TABLE IF NOT EXISTS user_node_account_audits (
+    audit_id BIGSERIAL PRIMARY KEY,
+    node_id VARCHAR(50) NOT NULL,
+    local_username VARCHAR(64) NOT NULL,
+    old_billing_username VARCHAR(50) NOT NULL DEFAULT '',
+    new_billing_username VARCHAR(50) NOT NULL DEFAULT '',
+    action VARCHAR(40) NOT NULL DEFAULT '',
+    operator VARCHAR(50) NOT NULL DEFAULT '',
+    source VARCHAR(20) NOT NULL DEFAULT '',
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_user_node_account_audits_node_local_time
+    ON user_node_account_audits(node_id, local_username, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_user_node_account_audits_created
+    ON user_node_account_audits(created_at DESC);
+
 CREATE TABLE IF NOT EXISTS account_provision_logs (
     provision_id BIGSERIAL PRIMARY KEY,
     billing_username VARCHAR(50) NOT NULL,
@@ -221,7 +261,10 @@ CREATE TABLE IF NOT EXISTS user_provision_messages (
     ssh_command TEXT NOT NULL DEFAULT '',
     mail_to VARCHAR(120) NOT NULL DEFAULT '',
     created_by VARCHAR(50) NOT NULL DEFAULT 'admin',
-    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    first_decrypted_at TIMESTAMP NULL,
+    destroy_after_at TIMESTAMP NULL,
+    destroyed_at TIMESTAMP NULL
 );
 
 -- 用户自助登记/开号申请（管理员审核）
@@ -249,6 +292,9 @@ CREATE INDEX IF NOT EXISTS idx_account_provision_logs_created_at ON account_prov
 CREATE INDEX IF NOT EXISTS idx_account_provision_logs_billing ON account_provision_logs(billing_username, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_account_provision_logs_node_local ON account_provision_logs(node_id, local_username, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_user_provision_messages_user_created ON user_provision_messages(billing_username, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_user_provision_messages_destroy_after
+    ON user_provision_messages(destroy_after_at)
+    WHERE destroy_after_at IS NOT NULL AND destroyed_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_user_requests_status ON user_requests(status);
 CREATE INDEX IF NOT EXISTS idx_user_requests_billing ON user_requests(billing_username);
 
@@ -378,6 +424,58 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_registration_email_verifications_pending_em
 ON registration_email_verifications(email) WHERE consumed_at IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_registration_email_verifications_pending_student_id
 ON registration_email_verifications(student_id) WHERE consumed_at IS NULL;
+
+-- 注册验证码挑战（一次性、短时有效）
+CREATE TABLE IF NOT EXISTS registration_captcha_challenges (
+    captcha_id TEXT PRIMARY KEY,
+    client_ip VARCHAR(64) NOT NULL DEFAULT '',
+    question TEXT NOT NULL,
+    options_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+    answer_index INT NOT NULL CHECK (answer_index >= 0),
+    expire_at TIMESTAMP NOT NULL,
+    consumed_at TIMESTAMP NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_registration_captcha_challenges_expire_at
+ON registration_captcha_challenges(expire_at ASC);
+CREATE INDEX IF NOT EXISTS idx_registration_captcha_challenges_created_at
+ON registration_captcha_challenges(created_at DESC);
+
+-- 临时邮箱域名黑名单（管理员可维护）
+CREATE TABLE IF NOT EXISTS registration_disposable_email_domains (
+    domain VARCHAR(120) PRIMARY KEY,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    note TEXT NOT NULL DEFAULT '',
+    updated_by VARCHAR(50) NOT NULL DEFAULT 'admin',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_registration_disposable_email_domains_enabled
+ON registration_disposable_email_domains(enabled, updated_at DESC);
+
+-- 注册安全事件日志（限流/拦截命中、通过等）
+CREATE TABLE IF NOT EXISTS registration_security_events (
+    event_id BIGSERIAL PRIMARY KEY,
+    action VARCHAR(40) NOT NULL,
+    decision VARCHAR(20) NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    client_ip VARCHAR(64) NOT NULL DEFAULT '',
+    username VARCHAR(50) NOT NULL DEFAULT '',
+    email VARCHAR(120) NOT NULL DEFAULT '',
+    student_id VARCHAR(40) NOT NULL DEFAULT '',
+    user_agent TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_registration_security_events_created_at
+ON registration_security_events(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_registration_security_events_action_created
+ON registration_security_events(action, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_registration_security_events_ip_created
+ON registration_security_events(client_ip, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_registration_security_events_email_created
+ON registration_security_events(email, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_registration_security_events_decision_created
+ON registration_security_events(decision, created_at DESC);
 
 -- 已删除平台账号归档（可恢复）
 CREATE TABLE IF NOT EXISTS deleted_user_accounts (

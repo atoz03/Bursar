@@ -47,6 +47,10 @@ func (a *NodeAgent) ExecuteAction(ctx context.Context, action Action) error {
 		return a.unblockUserGPUAccess(ctx, action.Username)
 	case "set_cpu_quota":
 		return a.setUserCPUQuota(ctx, action.Username, action.CPUQuotaPercent, action.Reason)
+	case "set_memory_limit":
+		return a.setUserMemoryLimit(ctx, action.Username, action.MemoryLimitGB, action.Reason)
+	case "set_disk_quota":
+		return a.setUserDiskQuota(ctx, action.Username, action.DiskQuotaMountpoint, action.DiskQuotaSoftMB, action.DiskQuotaHardMB, action.Reason)
 	case "kill_process":
 		return a.killProcesses(ctx, action.Username, action.PIDs, action.Reason)
 	case "kick_ssh_all":
@@ -142,6 +146,7 @@ func (a *NodeAgent) createLocalAccount(ctx context.Context, username string, pub
 	} else {
 		log.Printf("执行 create_local_account：user=%s created key-updated home=%s reason=%s", username, homeDir, strings.TrimSpace(reason))
 	}
+	a.invalidateLocalUsersAndQuotaCache()
 	return nil
 }
 
@@ -274,6 +279,47 @@ func (a *NodeAgent) writeNotice(username string, message string) error {
 	return os.WriteFile(noticeFile, []byte(content), 0644)
 }
 
+const gpuOverdraftBlockedGroup = "gpu_overdraft_blocked"
+
+func ensureSystemGroup(ctx context.Context, groupName string) error {
+	groupName = strings.TrimSpace(groupName)
+	if groupName == "" {
+		return errors.New("group_name 不能为空")
+	}
+	if err := exec.CommandContext(ctx, "getent", "group", groupName).Run(); err == nil {
+		return nil
+	}
+	out, err := exec.CommandContext(ctx, "groupadd", "--system", groupName).CombinedOutput()
+	if err != nil {
+		// 幂等：并发场景下可能已被其它进程创建。
+		if checkErr := exec.CommandContext(ctx, "getent", "group", groupName).Run(); checkErr == nil {
+			return nil
+		}
+		return fmt.Errorf("创建系统组失败：%w out=%s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func addUserToGroup(ctx context.Context, username string, groupName string) error {
+	out, err := exec.CommandContext(ctx, "gpasswd", "-a", username, groupName).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("加入用户组失败：%w out=%s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func removeUserFromGroup(ctx context.Context, username string, groupName string) error {
+	out, err := exec.CommandContext(ctx, "gpasswd", "-d", username, groupName).CombinedOutput()
+	if err != nil {
+		// 用户本就不在组内时不视为失败。
+		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 3 {
+			return nil
+		}
+		return fmt.Errorf("移除用户组失败：%w out=%s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 func (a *NodeAgent) blockUserGPUAccess(ctx context.Context, username string, reason string) error {
 	username = strings.TrimSpace(username)
 	if username == "" {
@@ -287,9 +333,21 @@ func (a *NodeAgent) blockUserGPUAccess(ctx context.Context, username string, rea
 	if err := os.WriteFile(flagFile, []byte(reason+"\n"), 0644); err != nil {
 		return err
 	}
-	if err := setUserGPUAccessByCgroup(ctx, username, false); err != nil {
-		// cgroup 失败时保留原有标记文件，避免动作完全失效。
-		log.Printf("设置 GPU cgroup 限制失败：user=%s err=%v", username, err)
+	if err := ensureSystemGroup(ctx, gpuOverdraftBlockedGroup); err != nil {
+		log.Printf("确保欠费 GPU 限制组失败：group=%s err=%v", gpuOverdraftBlockedGroup, err)
+	} else if err := addUserToGroup(ctx, username, gpuOverdraftBlockedGroup); err != nil {
+		log.Printf("加入欠费 GPU 限制组失败：user=%s group=%s err=%v", username, gpuOverdraftBlockedGroup, err)
+	}
+	cgroupErr := setUserGPUAccessByCgroup(ctx, username, false)
+	aclErr := setUserGPUAccessByACL(ctx, username, false)
+	if cgroupErr != nil {
+		log.Printf("设置 GPU cgroup 限制失败：user=%s err=%v", username, cgroupErr)
+	}
+	if aclErr != nil {
+		log.Printf("设置 GPU ACL 限制失败：user=%s err=%v", username, aclErr)
+	}
+	if cgroupErr != nil && aclErr != nil {
+		return fmt.Errorf("GPU 限制下发失败：cgroup=%v acl=%v", cgroupErr, aclErr)
 	}
 	return nil
 }
@@ -303,8 +361,19 @@ func (a *NodeAgent) unblockUserGPUAccess(ctx context.Context, username string) e
 	if err := os.Remove(flagFile); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if err := setUserGPUAccessByCgroup(ctx, username, true); err != nil {
-		log.Printf("解除 GPU cgroup 限制失败：user=%s err=%v", username, err)
+	if err := removeUserFromGroup(ctx, username, gpuOverdraftBlockedGroup); err != nil {
+		log.Printf("移除欠费 GPU 限制组失败：user=%s group=%s err=%v", username, gpuOverdraftBlockedGroup, err)
+	}
+	cgroupErr := setUserGPUAccessByCgroup(ctx, username, true)
+	aclErr := setUserGPUAccessByACL(ctx, username, true)
+	if cgroupErr != nil {
+		log.Printf("解除 GPU cgroup 限制失败：user=%s err=%v", username, cgroupErr)
+	}
+	if aclErr != nil {
+		log.Printf("解除 GPU ACL 限制失败：user=%s err=%v", username, aclErr)
+	}
+	if cgroupErr != nil && aclErr != nil {
+		return fmt.Errorf("解除 GPU 限制失败：cgroup=%v acl=%v", cgroupErr, aclErr)
 	}
 	return nil
 }

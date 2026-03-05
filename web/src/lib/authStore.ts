@@ -13,6 +13,9 @@ export type AuthState = {
   canReviewRequests: boolean;
   csrfToken: string;
   expiresAt: string;
+  serverNow: string;
+  serverTzName: string;
+  serverTzOffsetMinutes: number;
 };
 
 export const authState = reactive<AuthState>({
@@ -26,6 +29,9 @@ export const authState = reactive<AuthState>({
   canReviewRequests: false,
   csrfToken: "",
   expiresAt: "",
+  serverNow: "",
+  serverTzName: "",
+  serverTzOffsetMinutes: Number.NaN,
 });
 
 export async function refreshAuth(): Promise<void> {
@@ -41,6 +47,11 @@ export async function refreshAuth(): Promise<void> {
   authState.canReviewRequests = !!me.can_review_requests;
   authState.csrfToken = me.csrf_token ?? "";
   authState.expiresAt = me.expires_at ?? "";
+  authState.serverNow = me.server_now ?? "";
+  authState.serverTzName = me.server_tz_name ?? "";
+  authState.serverTzOffsetMinutes = Number.isFinite(Number(me.server_tz_offset_minutes))
+    ? Number(me.server_tz_offset_minutes)
+    : Number.NaN;
 }
 
 export async function login(username: string, password: string): Promise<void> {

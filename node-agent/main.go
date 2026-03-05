@@ -39,6 +39,11 @@ type NodeAgent struct {
 	localUsersCachedAt        time.Time
 	localUsersRefreshInterval time.Duration
 	localUsersCollectTimeout  time.Duration
+	diskQuotaInstalledCache   bool
+	diskQuotaMountsCache      []string
+	userDiskQuotasCache       []NodeUserDiskQuota
+	diskQuotaCachedAt         time.Time
+	diskQuotaRefreshInterval  time.Duration
 	gpuBusMapCache            map[string]int32
 	gpuBusMapCachedAt         time.Time
 	gpuBusMapCacheTTL         time.Duration
@@ -63,6 +68,7 @@ func main() {
 		lastCPUSample:             map[int32]cpuSample{},
 		localUsersRefreshInterval: 15 * time.Minute,
 		localUsersCollectTimeout:  8 * time.Second,
+		diskQuotaRefreshInterval:  2 * time.Minute,
 		gpuBusMapCacheTTL:         10 * time.Minute,
 		gpuInventoryCacheTTL:      30 * time.Minute,
 		gpuCommandTimeout:         4 * time.Second,
@@ -91,6 +97,11 @@ func main() {
 	if sec := strings.TrimSpace(os.Getenv("LOCAL_USERS_COLLECT_TIMEOUT_SECONDS")); sec != "" {
 		if v, err := strconv.Atoi(sec); err == nil && v > 0 {
 			agent.localUsersCollectTimeout = time.Duration(v) * time.Second
+		}
+	}
+	if sec := strings.TrimSpace(os.Getenv("DISK_QUOTA_REFRESH_SECONDS")); sec != "" {
+		if v, err := strconv.Atoi(sec); err == nil && v > 0 {
+			agent.diskQuotaRefreshInterval = time.Duration(v) * time.Second
 		}
 	}
 	if sec := strings.TrimSpace(os.Getenv("GPU_BUS_MAP_CACHE_SECONDS")); sec != "" {
@@ -231,4 +242,15 @@ func (a *NodeAgent) triggerForceSync(reason string) {
 			a.logger.Printf("force_sync 失败：%v", err)
 		}
 	}()
+}
+
+func (a *NodeAgent) invalidateLocalUsersAndQuotaCache() {
+	a.cacheMu.Lock()
+	a.localUsersCache = nil
+	a.localUsersCachedAt = time.Time{}
+	a.diskQuotaInstalledCache = false
+	a.diskQuotaMountsCache = nil
+	a.userDiskQuotasCache = nil
+	a.diskQuotaCachedAt = time.Time{}
+	a.cacheMu.Unlock()
 }

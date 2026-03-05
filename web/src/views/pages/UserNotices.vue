@@ -54,6 +54,7 @@ import { ApiClient, type Announcement } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
 import { renderMarkdown } from "../../lib/markdown";
+import { formatServerHMS } from "../../lib/time";
 
 const loading = ref(false);
 const error = ref("");
@@ -66,9 +67,7 @@ function noticeSeenKey(): string {
 }
 
 function fmtTime(v: string): string {
-  const d = new Date(v || "");
-  if (Number.isNaN(d.getTime())) return v || "-";
-  return d.toLocaleString();
+  return formatServerHMS(v);
 }
 
 function markAnnouncementSeen(rows: Announcement[]) {

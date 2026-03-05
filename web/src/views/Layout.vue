@@ -28,7 +28,11 @@
           <el-sub-menu index="grp-access">
             <template #title><el-icon><UserFilled /></el-icon><span>账号与访问</span></template>
             <el-menu-item index="/admin/users">平台用户管理</el-menu-item>
-            <el-menu-item index="/admin/accounts">账号映射</el-menu-item>
+            <el-menu-item index="/admin/accounts">
+              <el-badge :value="accountTodoCount" :hidden="accountTodoCount === 0">
+                <span>账号映射</span>
+              </el-badge>
+            </el-menu-item>
             <el-menu-item index="/admin/requests">
               <el-badge :value="reviewTodoCount" :hidden="reviewTodoCount === 0">
                 <span>平台账号注册审核</span>
@@ -140,7 +144,7 @@ import { useRoute, useRouter } from "vue-router";
 import { persistSettings, settingsState } from "../lib/settingsStore";
 import { authState, logout } from "../lib/authStore";
 import { ElMessage } from "element-plus";
-import { ApiClient } from "../lib/api";
+import { ApiClient, type UserNodeAccountMappingRisk, type UserRequest } from "../lib/api";
 import {
   Check,
   Cpu,
@@ -158,6 +162,9 @@ const router = useRouter();
 const activePath = computed(() => route.path);
 const defaultOpeneds = computed(() => ["grp-ops", "grp-resource", "grp-points", "grp-access", "grp-system", "grp-user", "grp-power"]);
 const reviewTodoCount = ref(0);
+const accountOpenTodoCount = ref(0);
+const accountRiskTodoCount = ref(0);
+const accountTodoCount = computed(() => Number(accountOpenTodoCount.value || 0) + Number(accountRiskTodoCount.value || 0));
 const showControllerConfig = ref(false);
 const userNoticeHasNew = ref(false);
 let reviewTodoTimer: ReturnType<typeof setInterval> | null = null;
@@ -193,6 +200,10 @@ function canLoadReviewTodo(): boolean {
   return authState.role === "power_user" && !!authState.canReviewRequests;
 }
 
+function canLoadAccountOpenTodo(): boolean {
+  return !!authState.authenticated && authState.role === "admin";
+}
+
 function canLoadUserNotice(): boolean {
   return !!authState.authenticated && (authState.role === "user" || authState.role === "power_user");
 }
@@ -205,13 +216,28 @@ function userAnnouncementSeenKey(): string {
 async function loadReviewTodoCount() {
   if (!canLoadReviewTodo()) {
     reviewTodoCount.value = 0;
+    if (!canLoadAccountOpenTodo()) {
+      accountOpenTodoCount.value = 0;
+      accountRiskTodoCount.value = 0;
+    }
     return;
   }
   try {
     const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
-    const [regRes, profileRes] = await Promise.allSettled([
-      client.adminRegistrationRequestsOverview(2000),
+    const [regRes, profileRes, openRes, riskRes] = await Promise.allSettled([
+      client.adminRegistrationRequestsOverview({ limit: 2000 }),
       client.adminProfileChangeRequests({ status: "pending", limit: 2000 }),
+      canLoadAccountOpenTodo()
+        ? client.adminRequests({ status: "pending", limit: 5000 })
+        : Promise.resolve<{ requests: UserRequest[] }>({ requests: [] }),
+      canLoadAccountOpenTodo()
+        ? client.adminAccountMappingRisks({ days: 30, min_switches: 2, limit: 5000 })
+        : Promise.resolve<{ days: number; min_switches: number; total_risky: number; risky_accounts: UserNodeAccountMappingRisk[] }>({
+            days: 30,
+            min_switches: 2,
+            total_risky: 0,
+            risky_accounts: [],
+          }),
     ]);
     let total = 0;
     if (regRes.status === "fulfilled") {
@@ -221,9 +247,28 @@ async function loadReviewTodoCount() {
       total += Number((profileRes.value.requests ?? []).length);
     }
     reviewTodoCount.value = total;
+    if (openRes.status === "fulfilled") {
+      accountOpenTodoCount.value = Number((openRes.value.requests ?? []).filter((x) => String(x.request_type || "").trim() === "open").length);
+    } else if (!canLoadAccountOpenTodo()) {
+      accountOpenTodoCount.value = 0;
+    } else {
+      accountOpenTodoCount.value = 0;
+    }
+    if (riskRes.status === "fulfilled") {
+      const totalRisk = Number(riskRes.value.total_risky || 0);
+      accountRiskTodoCount.value = Number.isFinite(totalRisk)
+        ? Math.max(0, Math.floor(totalRisk))
+        : Number((riskRes.value.risky_accounts ?? []).length);
+    } else if (!canLoadAccountOpenTodo()) {
+      accountRiskTodoCount.value = 0;
+    } else {
+      accountRiskTodoCount.value = 0;
+    }
   } catch (e: any) {
     if (e?.status === 404 || e?.status === 403 || e?.status === 401) {
       reviewTodoCount.value = 0;
+      accountOpenTodoCount.value = 0;
+      accountRiskTodoCount.value = 0;
       return;
     }
   }

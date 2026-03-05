@@ -15,10 +15,6 @@ SSH_FAIL2BAN_MAXRETRY="${SSH_FAIL2BAN_MAXRETRY:-20}"
 SSH_FAIL2BAN_FINDTIME="${SSH_FAIL2BAN_FINDTIME:-5m}"
 SSH_FAIL2BAN_BANTIME="${SSH_FAIL2BAN_BANTIME:-12h}"
 SSH_FAIL2BAN_IGNOREIP="${SSH_FAIL2BAN_IGNOREIP:-}"
-HOME_RESERVE_GB="${HOME_RESERVE_GB:-8}"
-HOME_RESERVE_CHECK_PATH="${HOME_RESERVE_CHECK_PATH:-/home}"
-HOME_RESERVE_EXEMPT_USERS="${HOME_RESERVE_EXEMPT_USERS:-root gpuops}"
-HOME_RESERVE_ENFORCE_INTERVAL="${HOME_RESERVE_ENFORCE_INTERVAL:-30s}"
 
 if [[ ! -d "${CONTROLLER_DIR}" ]]; then
   echo "未找到 controller 目录：${CONTROLLER_DIR}" >&2
@@ -109,18 +105,6 @@ EOF_FAIL2BAN
   else
     echo "警告：未检测到 fail2ban，跳过控制器 SSH 防爆破配置"
   fi
-fi
-
-if [[ -f "${ROOT_DIR}/scripts/install_home_reserve_guard.sh" ]]; then
-  echo "[7/7] 安装 /home 预留空间保护"
-  ${SUDO} env \
-    HOME_RESERVE_GB="${HOME_RESERVE_GB}" \
-    HOME_RESERVE_CHECK_PATH="${HOME_RESERVE_CHECK_PATH}" \
-    HOME_RESERVE_EXEMPT_USERS="${HOME_RESERVE_EXEMPT_USERS}" \
-    HOME_RESERVE_ENFORCE_INTERVAL="${HOME_RESERVE_ENFORCE_INTERVAL}" \
-    /bin/bash "${ROOT_DIR}/scripts/install_home_reserve_guard.sh"
-else
-  echo "警告：未找到 scripts/install_home_reserve_guard.sh，跳过 /home 预留空间保护"
 fi
 
 echo "完成：${SERVICE_NAME} 已后台运行并开机自启。"

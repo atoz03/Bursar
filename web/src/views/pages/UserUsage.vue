@@ -50,7 +50,22 @@
         <el-table-column label="积分消耗" width="100">
           <template #default="{ row }">{{ fmt2(row.cost) }}</template>
         </el-table-column>
-        <el-table-column prop="gpu_usage" label="GPU明细(JSON)" />
+        <el-table-column label="GPU明细(JSON)" min-width="360">
+          <template #default="{ row, $index }">
+            <div class="gpu-cell">
+              <span class="gpu-text">{{ gpuDisplayText(row, $index) }}</span>
+              <el-button
+                v-if="hasLongGpuUsage(row)"
+                link
+                type="primary"
+                class="gpu-toggle"
+                @click="toggleGpuExpand(row, $index)"
+              >
+                {{ isGpuExpanded(row, $index) ? "收起" : "展开" }}
+              </el-button>
+            </div>
+          </template>
+        </el-table-column>
       </el-table>
     </el-card>
   </div>
@@ -65,9 +80,52 @@ const loading = ref(false);
 const error = ref("");
 const records = ref<UsageRecord[]>([]);
 const limit = ref(200);
+const gpuExpandedKeys = ref<Set<string>>(new Set());
+const gpuPreviewChars = 80;
 
 function fmt2(v: number): string {
   return Number(v ?? 0).toFixed(2);
+}
+
+function gpuUsageText(row: UsageRecord): string {
+  const text = String(row.gpu_usage ?? "").trim();
+  return text || "-";
+}
+
+function gpuRowKey(row: UsageRecord, index: number): string {
+  return [
+    String(row.timestamp ?? ""),
+    String(row.node_id ?? ""),
+    String(row.local_username ?? ""),
+    String(row.billing_username ?? ""),
+    String(row.pid ?? ""),
+    String(index),
+  ].join("|");
+}
+
+function hasLongGpuUsage(row: UsageRecord): boolean {
+  return gpuUsageText(row).length > gpuPreviewChars;
+}
+
+function isGpuExpanded(row: UsageRecord, index: number): boolean {
+  return gpuExpandedKeys.value.has(gpuRowKey(row, index));
+}
+
+function gpuDisplayText(row: UsageRecord, index: number): string {
+  const text = gpuUsageText(row);
+  if (!hasLongGpuUsage(row) || isGpuExpanded(row, index)) return text;
+  return `${text.slice(0, gpuPreviewChars)}...`;
+}
+
+function toggleGpuExpand(row: UsageRecord, index: number) {
+  const key = gpuRowKey(row, index);
+  const next = new Set(gpuExpandedKeys.value);
+  if (next.has(key)) {
+    next.delete(key);
+  } else {
+    next.add(key);
+  }
+  gpuExpandedKeys.value = next;
 }
 
 async function query() {
@@ -81,6 +139,7 @@ async function query() {
       local_username: x.local_username || "-",
       billing_username: x.billing_username || x.username,
     }));
+    gpuExpandedKeys.value = new Set();
   } catch (e: any) {
     error.value = e?.message ?? String(e);
   } finally {
@@ -95,6 +154,23 @@ query();
 .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .usage-card { min-height: 560px; }
 .mb { margin-bottom: 12px; }
+.gpu-cell {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.gpu-text {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  color: #334155;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.gpu-toggle {
+  padding: 0;
+  height: auto;
+  line-height: 1.2;
+}
 
 @media (max-width: 900px) {
   .row { flex-wrap: wrap; }

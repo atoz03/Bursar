@@ -114,6 +114,62 @@ func detectNvidiaDeviceRules() ([]string, error) {
 	return rules, nil
 }
 
+func detectNvidiaDeviceNodes() []string {
+	patterns := []string{
+		"/dev/nvidia*",
+		"/dev/nvidia-caps/*",
+	}
+	seen := make(map[string]struct{})
+	out := make([]string, 0, 16)
+	for _, p := range patterns {
+		matches, _ := filepath.Glob(p)
+		for _, path := range matches {
+			if _, ok := seen[path]; ok {
+				continue
+			}
+			fi, err := os.Stat(path)
+			if err != nil || fi.Mode()&os.ModeCharDevice == 0 {
+				continue
+			}
+			seen[path] = struct{}{}
+			out = append(out, path)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// setUserGPUAccessByACL 通过 POSIX ACL 拒绝/恢复用户访问 /dev/nvidia*。
+// 该方式对“新启动进程”也有效，可作为 cgroup 失败时的兜底。
+func setUserGPUAccessByACL(ctx context.Context, username string, allow bool) error {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return fmt.Errorf("username 不能为空")
+	}
+	if !hasCommand("setfacl") {
+		return fmt.Errorf("未检测到 setfacl 命令")
+	}
+	nodes := detectNvidiaDeviceNodes()
+	if len(nodes) == 0 {
+		return fmt.Errorf("未检测到 /dev/nvidia* 设备")
+	}
+	var firstErr error
+	for _, node := range nodes {
+		var cmd *exec.Cmd
+		if allow {
+			cmd = exec.CommandContext(ctx, "setfacl", "-x", "u:"+username, node)
+		} else {
+			cmd = exec.CommandContext(ctx, "setfacl", "-m", "u:"+username+":---", node)
+		}
+		if out, err := cmd.CombinedOutput(); err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("setfacl 失败 node=%s err=%w out=%s", node, err, strings.TrimSpace(string(out)))
+			}
+		}
+	}
+	return firstErr
+}
+
 // hasNvidiaDeviceNodes 仅用于诊断日志/调试。
 func hasNvidiaDeviceNodes() bool {
 	cmd := exec.Command("bash", "-lc", "ls /dev/nvidia* >/dev/null 2>&1")
