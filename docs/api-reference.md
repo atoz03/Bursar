@@ -251,6 +251,10 @@ CSRF 说明（Web 登录场景）：
 
 ## SSH 登录校验（节点侧拉取 allowlist）
 
+说明：
+- 以下 registry 接口仅建议通过内部 HTTPS 端口访问（如 `https://<controller-internal-ip>:60040`）。
+- 必须携带 `X-Agent-Token: <token>`，否则返回 `401 unauthorized`。
+
 ### `GET /api/registry/nodes/:node_id/users.txt`
 
 用途：返回该节点(node_id)已登记通过的本地用户名列表（每行一个），供节点侧 PAM/SSH 校验缓存定期同步。

@@ -73,6 +73,10 @@ func (s *Server) popNodeActions(nodeID string) []Action {
 }
 
 func (s *Server) Router() *gin.Engine {
+	return s.RouterWeb()
+}
+
+func (s *Server) RouterWeb() *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Logger(), gin.Recovery())
 
@@ -98,10 +102,6 @@ func (s *Server) Router() *gin.Engine {
 	api.GET("/guideline", s.handleUserGuidelineGet)
 	api.POST("/tools/provision/decrypt", s.authSession(), s.handleToolProvisionDecrypt)
 
-	api.POST("/metrics", s.authAgent(), s.handleMetrics)
-	api.GET("/node/actions", s.authAgent(), s.handleNodeActions)
-	api.GET("/ha/status", s.handleHAStatus)
-
 	api.GET("/users/:username/balance", s.handleBalance)
 	api.GET("/users/:username/usage", s.handleUserUsage)
 	api.POST("/users/:username/recharge", s.authAdmin(), s.requireSuperAdmin(), s.handleRecharge)
@@ -118,13 +118,6 @@ func (s *Server) Router() *gin.Engine {
 	user.POST("/accounts", s.handleUserAccountsUpsert)
 	user.PUT("/accounts", s.handleUserAccountsUpdate)
 	user.DELETE("/accounts", s.handleUserAccountsDelete)
-
-	// 用户注册/绑定与 SSH 登录校验
-	api.GET("/registry/resolve", s.handleRegistryResolve)
-	api.GET("/registry/nodes/:node_id/guard-state", s.handleRegistryNodeGuardState)
-	api.GET("/registry/nodes/:node_id/users.txt", s.handleRegistryNodeUsersTxt)
-	api.GET("/registry/nodes/:node_id/blocked.txt", s.handleRegistryNodeBlockedUsersTxt)
-	api.GET("/registry/nodes/:node_id/exempt.txt", s.handleRegistryNodeExemptUsersTxt)
 
 	// 用户自助登记/开号申请（管理员审核）
 	api.GET("/requests", s.handleUserRequestsList)
@@ -238,6 +231,27 @@ func (s *Server) Router() *gin.Engine {
 	admin.POST("/points/monthly-reset", s.requireSuperAdmin(), s.handleAdminPointsMonthlyReset)
 
 	s.maybeServeWeb(r)
+	return r
+}
+
+func (s *Server) RouterInternal() *gin.Engine {
+	r := gin.New()
+	r.Use(gin.Logger(), gin.Recovery())
+
+	r.GET("/healthz", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	api := r.Group("/api")
+	api.Use(s.authAgent())
+	api.POST("/metrics", s.handleMetrics)
+	api.GET("/node/actions", s.handleNodeActions)
+	api.GET("/ha/status", s.handleHAStatus)
+	api.GET("/registry/resolve", s.handleRegistryResolve)
+	api.GET("/registry/nodes/:node_id/guard-state", s.handleRegistryNodeGuardState)
+	api.GET("/registry/nodes/:node_id/users.txt", s.handleRegistryNodeUsersTxt)
+	api.GET("/registry/nodes/:node_id/blocked.txt", s.handleRegistryNodeBlockedUsersTxt)
+	api.GET("/registry/nodes/:node_id/exempt.txt", s.handleRegistryNodeExemptUsersTxt)
 	return r
 }
 
@@ -4208,15 +4222,6 @@ func (s *Server) localHAStatus(ctx context.Context) haNodeStatus {
 }
 
 func (s *Server) handleHAStatus(c *gin.Context) {
-	// 主备之间状态查询：启用 token 时必须校验
-	want := strings.TrimSpace(s.cfg.HAToken)
-	if want != "" {
-		got := strings.TrimSpace(c.GetHeader("X-HA-Token"))
-		if got == "" || got != want {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-			return
-		}
-	}
 	c.JSON(http.StatusOK, gin.H{"status": s.localHAStatus(c.Request.Context())})
 }
 
@@ -4248,6 +4253,7 @@ func (s *Server) handleAdminHAStatus(c *gin.Context) {
 	if tok := strings.TrimSpace(s.cfg.HAToken); tok != "" {
 		req.Header.Set("X-HA-Token", tok)
 	}
+	req.Header.Set("X-Agent-Token", strings.TrimSpace(s.cfg.AgentToken))
 	client := &http.Client{Timeout: 1500 * time.Millisecond}
 	resp, err := client.Do(req)
 	if err != nil {

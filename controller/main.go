@@ -2,7 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
 	"time"
 )
 
@@ -39,11 +46,61 @@ func main() {
 	}
 
 	srv := NewServer(cfg, store)
-	r := srv.Router()
 	srv.StartPointsMonthlyResetScheduler(context.Background())
 
-	log.Printf("控制器启动：listen=%s dry_run=%v", cfg.ListenAddr, cfg.DryRun)
-	if err := r.Run(cfg.ListenAddr); err != nil {
+	internalAddr := strings.TrimSpace(cfg.InternalListenAddr)
+	if internalAddr == "" {
+		r := srv.RouterWeb()
+		log.Printf("控制器启动（单端口）：listen=%s dry_run=%v", cfg.ListenAddr, cfg.DryRun)
+		if err := r.Run(cfg.ListenAddr); err != nil {
+			log.Fatalf("服务启动失败：%v", err)
+		}
+		return
+	}
+
+	webRouter := srv.RouterWeb()
+	internalRouter := srv.RouterInternal()
+	webSrv := &http.Server{
+		Addr:              cfg.ListenAddr,
+		Handler:           webRouter,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	internalSrv := &http.Server{
+		Addr:              internalAddr,
+		Handler:           internalRouter,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	errCh := make(chan error, 2)
+	go func() {
+		log.Printf("控制器启动（Web）：listen=%s dry_run=%v", cfg.ListenAddr, cfg.DryRun)
+		if err := webSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- fmt.Errorf("web 服务退出: %w", err)
+		}
+	}()
+	go func() {
+		log.Printf("控制器启动（Internal TLS）：listen=%s cert=%s", internalAddr, cfg.InternalTLSCertFile)
+		if err := internalSrv.ListenAndServeTLS(cfg.InternalTLSCertFile, cfg.InternalTLSKeyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- fmt.Errorf("internal 服务退出: %w", err)
+		}
+	}()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	select {
+	case err := <-errCh:
 		log.Fatalf("服务启动失败：%v", err)
+	case sig := <-sigCh:
+		log.Printf("收到退出信号：%s", sig.String())
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer shutdownCancel()
+	if err := webSrv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("Web 服务关闭异常：%v", err)
+	}
+	if err := internalSrv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("Internal 服务关闭异常：%v", err)
 	}
 }

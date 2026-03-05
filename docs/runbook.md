@@ -382,7 +382,9 @@ sudo cp config/controller.yaml /opt/gpu-controller/controller.yaml
 ```
 
 修改至少以下字段：
-- `listen_addr`：建议绑定内网地址，例如 `10.0.0.10:8000`
+- `listen_addr`：Web 管理端监听地址（如 `0.0.0.0:60039`）
+- `internal_listen_addr`：内部接口监听地址（建议 `192.0.2.x:60040`）
+- `internal_tls_cert_file` / `internal_tls_key_file`：内部 HTTPS 证书与私钥路径
 - `database_dsn`：你的 PostgreSQL DSN
 - `agent_token`、`admin_token`：替换为强随机值
 - `auth_secret`：替换为强随机值（用于 Web 登录会话签名）
@@ -473,7 +475,7 @@ ssh <node-user>@node01 "sudo cp /tmp/gpu-node-agent.service /etc/systemd/system/
 
 最简单做法：编辑 `/etc/systemd/system/gpu-node-agent.service`，设置：
 - `NODE_ID=60000`（约定为机器编号；推荐直接使用该节点的 SSH 端口号，例如 60000）
-- `CONTROLLER_URL=http://<controller-ip>:8000`
+- `CONTROLLER_URL=https://<controller-internal-ip>:60040`
 - `AGENT_TOKEN=<你的 agent_token>`
 
 说明：
