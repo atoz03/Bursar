@@ -15,6 +15,12 @@ import (
 // 说明：字段与 config/controller.yaml 对应，便于运维直接修改。
 type Config struct {
 	ListenAddr string `yaml:"listen_addr"`
+	// InternalListenAddr 为内部接口监听地址（建议绑定内网 IP + 独立端口，如 192.0.2.10:60040）。
+	// 为空时不启用内部独立监听。
+	InternalListenAddr string `yaml:"internal_listen_addr"`
+	// InternalTLSCertFile / InternalTLSKeyFile 为内部监听 HTTPS 证书与私钥路径。
+	InternalTLSCertFile string `yaml:"internal_tls_cert_file"`
+	InternalTLSKeyFile  string `yaml:"internal_tls_key_file"`
 
 	DatabaseDSN string `yaml:"database_dsn"`
 
@@ -66,6 +72,17 @@ type Config struct {
 func (c *Config) Validate() error {
 	if c.ListenAddr == "" {
 		return errors.New("listen_addr 不能为空")
+	}
+	internalAddr := strings.TrimSpace(c.InternalListenAddr)
+	internalCert := strings.TrimSpace(c.InternalTLSCertFile)
+	internalKey := strings.TrimSpace(c.InternalTLSKeyFile)
+	if internalAddr == "" && (internalCert != "" || internalKey != "") {
+		return errors.New("配置 internal_tls_cert_file/internal_tls_key_file 时 internal_listen_addr 不能为空")
+	}
+	if internalAddr != "" {
+		if internalCert == "" || internalKey == "" {
+			return errors.New("启用 internal_listen_addr 时必须配置 internal_tls_cert_file 与 internal_tls_key_file")
+		}
 	}
 	if c.DatabaseDSN == "" {
 		return errors.New("database_dsn 不能为空")

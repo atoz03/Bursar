@@ -130,8 +130,12 @@ run_install_agent() {
   esc_home_reserve_exempt="$(printf "%s" "${HOME_RESERVE_EXEMPT_USERS}" | sed "s/'/'\"'\"'/g")"
   local esc_home_reserve_interval
   esc_home_reserve_interval="$(printf "%s" "${HOME_RESERVE_ENFORCE_INTERVAL}" | sed "s/'/'\"'\"'/g")"
+  local esc_controller_url
+  esc_controller_url="$(printf "%s" "${CONTROLLER_URL}" | sed "s/'/'\"'\"'/g")"
+  local esc_agent_token
+  esc_agent_token="$(printf "%s" "${AGENT_TOKEN}" | sed "s/'/'\"'\"'/g")"
   ssh -n -i "${key_use_path}" -p "${port}" -o StrictHostKeyChecking=no -o ConnectTimeout="${SSH_TIMEOUT}" "${user}@${ip}" \
-    "cd '${target_dir}' && SSH_GUARD_EXCLUDE_USERS='${esc_exclude}' SKIP_CONTROLLER_HEALTHCHECK='${esc_skip_health}' HOME_RESERVE_GB='${esc_home_reserve_gb}' HOME_RESERVE_CHECK_PATH='${esc_home_reserve_path}' HOME_RESERVE_EXEMPT_USERS='${esc_home_reserve_exempt}' HOME_RESERVE_ENFORCE_INTERVAL='${esc_home_reserve_interval}' sudo -n /bin/bash '${target_dir}/scripts/install_agent_local.sh'"
+    "cd '${target_dir}' && CONTROLLER_URL='${esc_controller_url}' AGENT_TOKEN='${esc_agent_token}' SSH_GUARD_EXCLUDE_USERS='${esc_exclude}' SKIP_CONTROLLER_HEALTHCHECK='${esc_skip_health}' HOME_RESERVE_GB='${esc_home_reserve_gb}' HOME_RESERVE_CHECK_PATH='${esc_home_reserve_path}' HOME_RESERVE_EXEMPT_USERS='${esc_home_reserve_exempt}' HOME_RESERVE_ENFORCE_INTERVAL='${esc_home_reserve_interval}' sudo -n /bin/bash '${target_dir}/scripts/install_agent_local.sh'"
 }
 
 can_run_sudo_nopass() {
