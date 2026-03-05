@@ -392,6 +392,7 @@ if [[ "${ENABLE_SSH_GUARD}" == "1" ]]; then
   ${SUDO} tee /etc/gpu-cluster/ssh_guard.conf >/dev/null <<EOF_GUARD_CONF
 CONTROLLER_URL="${CONTROLLER_URL}"
 NODE_ID="${NODE_ID}"
+AGENT_TOKEN="${AGENT_TOKEN}"
 EXCLUDE_USERS="${SSH_GUARD_EXCLUDE_USERS}"
 FAIL_OPEN="${SSH_GUARD_FAIL_OPEN}"
 ALLOWLIST_FILE="${SSH_GUARD_ALLOWLIST_FILE}"
@@ -413,6 +414,7 @@ fi
 
 CONTROLLER_URL="${CONTROLLER_URL:-}"
 NODE_ID="${NODE_ID:-}"
+AGENT_TOKEN="${AGENT_TOKEN:-}"
 ALLOWLIST_FILE="${ALLOWLIST_FILE:-/var/lib/gpu-cluster/registered_users.txt}"
 DENYLIST_FILE="${DENYLIST_FILE:-/var/lib/gpu-cluster/blocked_users.txt}"
 EXEMPT_FILE="${EXEMPT_FILE:-/var/lib/gpu-cluster/exempt_users.txt}"
@@ -431,26 +433,30 @@ mkdir -p "$(dirname "${ALLOWLIST_FILE}")"
 mkdir -p "$(dirname "${DENYLIST_FILE}")"
 mkdir -p "$(dirname "${EXEMPT_FILE}")"
 mkdir -p "$(dirname "${GUARD_STATE_FILE}")"
-if curl -fsS "${CONTROLLER_URL}/api/registry/nodes/${NODE_ID}/users.txt" -o "${tmp}"; then
+curl_auth=()
+if [[ -n "${AGENT_TOKEN}" ]]; then
+  curl_auth=(-H "X-Agent-Token: ${AGENT_TOKEN}")
+fi
+if curl -fsS "${curl_auth[@]}" "${CONTROLLER_URL}/api/registry/nodes/${NODE_ID}/users.txt" -o "${tmp}"; then
   mv "${tmp}" "${ALLOWLIST_FILE}"
   chmod 0644 "${ALLOWLIST_FILE}"
 else
   rm -f "${tmp}" || true
 fi
-if curl -fsS "${CONTROLLER_URL}/api/registry/nodes/${NODE_ID}/blocked.txt" -o "${tmp_deny}"; then
+if curl -fsS "${curl_auth[@]}" "${CONTROLLER_URL}/api/registry/nodes/${NODE_ID}/blocked.txt" -o "${tmp_deny}"; then
   mv "${tmp_deny}" "${DENYLIST_FILE}"
   chmod 0644 "${DENYLIST_FILE}"
 else
   rm -f "${tmp_deny}" || true
 fi
-if curl -fsS "${CONTROLLER_URL}/api/registry/nodes/${NODE_ID}/exempt.txt" -o "${tmp_exempt}"; then
+if curl -fsS "${curl_auth[@]}" "${CONTROLLER_URL}/api/registry/nodes/${NODE_ID}/exempt.txt" -o "${tmp_exempt}"; then
   mv "${tmp_exempt}" "${EXEMPT_FILE}"
   chmod 0644 "${EXEMPT_FILE}"
 else
   rm -f "${tmp_exempt}" || true
 fi
 
-state_json="$(curl -fsS "${CONTROLLER_URL}/api/registry/nodes/${NODE_ID}/guard-state" 2>/dev/null || true)"
+state_json="$(curl -fsS "${curl_auth[@]}" "${CONTROLLER_URL}/api/registry/nodes/${NODE_ID}/guard-state" 2>/dev/null || true)"
 guard_enabled="0"
 exclusive_enabled="0"
 if [[ -n "${state_json}" ]]; then
@@ -504,6 +510,7 @@ done
 
 CONTROLLER_URL="${CONTROLLER_URL:-}"
 NODE_ID="${NODE_ID:-}"
+AGENT_TOKEN="${AGENT_TOKEN:-}"
 FAIL_OPEN="${FAIL_OPEN:-0}"
 ALLOWLIST_FILE="${ALLOWLIST_FILE:-/var/lib/gpu-cluster/registered_users.txt}"
 DENYLIST_FILE="${DENYLIST_FILE:-/var/lib/gpu-cluster/blocked_users.txt}"
@@ -513,6 +520,11 @@ REALTIME_LOOKUP="${REALTIME_LOOKUP:-0}"
 
 if [[ -z "${NODE_ID}" ]]; then
   exit 1
+fi
+
+curl_auth=()
+if [[ -n "${AGENT_TOKEN}" ]]; then
+  curl_auth=(-H "X-Agent-Token: ${AGENT_TOKEN}")
 fi
 
 GUARD_ENABLED="0"
@@ -551,7 +563,7 @@ fi
 resp=""
 if [[ "${REALTIME_LOOKUP}" == "1" && -n "${CONTROLLER_URL}" ]]; then
   # 可选：本地缓存未命中时再实时校验。默认关闭，避免登录路径被网络抖动拖慢。
-  resp="$(curl -fsS --max-time 1 "${CONTROLLER_URL}/api/registry/resolve?node_id=${NODE_ID}&local_username=${user}" 2>/dev/null || true)"
+  resp="$(curl -fsS --max-time 1 "${curl_auth[@]}" "${CONTROLLER_URL}/api/registry/resolve?node_id=${NODE_ID}&local_username=${user}" 2>/dev/null || true)"
   if echo "${resp}" | grep -q '"registered":true'; then
     log "registry_allow_realtime"
     exit 0
@@ -585,6 +597,7 @@ fi
 
 CONTROLLER_URL="${CONTROLLER_URL:-}"
 NODE_ID="${NODE_ID:-}"
+AGENT_TOKEN="${AGENT_TOKEN:-}"
 FAIL_OPEN="${FAIL_OPEN:-0}"
 EXCLUDE_USERS="${EXCLUDE_USERS:-root}"
 ALLOWLIST_FILE="${ALLOWLIST_FILE:-/var/lib/gpu-cluster/registered_users.txt}"
@@ -595,6 +608,11 @@ REALTIME_LOOKUP="${REALTIME_LOOKUP:-0}"
 
 if [[ -z "${NODE_ID}" ]]; then
   exit 0
+fi
+
+curl_auth=()
+if [[ -n "${AGENT_TOKEN}" ]]; then
+  curl_auth=(-H "X-Agent-Token: ${AGENT_TOKEN}")
 fi
 
 is_excluded() {
@@ -628,7 +646,7 @@ check_allowed() {
 
   if [[ "${REALTIME_LOOKUP}" == "1" && -n "${CONTROLLER_URL}" ]]; then
     local resp
-    resp="$(curl -fsS --max-time 1 "${CONTROLLER_URL}/api/registry/resolve?node_id=${NODE_ID}&local_username=${u}" 2>/dev/null || true)"
+    resp="$(curl -fsS --max-time 1 "${curl_auth[@]}" "${CONTROLLER_URL}/api/registry/resolve?node_id=${NODE_ID}&local_username=${u}" 2>/dev/null || true)"
     if [[ -n "${resp}" ]]; then
       if echo "${resp}" | grep -q '"registered":true'; then
         return 0

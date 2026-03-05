@@ -1,5 +1,10 @@
 # 控制器配置示例（开发环境）
 listen_addr: "0.0.0.0:60039"
+# 内部接口监听（节点 Agent / SSH Guard / HA 内部状态查询）。
+# 为空表示不启用内部独立端口；建议生产配置为 192.0.2.x:60040 并启用 TLS。
+internal_listen_addr: ""
+internal_tls_cert_file: ""
+internal_tls_key_file: ""
 
 # PostgreSQL DSN
 database_dsn: "postgres://gpuops:gpuops@127.0.0.1:5432/gpuops?sslmode=disable"
