@@ -197,6 +197,11 @@ function canLoadUserNotice(): boolean {
   return !!authState.authenticated && (authState.role === "user" || authState.role === "power_user");
 }
 
+function isDocumentVisible(): boolean {
+  if (typeof document === "undefined") return true;
+  return !document.hidden;
+}
+
 function userAnnouncementSeenKey(): string {
   const u = String(authState.username || "").trim() || "anonymous";
   return `gpuops_seen_announcement_ts_${u}`;
@@ -231,9 +236,11 @@ async function loadReviewTodoCount() {
 
 function resetReviewTodoPolling() {
   clearReviewTodoTimer();
+  if (!isDocumentVisible()) return;
   loadReviewTodoCount();
   if (!canLoadReviewTodo()) return;
   reviewTodoTimer = setInterval(() => {
+    if (!isDocumentVisible()) return;
     loadReviewTodoCount();
   }, 30000);
 }
@@ -270,11 +277,23 @@ async function loadUserNoticeState() {
 
 function resetUserNoticePolling() {
   clearUserNoticeTimer();
+  if (!isDocumentVisible()) return;
   loadUserNoticeState();
   if (!canLoadUserNotice()) return;
   userNoticeTimer = setInterval(() => {
+    if (!isDocumentVisible()) return;
     loadUserNoticeState();
   }, 30000);
+}
+
+function onVisibilityChange() {
+  if (!isDocumentVisible()) {
+    clearReviewTodoTimer();
+    clearUserNoticeTimer();
+    return;
+  }
+  resetReviewTodoPolling();
+  resetUserNoticePolling();
 }
 
 watch(
@@ -290,12 +309,14 @@ onMounted(() => {
   resetReviewTodoPolling();
   resetUserNoticePolling();
   window.addEventListener("gpuops-announcement-seen", loadUserNoticeState);
+  document.addEventListener("visibilitychange", onVisibilityChange);
 });
 
 onBeforeUnmount(() => {
   clearReviewTodoTimer();
   clearUserNoticeTimer();
   window.removeEventListener("gpuops-announcement-seen", loadUserNoticeState);
+  document.removeEventListener("visibilitychange", onVisibilityChange);
 });
 </script>
 
