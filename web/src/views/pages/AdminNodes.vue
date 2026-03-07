@@ -1655,8 +1655,8 @@ function formatTime(time: string | number | Date | null | undefined): string {
 }
 
 function buildDefaultSecurityRange(): string[] {
-  const now = dayjs();
-  return [now.subtract(7, "day").format("YYYY-MM-DD HH:mm:ss"), now.format("YYYY-MM-DD HH:mm:ss")];
+  const now = Date.now();
+  return [formatServerDateTime(now - 7 * 24 * 60 * 60 * 1000), formatServerDateTime(now)];
 }
 
 function currentSecurityRangeParams(): { from?: string; to?: string } {

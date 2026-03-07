@@ -45,7 +45,6 @@ const (
 	appSettingBindTrialMemoryLimitGB     = "bind_trial_memory_limit_gb"
 	appSettingBindTrialGPUBlocked        = "bind_trial_gpu_blocked"
 	appSettingBindSingleActivePerBilling = "bind_single_active_challenge_per_billing"
-	appSettingBindAllFailureCooldownMin  = "bind_all_failure_cooldown_minutes"
 	appSettingBindFirstCooldownMinutes   = "bind_first_cooldown_minutes"
 	appSettingBindRepeatCooldownMinutes  = "bind_repeat_cooldown_minutes"
 	appSettingBindContentionFreezeMinute = "bind_contention_freeze_minutes"
@@ -117,7 +116,6 @@ func defaultNodeBindSecurityPolicy() NodeBindSecurityPolicy {
 		TrialMemoryLimitGB:           8,
 		TrialGPUBlocked:              true,
 		SingleActivePerBilling:       true,
-		AllFailureCooldownMinutes:    30,
 		FirstFailureCooldownMinutes:  30,
 		RepeatFailureCooldownMinutes: 180,
 		ContentionFreezeMinutes:      30,
@@ -135,9 +133,6 @@ func normalizeNodeBindSecurityPolicy(in NodeBindSecurityPolicy) NodeBindSecurity
 	}
 	if out.TrialMemoryLimitGB < 0.5 || out.TrialMemoryLimitGB > 1024 {
 		out.TrialMemoryLimitGB = def.TrialMemoryLimitGB
-	}
-	if out.AllFailureCooldownMinutes < 0 || out.AllFailureCooldownMinutes > 24*60 {
-		out.AllFailureCooldownMinutes = def.AllFailureCooldownMinutes
 	}
 	if out.FirstFailureCooldownMinutes < 1 || out.FirstFailureCooldownMinutes > 24*60 {
 		out.FirstFailureCooldownMinutes = def.FirstFailureCooldownMinutes
@@ -1614,7 +1609,7 @@ type NodeBindCooldownError struct {
 }
 
 func (e *NodeBindCooldownError) Error() string {
-	return fmt.Sprintf("平台账号 %s 处于绑定冷却期，结束时间 %s", strings.TrimSpace(e.BillingUsername), formatRFC3339InBeijing(e.CooldownUntil))
+	return fmt.Sprintf("平台账号 %s 处于绑定冷却期，结束时间 %s", strings.TrimSpace(e.BillingUsername), formatDisplayTimeInBeijing(e.CooldownUntil))
 }
 
 type NodeBindActiveChallengeError struct {
@@ -1632,7 +1627,7 @@ func (e *NodeBindActiveChallengeError) Error() string {
 		billing,
 		strings.TrimSpace(e.Challenge.NodeID),
 		strings.TrimSpace(e.Challenge.LocalUsername),
-		formatRFC3339InBeijing(e.Challenge.ExpiresAt),
+		formatDisplayTimeInBeijing(e.Challenge.ExpiresAt),
 	)
 }
 
@@ -1643,7 +1638,17 @@ type NodeBindTargetFrozenError struct {
 }
 
 func (e *NodeBindTargetFrozenError) Error() string {
-	return fmt.Sprintf("节点 %s 账号 %s 处于争抢冻结期，结束时间 %s", strings.TrimSpace(e.NodeID), strings.TrimSpace(e.LocalUsername), formatRFC3339InBeijing(e.FreezeUntil))
+	return fmt.Sprintf("节点 %s 账号 %s 处于争抢冻结期，结束时间 %s", strings.TrimSpace(e.NodeID), strings.TrimSpace(e.LocalUsername), formatDisplayTimeInBeijing(e.FreezeUntil))
+}
+
+type NodeBindTargetBusyError struct {
+	NodeID        string
+	LocalUsername string
+	Challenge     UserNodeBindChallenge
+}
+
+func (e *NodeBindTargetBusyError) Error() string {
+	return fmt.Sprintf("节点 %s 账号 %s 正在被 challenge 占用，结束时间 %s", strings.TrimSpace(e.NodeID), strings.TrimSpace(e.LocalUsername), formatDisplayTimeInBeijing(e.Challenge.ExpiresAt))
 }
 
 func isUserMappingSource(source string) bool {
@@ -4121,11 +4126,11 @@ WHERE request_type='unbind'
   AND billing_username=$1
   AND node_id=$2
   AND local_username=$3
-  AND status IN ('pending','rejected')`, billingUsername, nodeID, localUsername).Scan(&blockedCount); err != nil {
+  AND status='pending'`, billingUsername, nodeID, localUsername).Scan(&blockedCount); err != nil {
 			return 0, err
 		}
 		if blockedCount > 0 {
-			return 0, errors.New("该映射已有未通过解绑申请（待审核或已驳回），不可重复提交")
+			return 0, errors.New("该映射已有待审核解绑申请，不可重复提交")
 		}
 	}
 
@@ -4524,6 +4529,10 @@ func (s *Store) ListUserNodeBindCooldowns(ctx context.Context, activeOnly bool, 
 	if limit <= 0 || limit > 5000 {
 		limit = 500
 	}
+	queryLimit := limit
+	if activeOnly && queryLimit < 5000 {
+		queryLimit = 5000
+	}
 	rows, err := s.db.QueryContext(ctx, `
 SELECT c.billing_username,
        c.failure_streak,
@@ -4545,9 +4554,8 @@ LEFT JOIN LATERAL (
   ORDER BY created_at DESC
   LIMIT 1
 ) ch ON TRUE
-WHERE (NOT $2 OR (c.cooldown_until IS NOT NULL AND c.cooldown_until > $1))
 ORDER BY COALESCE(c.cooldown_until, to_timestamp(0)) DESC, c.failure_streak DESC, c.updated_at DESC
-LIMIT $3`, now, activeOnly, limit)
+LIMIT $2`, now, queryLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -4583,6 +4591,9 @@ LIMIT $3`, now, activeOnly, limit)
 		if x.CooldownUntil != nil && x.CooldownUntil.After(now) {
 			x.RemainingCooldownSeconds = int64(x.CooldownUntil.Sub(now).Seconds())
 		}
+		if activeOnly && x.RemainingCooldownSeconds <= 0 {
+			continue
+		}
 		if activeChallengeID.Valid {
 			v := activeChallengeID.Int64
 			x.ActiveChallengeID = &v
@@ -4595,6 +4606,9 @@ LIMIT $3`, now, activeOnly, limit)
 		}
 		x.ActiveChallengeExpiresAt = nullableTimePtr(activeExpires)
 		out = append(out, x)
+		if len(out) >= limit {
+			break
+		}
 	}
 	return out, rows.Err()
 }
@@ -4638,12 +4652,9 @@ FOR UPDATE`, billingUsername).Scan(&streak, &cooldownUntil); err != nil && !erro
 		return UserNodeBindCooldown{}, err
 	}
 	streak++
-	cdMinutes := policy.AllFailureCooldownMinutes
-	if cdMinutes <= 0 {
-		cdMinutes = policy.RepeatFailureCooldownMinutes
-		if streak <= 1 {
-			cdMinutes = policy.FirstFailureCooldownMinutes
-		}
+	cdMinutes := policy.RepeatFailureCooldownMinutes
+	if streak <= 1 {
+		cdMinutes = policy.FirstFailureCooldownMinutes
 	}
 	if cdMinutes <= 0 {
 		cdMinutes = 30
@@ -4796,29 +4807,6 @@ func (s *Store) CreateUserBindChallengeTx(
 		}
 	}
 
-	var freezeUntil sql.NullTime
-	if err := tx.QueryRowContext(ctx, `
-SELECT freeze_until
-FROM user_node_bind_freezes
-WHERE node_id=$1 AND local_username=$2
-FOR UPDATE`, nodeID, localUsername).Scan(&freezeUntil); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return UserNodeBindChallenge{}, err
-	}
-	if freezeUntil.Valid {
-		if freezeUntil.Time.After(now) {
-			return UserNodeBindChallenge{}, &NodeBindTargetFrozenError{
-				NodeID:        nodeID,
-				LocalUsername: localUsername,
-				FreezeUntil:   freezeUntil.Time,
-			}
-		}
-		if _, err := tx.ExecContext(ctx, `
-DELETE FROM user_node_bind_freezes
-WHERE node_id=$1 AND local_username=$2`, nodeID, localUsername); err != nil {
-			return UserNodeBindChallenge{}, err
-		}
-	}
-
 	var failureStreak int
 	var cooldownUntil sql.NullTime
 	if err := tx.QueryRowContext(ctx, `
@@ -4881,95 +4869,30 @@ FOR UPDATE`, billingUsername, nodeID, localUsername, now))
 		return UserNodeBindChallenge{}, err
 	}
 
-	var hasOther bool
-	if err := tx.QueryRowContext(ctx, `
-SELECT EXISTS(
-  SELECT 1
-  FROM user_node_bind_challenges
-  WHERE node_id=$1
-    AND local_username=$2
-    AND billing_username<>$3
-    AND status='active'
-    AND expires_at>$4
-)`, nodeID, localUsername, billingUsername, now).Scan(&hasOther); err != nil {
-		return UserNodeBindChallenge{}, err
-	}
-	if hasOther {
-		freezeTo := now.Add(time.Duration(policy.ContentionFreezeMinutes) * time.Minute)
-		if _, err := tx.ExecContext(ctx, `
-INSERT INTO user_node_bind_freezes(node_id, local_username, freeze_until, reason, triggered_by, created_at, updated_at)
-VALUES($1,$2,$3,$4,$5,$6,$6)
-ON CONFLICT (node_id, local_username) DO UPDATE
-SET freeze_until=EXCLUDED.freeze_until,
-    reason=EXCLUDED.reason,
-    triggered_by=EXCLUDED.triggered_by,
-    updated_at=EXCLUDED.updated_at`,
-			nodeID, localUsername, freezeTo, "multiple_billing_contention", billingUsername, now,
-		); err != nil {
-			return UserNodeBindChallenge{}, err
-		}
-		reqIDs := make([]int, 0)
-		failedBillings := make(map[string]struct{})
-		rows, err := tx.QueryContext(ctx, `
-UPDATE user_node_bind_challenges
-SET status='failed',
-    fail_reason='contention_freeze',
-    cooldown_until=$3,
-    failure_processed=TRUE,
-    expires_at=CASE WHEN expires_at > $4 THEN $4 ELSE expires_at END,
-    updated_at=$4
+	var occupied UserNodeBindChallenge
+	occupiedErr := scanUserNodeBindChallengeRow(&occupied, tx.QueryRowContext(ctx, `
+SELECT challenge_id, request_id, billing_username, node_id, local_username, challenge_token, status, fail_reason,
+       expires_at, claimed_at, verified_at, cooldown_until, failure_processed, created_at, updated_at
+FROM user_node_bind_challenges
 WHERE node_id=$1
   AND local_username=$2
   AND status='active'
-RETURNING request_id, billing_username`, nodeID, localUsername, freezeTo, now)
-		if err != nil {
-			return UserNodeBindChallenge{}, err
+  AND expires_at>$3
+ORDER BY created_at ASC
+LIMIT 1
+FOR UPDATE`, nodeID, localUsername, now))
+	if occupiedErr == nil {
+		if occupied.BillingUsername == billingUsername {
+			return occupied, nil
 		}
-		for rows.Next() {
-			var requestID int
-			var failedBilling string
-			if err := rows.Scan(&requestID, &failedBilling); err != nil {
-				_ = rows.Close()
-				return UserNodeBindChallenge{}, err
-			}
-			if requestID > 0 {
-				reqIDs = append(reqIDs, requestID)
-			}
-			failedBilling = strings.TrimSpace(failedBilling)
-			if failedBilling != "" {
-				failedBillings[failedBilling] = struct{}{}
-			}
-		}
-		if err := rows.Err(); err != nil {
-			_ = rows.Close()
-			return UserNodeBindChallenge{}, err
-		}
-		_ = rows.Close()
-		if len(reqIDs) > 0 {
-			if _, err := tx.ExecContext(ctx, `
-UPDATE user_requests
-SET status='rejected', reviewed_by='system', reviewed_at=$2, updated_at=$2
-WHERE request_id = ANY($1)
-  AND status IN ('pending','challenge_active','verified')`, pq.Array(reqIDs), now); err != nil {
-				return UserNodeBindChallenge{}, err
-			}
-		}
-		if _, err := tx.ExecContext(ctx, `
-DELETE FROM user_node_bind_temp_access
-WHERE node_id=$1 AND local_username=$2`, nodeID, localUsername); err != nil {
-			return UserNodeBindChallenge{}, err
-		}
-		failedBillings[billingUsername] = struct{}{}
-		for failedBilling := range failedBillings {
-			if _, err := s.applyNodeBindCooldownUntilTx(ctx, tx, failedBilling, freezeTo, now); err != nil {
-				return UserNodeBindChallenge{}, err
-			}
-		}
-		return UserNodeBindChallenge{}, &NodeBindTargetFrozenError{
+		return UserNodeBindChallenge{}, &NodeBindTargetBusyError{
 			NodeID:        nodeID,
 			LocalUsername: localUsername,
-			FreezeUntil:   freezeTo,
+			Challenge:     occupied,
 		}
+	}
+	if !errors.Is(occupiedErr, sql.ErrNoRows) {
+		return UserNodeBindChallenge{}, occupiedErr
 	}
 
 	expiresAt := now.Add(time.Duration(policy.ChallengeWindowSeconds) * time.Second)
@@ -5055,22 +4978,6 @@ FOR UPDATE`, challengeToken)); err != nil {
 	}
 	if !ch.ExpiresAt.After(now) {
 		return UserNodeBindChallenge{}, errNodeBindChallengeExpired
-	}
-
-	var freezeUntil sql.NullTime
-	if err := tx.QueryRowContext(ctx, `
-SELECT freeze_until
-FROM user_node_bind_freezes
-WHERE node_id=$1 AND local_username=$2
-FOR UPDATE`, ch.NodeID, ch.LocalUsername).Scan(&freezeUntil); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return UserNodeBindChallenge{}, err
-	}
-	if freezeUntil.Valid && freezeUntil.Time.After(now) {
-		return UserNodeBindChallenge{}, &NodeBindTargetFrozenError{
-			NodeID:        ch.NodeID,
-			LocalUsername: ch.LocalUsername,
-			FreezeUntil:   freezeUntil.Time,
-		}
 	}
 
 	oldBilling, existed, err := s.getUserNodeAccountBillingTx(ctx, tx, ch.NodeID, ch.LocalUsername)
@@ -10576,7 +10483,6 @@ func (s *Store) GetNodeBindSecurityPolicy(ctx context.Context) (NodeBindSecurity
 		appSettingBindTrialMemoryLimitGB,
 		appSettingBindTrialGPUBlocked,
 		appSettingBindSingleActivePerBilling,
-		appSettingBindAllFailureCooldownMin,
 		appSettingBindFirstCooldownMinutes,
 		appSettingBindRepeatCooldownMinutes,
 		appSettingBindContentionFreezeMinute,
@@ -10611,10 +10517,6 @@ func (s *Store) GetNodeBindSecurityPolicy(ctx context.Context) (NodeBindSecurity
 		case appSettingBindSingleActivePerBilling:
 			v := strings.ToLower(value)
 			out.SingleActivePerBilling = (v == "1" || v == "true" || v == "yes" || v == "on")
-		case appSettingBindAllFailureCooldownMin:
-			if n, convErr := strconv.Atoi(value); convErr == nil {
-				out.AllFailureCooldownMinutes = n
-			}
 		case appSettingBindFirstCooldownMinutes:
 			if n, convErr := strconv.Atoi(value); convErr == nil {
 				out.FirstFailureCooldownMinutes = n
@@ -10643,7 +10545,6 @@ func (s *Store) UpsertNodeBindSecurityPolicy(ctx context.Context, policy NodeBin
 		appSettingBindTrialMemoryLimitGB:     strconv.FormatFloat(p.TrialMemoryLimitGB, 'f', -1, 64),
 		appSettingBindTrialGPUBlocked:        strconv.FormatBool(p.TrialGPUBlocked),
 		appSettingBindSingleActivePerBilling: strconv.FormatBool(p.SingleActivePerBilling),
-		appSettingBindAllFailureCooldownMin:  strconv.Itoa(p.AllFailureCooldownMinutes),
 		appSettingBindFirstCooldownMinutes:   strconv.Itoa(p.FirstFailureCooldownMinutes),
 		appSettingBindRepeatCooldownMinutes:  strconv.Itoa(p.RepeatFailureCooldownMinutes),
 		appSettingBindContentionFreezeMinute: strconv.Itoa(p.ContentionFreezeMinutes),

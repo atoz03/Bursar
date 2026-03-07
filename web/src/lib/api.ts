@@ -491,7 +491,6 @@ export type NodeBindSecurityPolicy = {
   trial_memory_limit_gb: number;
   trial_gpu_blocked: boolean;
   single_active_challenge_per_billing: boolean;
-  all_failure_cooldown_minutes: number;
   first_failure_cooldown_minutes: number;
   repeat_failure_cooldown_minutes: number;
   contention_freeze_minutes: number;

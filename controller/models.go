@@ -489,7 +489,6 @@ type NodeBindSecurityPolicy struct {
 	TrialMemoryLimitGB           float64 `json:"trial_memory_limit_gb"`
 	TrialGPUBlocked              bool    `json:"trial_gpu_blocked"`
 	SingleActivePerBilling       bool    `json:"single_active_challenge_per_billing"`
-	AllFailureCooldownMinutes    int     `json:"all_failure_cooldown_minutes"`
 	FirstFailureCooldownMinutes  int     `json:"first_failure_cooldown_minutes"`
 	RepeatFailureCooldownMinutes int     `json:"repeat_failure_cooldown_minutes"`
 	ContentionFreezeMinutes      int     `json:"contention_freeze_minutes"`

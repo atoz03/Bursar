@@ -83,6 +83,7 @@ import { computed, ref } from "vue";
 import { ElMessage } from "element-plus";
 import { ApiClient } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
+import { writeClipboardText } from "../../lib/clipboard";
 import {
   DataBoard,
   Refresh,
@@ -120,7 +121,7 @@ async function reload() {
 
 async function copyMetrics() {
   try {
-    await navigator.clipboard.writeText(metricsPreview.value);
+    await writeClipboardText(metricsPreview.value);
     ElMessage.success("已复制到剪贴板");
   } catch {
     ElMessage.warning("复制失败：浏览器权限限制");

@@ -18,7 +18,7 @@
       <el-alert v-if="success" :title="success" type="success" show-icon class="mb" />
       <el-alert title="同一平台账号可映射多个节点账号；唯一键是“节点编号 + 节点账号”。" type="info" show-icon class="mb" />
       <el-alert
-        title="页面阅读建议：先做“映射查询”定位账号，再在“映射列表”维护映射，随后处理“开通/绑定申请审核”和“解绑记录”，最后查看“受限名单”和“开通历史”。"
+        title="页面阅读建议：先做“映射查询”定位账号，再在“映射列表”维护映射，随后处理“开通申请审核”和“解绑记录”，最后查看“受限名单”和“开通历史”。"
         type="warning"
         :closable="false"
         show-icon
@@ -147,12 +147,12 @@
               <el-form-item>
                 <template #label>
                   <span class="policy-label">
-                    <span>争抢冻结（分钟）</span>
+                    <span>先到先得（历史参数）</span>
                     <el-tooltip placement="top">
                       <template #content>
                         <div class="policy-help-tip">
-                          <div>两个平台账号同时争抢同一“节点 + 节点账号”时，双方都会立即被冻结。</div>
-                          <div>示例：30 = 命中争抢后，两边都冻结 30 分钟，期间谁都不能再次发起绑定。</div>
+                          <div>当前策略为“先到先得”：同一目标账号已有进行中的 challenge 时，后续申请会直接失败。</div>
+                          <div>该参数目前不参与生效判定，保留仅为兼容历史配置。</div>
                         </div>
                       </template>
                       <el-icon class="policy-help-icon"><InfoFilled /></el-icon>
@@ -164,25 +164,6 @@
             </el-col>
           </el-row>
           <el-row :gutter="12">
-            <el-col :span="8">
-              <el-form-item>
-                <template #label>
-                  <span class="policy-label">
-                    <span>失败统一冷却（分钟）</span>
-                    <el-tooltip placement="top">
-                      <template #content>
-                        <div class="policy-help-tip">
-                          <div>challenge 失败后，不区分第几次失败，统一按该时长冷却。</div>
-                          <div>示例：30 = 失败后一律冷却 30 分钟。</div>
-                        </div>
-                      </template>
-                      <el-icon class="policy-help-icon"><InfoFilled /></el-icon>
-                    </el-tooltip>
-                  </span>
-                </template>
-                <el-input-number v-model="bindPolicy.all_failure_cooldown_minutes" :min="1" :max="1440" style="width: 100%" />
-              </el-form-item>
-            </el-col>
             <el-col :span="8">
               <el-form-item>
                 <template #label>
@@ -202,8 +183,6 @@
                 <el-switch v-model="bindPolicy.trial_gpu_blocked" />
               </el-form-item>
             </el-col>
-          </el-row>
-          <el-row :gutter="12">
             <el-col :span="8">
               <el-form-item>
                 <template #label>
@@ -483,7 +462,7 @@
         <div class="head">
           <div class="section-title-wrap">
             <span class="section-icon tone-note"><el-icon><Document /></el-icon></span>
-            <span>节点账号开通/绑定申请审核</span>
+            <span>节点账号开通申请审核</span>
             <el-badge
               :value="pendingOpenRequestCount"
               :hidden="pendingOpenRequestCount <= 0"
@@ -504,7 +483,7 @@
         </div>
       </template>
       <el-alert
-        title="这里集中展示“节点账号开通/绑定申请”。开通申请可直接带入开通表单，绑定申请可在此审核。"
+        title="这里集中展示“节点账号开通申请”。用户自助发起的绑定 challenge 不在这里审核。"
         type="info"
         :closable="false"
         show-icon
@@ -905,7 +884,7 @@
       </el-table>
     </el-card>
 
-    <el-dialog v-model="openRejectHistoryVisible" title="开通/绑定申请驳回历史" width="1050px" destroy-on-close>
+    <el-dialog v-model="openRejectHistoryVisible" title="开通申请驳回历史" width="1050px" destroy-on-close>
       <div class="head-actions mb">
         <el-button size="small" :loading="openRejectHistoryLoading" @click="reloadOpenRejectHistory">刷新</el-button>
       </div>
@@ -1134,6 +1113,7 @@ import {
 import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
 import { formatServerDateTime, toServerEpochMs } from "../../lib/time";
+import { writeClipboardText } from "../../lib/clipboard";
 import PlatformUserDetailDialog from "../../components/PlatformUserDetailDialog.vue";
 import { Clock, Connection, Document, InfoFilled, Key, List, Search, UserFilled, WarningFilled } from "@element-plus/icons-vue";
 
@@ -1157,7 +1137,6 @@ const bindPolicy = reactive<NodeBindSecurityPolicy>({
   trial_memory_limit_gb: 8,
   trial_gpu_blocked: true,
   single_active_challenge_per_billing: true,
-  all_failure_cooldown_minutes: 30,
   first_failure_cooldown_minutes: 30,
   repeat_failure_cooldown_minutes: 180,
   contention_freeze_minutes: 30,
@@ -1321,7 +1300,7 @@ const pendingOpenRequestUsersText = computed(() => {
 
 const pendingAlertTitle = computed(() => {
   if (pendingOpenRequestCount.value <= 0) return "";
-  const base = `当前有 ${pendingOpenRequestCount.value} 条待处理的节点账号开通/绑定申请`;
+  const base = `当前有 ${pendingOpenRequestCount.value} 条待处理的节点账号开通申请`;
   const users = pendingOpenRequestUsersText.value;
   return users ? `${base}（申请人：${users}）` : base;
 });
@@ -1805,7 +1784,6 @@ async function reloadBindPolicy() {
     bindPolicy.trial_memory_limit_gb = Number(r.trial_memory_limit_gb ?? 8);
     bindPolicy.trial_gpu_blocked = !!r.trial_gpu_blocked;
     bindPolicy.single_active_challenge_per_billing = r.single_active_challenge_per_billing !== false;
-    bindPolicy.all_failure_cooldown_minutes = Number(r.all_failure_cooldown_minutes ?? 30);
     bindPolicy.first_failure_cooldown_minutes = Number(r.first_failure_cooldown_minutes ?? 30);
     bindPolicy.repeat_failure_cooldown_minutes = Number(r.repeat_failure_cooldown_minutes ?? 180);
     bindPolicy.contention_freeze_minutes = Number(r.contention_freeze_minutes ?? 30);
@@ -1836,8 +1814,21 @@ async function reloadBindCooldowns() {
   bindCooldownsLoading.value = true;
   try {
     const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
-    const r = await client.adminBindCooldowns({ active_only: true, limit: 500 });
-    bindCooldownRows.value = r.rows ?? [];
+    const r = await client.adminBindCooldowns({ active_only: false, limit: 500 });
+    const nowMs = Date.now();
+    bindCooldownRows.value = (r.rows ?? [])
+      .filter((row) => {
+        const remain = Number(row.remaining_cooldown_seconds || 0);
+        if (Number.isFinite(remain) && remain > 0) return true;
+        const untilMs = toServerEpochMs(String(row.cooldown_until || ""));
+        return Number.isFinite(untilMs) && untilMs > nowMs;
+      })
+      .sort((a, b) => {
+        const ta = toServerEpochMs(String(a.cooldown_until || ""));
+        const tb = toServerEpochMs(String(b.cooldown_until || ""));
+        if (Number.isFinite(tb) && Number.isFinite(ta) && tb !== ta) return tb - ta;
+        return Number(b.failure_streak || 0) - Number(a.failure_streak || 0);
+      });
   } catch (e: any) {
     error.value = e?.message ?? String(e);
   } finally {
@@ -2343,14 +2334,14 @@ async function reloadOpenRequests() {
     const allCurrent = r.requests ?? [];
     const current = allCurrent.filter((x) => {
       const requestType = String(x.request_type || "").trim();
-      return (requestType === "open" || requestType === "bind") && matchMappingFilters(x);
+      return requestType === "open" && matchMappingFilters(x);
     });
     openRequests.value = current;
     if (!openRequestStatus.value || openRequestStatus.value === "pending") {
       pendingOpenRequests.value = allCurrent.filter(
         (x) => {
           const requestType = String(x.request_type || "").trim();
-          return (requestType === "open" || requestType === "bind") && String(x.status || "").trim() === "pending" && matchMappingFilters(x);
+          return requestType === "open" && String(x.status || "").trim() === "pending" && matchMappingFilters(x);
         },
       );
       pendingUnbindRequests.value = allCurrent.filter(
@@ -2362,7 +2353,7 @@ async function reloadOpenRequests() {
     const pendingAll = pendingResp.requests ?? [];
     pendingOpenRequests.value = pendingAll.filter((x) => {
       const requestType = String(x.request_type || "").trim();
-      return (requestType === "open" || requestType === "bind") && matchMappingFilters(x);
+      return requestType === "open" && matchMappingFilters(x);
     });
     pendingUnbindRequests.value = pendingAll.filter(
       (x) => String(x.request_type || "").trim() === "unbind" && matchMappingFilters(x),
@@ -2388,7 +2379,7 @@ async function reloadOpenRejectHistory() {
     openRejectHistoryRows.value = (r.requests ?? [])
       .filter((x) => {
         const requestType = String(x.request_type || "").trim();
-        if (requestType !== "open" && requestType !== "bind") return false;
+        if (requestType !== "open") return false;
         const billing = String(x.billing_username || "").toLowerCase();
         const node = String(x.node_id || "").toLowerCase();
         const local = String(x.local_username || "").toLowerCase();
@@ -2787,7 +2778,7 @@ async function copyText(text: string) {
   const value = String(text || "").trim();
   if (!value) return;
   try {
-    await navigator.clipboard.writeText(value);
+    await writeClipboardText(value);
     ElMessage.success("已复制");
   } catch {
     ElMessage.error("复制失败，请手动复制");

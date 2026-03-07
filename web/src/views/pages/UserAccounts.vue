@@ -31,9 +31,9 @@
           <span>首次登录请先看这里</span>
         </div>
         <div class="first-guide-body">
-          第一次使用请按顺序完成：① 发起 challenge，② 在挑战窗口执行命令，③ 确认映射生效；如果你还没有任何节点账号，再做 ④ 新生开通申请。
+          第一次使用请按顺序完成：① 发起 challenge，② 在挑战窗口执行命令，③ 确认映射生效；备注: 如果你是新生还没有任何节点账号，再做 ④ 新生开通申请。
         </div>
-        <el-button size="small" type="primary" plain @click="dismissFirstGuide">我已阅读</el-button>
+        <el-button size="small" type="success" plain class="first-guide-dismiss" @click="dismissFirstGuide">✓ 已了解</el-button>
       </div>
       <el-alert
         title="示例：如果你在 66666 端口上有一个叫 zhangsan 的账号，请填写“节点编号 66666 + 节点账号 zhangsan”，系统会给出 gpuops-claim 命令。"
@@ -50,13 +50,13 @@
         show-icon
         class="mb strong-tip"
       />
-      <el-card class="mb provision-msg-card">
+      <el-card v-if="hasProvisionMessages" class="mb provision-msg-card">
         <template #header>
           <div class="head">
             <div>
               <strong>
                 节点账号开通密钥通知（平台内）
-                <span v-if="hasNewProvisionMessage || showFirstGuideRedDots" class="menu-red-dot inline-dot" aria-label="账号已开通提醒" />
+                <span v-if="hasNewProvisionMessage" class="menu-red-dot inline-dot" aria-label="账号已开通提醒" />
               </strong>
               <div class="mini">密文与解密步骤在这里，提取码请查收注册邮箱。</div>
             </div>
@@ -114,211 +114,228 @@
         <span class="title">① 发起绑定 challenge</span>
         <span v-if="showFirstGuideRedDots" class="menu-red-dot inline-dot" />
       </div>
-      <el-alert
-        title="严禁冒充绑定。冲突映射不会展示对方平台账号；若多人争抢同一映射，系统会自动冻结 30 分钟并告警。"
-        type="error"
-        :closable="false"
-        show-icon
-        class="mb"
-      />
-      <el-form inline class="editor">
-        <el-form-item label="节点编号">
-          <el-input v-model="nodeId" style="width: 220px" placeholder="例如 66666" />
-        </el-form-item>
-        <el-form-item label="节点账号">
-          <el-input v-model="localUsername" style="width: 260px" placeholder="例如 zhangsan" />
-        </el-form-item>
-        <el-form-item><el-button type="primary" @click="add">发起 challenge</el-button></el-form-item>
-      </el-form>
-      <el-alert
-        v-if="bindCooldownUntil"
-        :title="`当前账号在绑定冷却中，冷却结束时间：${bindCooldownUntil}`"
-        type="warning"
-        :closable="false"
-        show-icon
-        class="mb"
-      />
-      <div class="section-inline-title">
-        <span class="title">② 在挑战窗口执行命令完成校验</span>
-        <span v-if="showFirstGuideRedDots" class="menu-red-dot inline-dot" />
-      </div>
-      <el-card v-if="activeChallenge" class="mb provision-msg-card">
-        <template #header>
-          <div class="head">
-            <div>
-              <strong>当前 challenge 窗口</strong>
-              <div class="mini">请在节点上用目标账号登录后执行以下命令（5 分钟内有效）。</div>
-            </div>
-          </div>
-        </template>
+      <div class="section-block mb">
         <el-alert
-          title="挑战窗口仅存在 5 分钟（蓝色提示）：请立刻在目标节点账号下执行 gpuops-claim 命令，超时会失效并进入冷却。"
-          type="info"
+          title="严禁冒充绑定。冲突映射不会展示对方平台账号；同一节点账号先到先得，若该账号正在绑定中或已被绑定，后续申请会直接失败。"
+          type="error"
           :closable="false"
           show-icon
-          class="mb challenge-blue-tip"
+          class="mb"
         />
-        <el-descriptions :column="2" border size="small">
-          <el-descriptions-item label="节点编号">{{ activeChallenge.node_id }}</el-descriptions-item>
-          <el-descriptions-item label="节点账号">{{ activeChallenge.local_username }}</el-descriptions-item>
-          <el-descriptions-item label="到期时间">{{ formatServerDateTime(activeChallenge.expires_at) }}</el-descriptions-item>
-          <el-descriptions-item label="状态">{{ activeChallenge.status }}</el-descriptions-item>
-          <el-descriptions-item label="challenge token" :span="2">
-            <code>{{ activeChallenge.challenge_token }}</code>
-          </el-descriptions-item>
-          <el-descriptions-item label="执行命令" :span="2">
-            <code>{{ activeChallenge.claim_command }}</code>
-          </el-descriptions-item>
-        </el-descriptions>
-        <div class="payload-actions">
-          <el-button size="small" type="primary" @click="copyText(activeChallenge.claim_command)">复制命令</el-button>
-          <el-button size="small" @click="copyText(activeChallenge.challenge_token)">复制 token</el-button>
+        <div class="section-surface">
+          <el-form inline class="editor">
+            <el-form-item label="节点编号">
+              <el-input v-model="nodeId" style="width: 220px" placeholder="例如 66666" />
+            </el-form-item>
+            <el-form-item label="节点账号">
+              <el-input v-model="localUsername" style="width: 260px" placeholder="例如 zhangsan" />
+            </el-form-item>
+            <el-form-item><el-button type="primary" @click="add">发起 challenge</el-button></el-form-item>
+          </el-form>
         </div>
-      </el-card>
-      <el-alert
-        v-else
-        title="当前没有进行中的 challenge。请先完成步骤 ① 发起挑战。"
-        type="info"
-        :closable="false"
-        show-icon
-        class="mb challenge-blue-tip"
-      />
-      <div class="section-inline-title">
-        <span class="title">③ 查看已生效映射并管理解绑</span>
-        <span v-if="showFirstGuideRedDots" class="menu-red-dot inline-dot" />
-      </div>
-      <el-table :data="rows" stripe class="table">
-        <el-table-column prop="node_id" label="节点编号" width="160" />
-        <el-table-column prop="local_username" label="节点账号" width="200" />
-        <el-table-column prop="billing_username" label="平台账号" width="180" />
-        <el-table-column prop="updated_at" label="更新时间" min-width="190" :formatter="tableTimeFormatter" />
-        <el-table-column label="操作" min-width="320">
-          <template #default="{ row }">
-            <el-button size="small" type="danger" :disabled="isUnbindSubmitBlocked(row)" @click="remove(row)">申请解绑</el-button>
-            <div v-if="isUnbindSubmitBlocked(row)" class="mini unbind-block-tip">{{ unbindSubmitBlockedMessage(row) }}</div>
-          </template>
-        </el-table-column>
-      </el-table>
-      <el-card v-if="mappedNodeInfos.length > 0" class="mb provision-msg-card">
-        <template #header>
-          <div class="head">
-            <div>
-              <strong>已映射节点价格与 /home 配额</strong>
-              <div class="mini">仅展示你已成功映射的节点账号。</div>
-            </div>
-          </div>
-        </template>
-        <div class="quota-tip-box mb">
-          <p class="quota-tip-line">
-            请重点关注 <span class="blue-keyword">CPU 单价</span>、<span class="blue-keyword">GPU 单价</span>、
-            <span class="blue-keyword">/home 配额</span>。超过 <span class="blue-keyword">/home 配额</span> 后会
-            <span class="blue-keyword">禁止写入</span>。
-          </p>
-          <p class="quota-tip-line">
-            建议将大文件转入 <span class="blue-keyword">/mnt</span> 或 <span class="blue-keyword">NFS(shared node)</span>，
-            通过 <span class="blue-keyword">软链接</span> 使用，并将关键数据
-            <span class="blue-keyword">备份到本地</span>。
-          </p>
-        </div>
-        <el-table :data="mappedNodeInfos" stripe size="small">
-          <el-table-column prop="node_id" label="节点编号" width="120" />
-          <el-table-column prop="local_username" label="节点账号" width="150" />
-          <el-table-column label="GPU 单价(积分/卡分钟)" min-width="210">
-            <template #default="{ row }">
-              <div>{{ formatPrice(row.effective_gpu_price_per_minute) }}</div>
-              <div class="mini">来源：{{ formatPriceSource(row.gpu_price_source, "gpu") }}</div>
-            </template>
-          </el-table-column>
-          <el-table-column label="CPU 单价(积分/核分钟)" min-width="210">
-            <template #default="{ row }">
-              <div>{{ formatPrice(row.effective_cpu_price_per_core_minute) }}</div>
-              <div class="mini">来源：{{ formatPriceSource(row.cpu_price_source, "cpu") }}</div>
-            </template>
-          </el-table-column>
-          <el-table-column label="/home 已用" min-width="130">
-            <template #default="{ row }">{{ formatMBToGB(row.home_quota_used_mb) }}</template>
-          </el-table-column>
-          <el-table-column label="/home 软配额" min-width="130">
-            <template #default="{ row }">{{ formatMBToGB(row.home_quota_soft_mb) }}</template>
-          </el-table-column>
-          <el-table-column label="/home 硬配额" min-width="130">
-            <template #default="{ row }">{{ formatMBToGB(row.home_quota_hard_mb) }}</template>
-          </el-table-column>
-          <el-table-column label="写入状态" width="120">
-            <template #default="{ row }">
-              <el-tag :type="homeQuotaTagType(row)" effect="plain">{{ homeQuotaTagText(row) }}</el-tag>
-            </template>
-          </el-table-column>
-        </el-table>
-      </el-card>
-
-      <div class="section-inline-title">
-        <span class="title">④ 新生节点账号开通申请（仅无现有节点账号时）</span>
-        <span v-if="showFirstGuideRedDots" class="menu-red-dot inline-dot" />
-      </div>
-      <el-divider />
-      <el-card v-if="rows.length === 0 && !activeChallenge" class="mb open-request-card">
-        <template #header>
-          <div class="head">
-            <div>
-              <strong>④ 新生节点账号申请（无已有节点账号时使用）</strong>
-              <div class="mini">此申请用于“还没有任何节点账号”的新生；同一时刻最多 1 条待审核申请。</div>
-            </div>
-          </div>
-        </template>
         <el-alert
-          title="本申请不需要你填写节点编号和节点账号，管理员会按你的说明分配。开通理由必须原文包含“研究方向”四个字，并写清课题内容和资源用途。"
+          v-if="bindCooldownUntil"
+          :title="`当前账号在绑定冷却中，冷却结束时间：${bindCooldownUntil}`"
           type="warning"
           :closable="false"
           show-icon
           class="mb"
         />
+      </div>
+      <div class="section-inline-title">
+        <span class="title">② 在挑战窗口执行命令完成校验</span>
+        <span v-if="showFirstGuideRedDots" class="menu-red-dot inline-dot" />
+      </div>
+      <div class="section-block mb">
+        <el-card v-if="activeChallenge" class="mb provision-msg-card">
+          <template #header>
+            <div class="head">
+              <div>
+                <strong>当前 challenge 窗口</strong>
+                <div class="mini">请在节点上用目标账号登录后执行以下命令（5 分钟内有效）。</div>
+              </div>
+            </div>
+          </template>
+          <el-alert
+            title="挑战窗口剩余时间结束后立即关闭：请立刻ssh登录到该节点执行 gpuops-claim 命令，超时会失效并进入冷却。"
+            type="info"
+            :closable="false"
+            show-icon
+            class="mb challenge-blue-tip"
+          />
+          <el-descriptions :column="2" border size="small">
+            <el-descriptions-item label="节点编号">{{ activeChallenge.node_id }}</el-descriptions-item>
+            <el-descriptions-item label="节点账号">{{ activeChallenge.local_username }}</el-descriptions-item>
+            <el-descriptions-item label="到期时间">{{ formatServerDateTime(activeChallenge.expires_at) }}</el-descriptions-item>
+            <el-descriptions-item label="剩余时间">
+              <span :class="['challenge-countdown-value', `is-${activeChallengeCountdownLevel}`]">{{ activeChallengeCountdownText }}</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="状态">{{ activeChallenge.status }}</el-descriptions-item>
+            <el-descriptions-item label="challenge token" :span="2">
+              <code>{{ activeChallenge.challenge_token }}</code>
+            </el-descriptions-item>
+            <el-descriptions-item label="执行命令" :span="2">
+              <code>{{ activeChallenge.claim_command }}</code>
+            </el-descriptions-item>
+          </el-descriptions>
+          <div class="payload-actions">
+            <el-button size="small" type="primary" @click="copyText(activeChallenge.claim_command)">复制命令</el-button>
+            <el-button size="small" @click="copyText(activeChallenge.challenge_token)">复制 token</el-button>
+          </div>
+        </el-card>
         <el-alert
-          v-if="pendingOpenRequest"
-          :title="`你已有待审核申请（ID ${pendingOpenRequest.request_id}，提交时间 ${formatServerDateTime(pendingOpenRequest.created_at)}），请勿重复提交。`"
+          v-else
+          title="当前没有进行中的 challenge。请先完成步骤 ① 发起挑战。"
           type="info"
+          :closable="false"
+          show-icon
+          class="mb challenge-blue-tip"
+        />
+      </div>
+      <div class="section-inline-title">
+        <span class="title">③ 查看已生效映射并管理解绑</span>
+        <span v-if="showFirstGuideRedDots" class="menu-red-dot inline-dot" />
+      </div>
+      <div class="section-block mb">
+        <div class="section-surface mb">
+          <el-table :data="rows" stripe class="table">
+            <el-table-column prop="node_id" label="节点编号" width="160" />
+            <el-table-column prop="local_username" label="节点账号" width="200" />
+            <el-table-column prop="billing_username" label="平台账号" width="180" />
+            <el-table-column prop="updated_at" label="更新时间" min-width="190" :formatter="tableTimeFormatter" />
+            <el-table-column label="操作" min-width="320">
+              <template #default="{ row }">
+                <el-button size="small" type="danger" :disabled="isUnbindSubmitBlocked(row)" @click="remove(row)">申请解绑</el-button>
+                <div v-if="isUnbindSubmitBlocked(row)" class="mini unbind-block-tip">{{ unbindSubmitBlockedMessage(row) }}</div>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+        <el-card v-if="mappedNodeInfos.length > 0" class="mb provision-msg-card">
+          <template #header>
+            <div class="head">
+              <div>
+                <strong>已映射节点价格与 /home 配额</strong>
+                <div class="mini">仅展示你已成功映射的节点账号。</div>
+              </div>
+            </div>
+          </template>
+          <div class="quota-tip-box mb">
+            <p class="quota-tip-line">
+              请重点关注 <span class="blue-keyword">CPU 单价</span>、<span class="blue-keyword">GPU 单价</span>、
+              <span class="blue-keyword">/home 配额</span>。超过 <span class="blue-keyword">/home 配额</span> 后会
+              <span class="blue-keyword">禁止写入</span>。
+            </p>
+            <p class="quota-tip-line">
+              建议将大文件转入 <span class="blue-keyword">/mnt</span> 或 <span class="blue-keyword">NFS(shared node)</span>，
+              通过 <span class="blue-keyword">软链接</span> 使用，并将关键数据
+              <span class="blue-keyword">备份到本地</span>。
+            </p>
+          </div>
+          <el-table :data="mappedNodeInfos" stripe size="small">
+            <el-table-column prop="node_id" label="节点编号" width="120" />
+            <el-table-column prop="local_username" label="节点账号" width="150" />
+            <el-table-column label="GPU 单价(积分/卡分钟)" min-width="210">
+              <template #default="{ row }">
+                <div>{{ formatPrice(row.effective_gpu_price_per_minute) }}</div>
+                <div class="mini">来源：{{ formatPriceSource(row.gpu_price_source, "gpu") }}</div>
+              </template>
+            </el-table-column>
+            <el-table-column label="CPU 单价(积分/核分钟)" min-width="210">
+              <template #default="{ row }">
+                <div>{{ formatPrice(row.effective_cpu_price_per_core_minute) }}</div>
+                <div class="mini">来源：{{ formatPriceSource(row.cpu_price_source, "cpu") }}</div>
+              </template>
+            </el-table-column>
+            <el-table-column label="/home 已用" min-width="130">
+              <template #default="{ row }">{{ formatMBToGB(row.home_quota_used_mb) }}</template>
+            </el-table-column>
+            <el-table-column label="/home 软配额" min-width="130">
+              <template #default="{ row }">{{ formatMBToGB(row.home_quota_soft_mb) }}</template>
+            </el-table-column>
+            <el-table-column label="/home 硬配额" min-width="130">
+              <template #default="{ row }">{{ formatMBToGB(row.home_quota_hard_mb) }}</template>
+            </el-table-column>
+            <el-table-column label="写入状态" width="120">
+              <template #default="{ row }">
+                <el-tag :type="homeQuotaTagType(row)" effect="plain">{{ homeQuotaTagText(row) }}</el-tag>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-card>
+      </div>
+
+      <div class="section-inline-title">
+        <span class="title">④ 新生节点账号开通申请（仅无现有节点账号时）</span>
+        <span v-if="showFirstGuideRedDots" class="menu-red-dot inline-dot" />
+      </div>
+      <div class="section-block mb">
+        <el-divider class="section-divider" />
+        <el-card v-if="rows.length === 0 && !activeChallenge" class="mb open-request-card">
+          <template #header>
+            <div class="head">
+              <div>
+                <strong>④ 新生节点账号申请（无已有节点账号时使用）</strong>
+                <div class="mini">此申请用于“还没有任何节点账号”的新生；同一时刻最多 1 条待审核申请。</div>
+              </div>
+            </div>
+          </template>
+          <el-alert
+            title="本申请不需要你填写节点编号和节点账号，管理员会按你的说明分配。开通理由必须原文包含“研究方向”四个字，并写清课题内容和资源用途。"
+            type="warning"
+            :closable="false"
+            show-icon
+            class="mb"
+          />
+          <el-alert
+            v-if="pendingOpenRequest"
+            :title="`你已有待审核申请（ID ${pendingOpenRequest.request_id}，提交时间 ${formatServerDateTime(pendingOpenRequest.created_at)}），请勿重复提交。`"
+            type="info"
+            :closable="false"
+            show-icon
+            class="mb"
+          />
+          <div class="section-surface">
+            <el-form label-position="top">
+              <el-form-item label="开通理由（必填，至少 20 字，且必须包含“研究方向”这四个字）">
+                <el-input
+                  v-model="openReason"
+                  type="textarea"
+                  :rows="5"
+                  maxlength="800"
+                  show-word-limit
+                  :placeholder="openReasonPlaceholder"
+                />
+              </el-form-item>
+              <el-button type="primary" :loading="openRequesting" :disabled="!!pendingOpenRequest" @click="submitOpenRequest">
+                提交节点开通申请
+              </el-button>
+            </el-form>
+          </div>
+          <el-divider />
+          <div class="mini mb">我的节点开通申请记录</div>
+          <el-table :data="userOpenRequests" stripe size="small" max-height="220">
+            <el-table-column prop="request_id" label="ID" width="80" />
+            <el-table-column label="分配节点" width="120">
+              <template #default="{ row }">{{ (row.node_id || "").trim() || "-" }}</template>
+            </el-table-column>
+            <el-table-column label="分配账号" width="140">
+              <template #default="{ row }">{{ (row.local_username || "").trim() || "-" }}</template>
+            </el-table-column>
+            <el-table-column prop="status" label="状态" width="110" />
+            <el-table-column prop="message" label="开通理由" min-width="260" />
+            <el-table-column prop="created_at" label="提交时间" min-width="170" :formatter="tableTimeFormatter" />
+          </el-table>
+        </el-card>
+        <el-alert
+          v-else
+          title="你已有映射或正在进行 challenge，当前无需提交“新生节点开通申请”。"
+          type="success"
           :closable="false"
           show-icon
           class="mb"
         />
-        <el-form label-position="top">
-          <el-form-item label="开通理由（必填，至少 20 字，且必须包含“研究方向”这四个字）">
-            <el-input
-              v-model="openReason"
-              type="textarea"
-              :rows="5"
-              maxlength="800"
-              show-word-limit
-              :placeholder="openReasonPlaceholder"
-            />
-          </el-form-item>
-          <el-button type="primary" :loading="openRequesting" :disabled="!!pendingOpenRequest" @click="submitOpenRequest">
-            提交节点开通申请
-          </el-button>
-        </el-form>
-        <el-divider />
-        <div class="mini mb">我的节点开通申请记录</div>
-        <el-table :data="userOpenRequests" stripe size="small" max-height="220">
-          <el-table-column prop="request_id" label="ID" width="80" />
-          <el-table-column label="分配节点" width="120">
-            <template #default="{ row }">{{ (row.node_id || "").trim() || "-" }}</template>
-          </el-table-column>
-          <el-table-column label="分配账号" width="140">
-            <template #default="{ row }">{{ (row.local_username || "").trim() || "-" }}</template>
-          </el-table-column>
-          <el-table-column prop="status" label="状态" width="110" />
-          <el-table-column prop="message" label="开通理由" min-width="260" />
-          <el-table-column prop="created_at" label="提交时间" min-width="170" :formatter="tableTimeFormatter" />
-        </el-table>
-      </el-card>
-      <el-alert
-        v-else
-        title="你已有映射或正在进行 challenge，当前无需提交“新生节点开通申请”。"
-        type="success"
-        :closable="false"
-        show-icon
-        class="mb"
-      />
+      </div>
     </el-card>
     <el-dialog v-model="decryptVisible" title="节点密钥解密" width="880px" @close="closeDecryptor">
       <p class="decrypt-note">输入邮件中的“加密密钥串”和“提取码”，解密后可下载 `ssh -i` 直接使用的私钥文件。</p>
@@ -328,7 +345,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { useRoute, useRouter } from "vue-router";
 import {
@@ -344,6 +361,7 @@ import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
 import KeyDecryptorPanel from "../../components/KeyDecryptorPanel.vue";
 import { formatServerDateTime, toServerEpochMs } from "../../lib/time";
+import { writeClipboardText } from "../../lib/clipboard";
 
 const router = useRouter();
 const route = useRoute();
@@ -360,12 +378,14 @@ const userRequests = ref<UserRequest[]>([]);
 const userOpenRequests = ref<UserRequest[]>([]);
 const nodeId = ref("");
 const localUsername = ref("");
+const nowTick = ref(Date.now());
 const decryptVisible = ref(false);
 const selectedPayload = ref("");
 const selectedCode = ref("");
 const openRequesting = ref(false);
 const openReason = ref("");
 const firstGuideRead = ref(false);
+let challengeCountdownTimer: ReturnType<typeof setInterval> | null = null;
 const USER_ACCOUNTS_GUIDE_KEY_PREFIX = "gpuops.user_accounts.guide_seen";
 const openReasonPlaceholder = [
   "请详细填写（至少 20 字）：",
@@ -458,7 +478,7 @@ const unbindBlockedRequestByKey = computed(() => {
   for (const req of userRequests.value || []) {
     if (String(req.request_type || "").trim() !== "unbind") continue;
     const status = String(req.status || "").trim();
-    if (status !== "pending" && status !== "rejected") continue;
+    if (status !== "pending") continue;
     const key = mappingKey(req.node_id, req.local_username);
     if (!key) continue;
     const prev = map.get(key);
@@ -479,6 +499,30 @@ const bindCooldownUntil = computed(() => {
   if (!t) return "";
   return formatServerDateTime(t);
 });
+const activeChallengeRemainingSeconds = computed(() => {
+  const expiresAt = String(activeChallenge.value?.expires_at || "").trim();
+  if (!expiresAt) return null;
+  const expiresMs = toServerEpochMs(expiresAt);
+  if (!Number.isFinite(expiresMs)) return null;
+  return Math.floor((expiresMs - nowTick.value) / 1000);
+});
+const activeChallengeCountdownLevel = computed(() => {
+  const remain = activeChallengeRemainingSeconds.value;
+  if (remain === null) return "safe";
+  if (remain <= 0) return "expired";
+  if (remain <= 60) return "danger";
+  if (remain <= 180) return "warn";
+  return "safe";
+});
+const activeChallengeCountdownText = computed(() => {
+  const remain = activeChallengeRemainingSeconds.value;
+  if (remain === null) return "-";
+  if (remain <= 0) return "已超时";
+  const minutes = Math.floor(remain / 60);
+  const seconds = remain % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+});
+const hasProvisionMessages = computed(() => (provisionMessages.value || []).length > 0);
 const hasNewProvisionMessage = computed(() =>
   (provisionMessages.value || []).some((x) => !isMessageDestroyed(x) && !String(x.first_decrypted_at || "").trim()),
 );
@@ -497,9 +541,20 @@ const decryptCode = computed(() => {
 });
 
 onMounted(() => {
+  nowTick.value = Date.now();
+  challengeCountdownTimer = setInterval(() => {
+    nowTick.value = Date.now();
+  }, 1000);
   firstGuideRead.value = loadFirstGuideReadState();
   if (String(route.query.tool || "").trim() === "key-decryptor") {
     decryptVisible.value = true;
+  }
+});
+
+onUnmounted(() => {
+  if (challengeCountdownTimer) {
+    clearInterval(challengeCountdownTimer);
+    challengeCountdownTimer = null;
   }
 });
 
@@ -538,11 +593,7 @@ function isUnbindSubmitBlocked(row: UserNodeAccount): boolean {
 function unbindSubmitBlockedMessage(row: UserNodeAccount): string {
   const req = findBlockedUnbindRequest(row);
   if (!req) return "";
-  const status = String(req.status || "").trim();
-  if (status === "pending") {
-    return `已申请解绑（ID ${req.request_id}）待审核，不能重复提交`;
-  }
-  return `解绑申请（ID ${req.request_id}）已驳回，不能再次提交`;
+  return `已申请解绑（ID ${req.request_id}）待审核，不能重复提交`;
 }
 
 async function openDecryptorWithPayload(row: UserProvisionMessage) {
@@ -600,7 +651,7 @@ async function copyPayload(row: UserProvisionMessage) {
   const text = String(row.encrypted_payload || "").trim();
   if (!text) return;
   try {
-    await navigator.clipboard.writeText(text);
+    await writeClipboardText(text);
     ElMessage.success("密文已复制");
   } catch {
     ElMessage.error("复制失败，请手动复制");
@@ -611,7 +662,7 @@ async function copyText(text: string) {
   const v = String(text || "").trim();
   if (!v) return;
   try {
-    await navigator.clipboard.writeText(v);
+    await writeClipboardText(v);
     ElMessage.success("已复制");
   } catch {
     ElMessage.error("复制失败，请手动复制");
@@ -756,7 +807,7 @@ async function add() {
     if (activeConflict.matched) {
       error.value = "当前已有进行中的 challenge，同一时间只能存在一个绑定挑战";
       await ElMessageBox.alert(
-        `你当前已有进行中的绑定挑战：\n${activeConflict.node || "-"} / ${activeConflict.local || "-"}\n到期时间：${activeConflict.expiresAt || "-"}\n\n同一时间只能存在一个 challenge，请先完成当前 challenge 或等待其过期后再申请。`,
+        `你当前已有进行中的绑定挑战：\n${activeConflict.node || "-"} / ${activeConflict.local || "-"}\n到期时间：${formatServerDateTime(activeConflict.expiresAt || "")}\n\n同一时间只能存在一个 challenge，请先完成当前 challenge 或等待其过期后再申请。`,
         "绑定失败",
         { type: "warning", confirmButtonText: "我知道了" },
       );
@@ -862,6 +913,17 @@ reload();
   color: #374151;
   line-height: 1.5;
 }
+.first-guide-dismiss.el-button--success.is-plain {
+  color: #166534;
+  background: rgba(255, 255, 255, 0.96);
+  border-color: #86efac;
+}
+.first-guide-dismiss.el-button--success.is-plain:hover,
+.first-guide-dismiss.el-button--success.is-plain:focus {
+  color: #15803d;
+  background: #ffffff;
+  border-color: #4ade80;
+}
 .unbind-block-tip {
   color: #b45309;
   margin-top: 4px;
@@ -880,8 +942,34 @@ reload();
   font-weight: 800;
   color: #0f172a;
 }
+.section-block {
+  position: relative;
+  margin-left: 18px;
+  padding: 6px 0 0 18px;
+  border-left: 1px dashed #bfdbfe;
+}
+.section-block::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -5px;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+}
+.section-surface {
+  padding: 12px 14px;
+  border: 1px solid #dbeafe;
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.96), rgba(239, 246, 255, 0.96));
+}
+.section-divider {
+  margin: 0 0 12px;
+}
 .editor {
-  margin-top: 4px;
+  margin-top: 0;
 }
 .mb { margin-bottom: 12px; }
 .strong-tip {
@@ -890,6 +978,21 @@ reload();
 .challenge-blue-tip {
   border: 1px solid #93c5fd;
   background: linear-gradient(180deg, rgba(219, 234, 254, 0.9), rgba(239, 246, 255, 0.9));
+}
+.challenge-countdown-value {
+  font-weight: 800;
+}
+.challenge-countdown-value.is-safe {
+  color: #0f766e;
+}
+.challenge-countdown-value.is-warn {
+  color: #b45309;
+}
+.challenge-countdown-value.is-danger {
+  color: #b91c1c;
+}
+.challenge-countdown-value.is-expired {
+  color: #991b1b;
 }
 .table {
   margin-top: 8px;
@@ -940,6 +1043,17 @@ reload();
 @media (max-width: 900px) {
   .head {
     flex-wrap: wrap;
+  }
+  .section-block {
+    margin-left: 0;
+    padding-left: 0;
+    border-left: none;
+  }
+  .section-block::before {
+    display: none;
+  }
+  .section-surface {
+    padding: 10px;
   }
 }
 </style>

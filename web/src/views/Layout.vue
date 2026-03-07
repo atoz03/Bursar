@@ -384,8 +384,8 @@ async function loadUserNoticeState() {
       userNoticeHasNew.value = true;
       return;
     }
-    const latestTs = new Date(latest).getTime();
-    const seenTs = new Date(seen).getTime();
+    const latestTs = toServerEpochMs(latest);
+    const seenTs = toServerEpochMs(seen);
     if (Number.isNaN(latestTs) || Number.isNaN(seenTs)) {
       userNoticeHasNew.value = latest !== seen;
       return;

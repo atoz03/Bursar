@@ -197,6 +197,7 @@ import { settingsState } from "../../lib/settingsStore";
 import { ElMessageBox } from "element-plus";
 import { renderMarkdown } from "../../lib/markdown";
 import { STRONG_PASSWORD_RULE_TEXT, checkStrongPassword } from "../../lib/passwordPolicy";
+import { getServerCurrentYear } from "../../lib/time";
 
 type FieldKey = "username" | "email" | "student_id";
 const allowedEmailDomains = ["example.org", "students.example.org"];
@@ -220,7 +221,8 @@ const verifiedSubmitted = ref(false);
 const error = ref("");
 const success = ref("");
 const confirmPassword = ref("");
-const graduationYm = ref(toYYYYMM(new Date().getFullYear() + 3, 6));
+const defaultGraduationYear = getServerCurrentYear() + 3;
+const graduationYm = ref(toYYYYMM(defaultGraduationYear, 6));
 const guidelineVisible = ref(false);
 const guidelineContent = ref("正在加载用户准则...");
 const acceptGuideline = ref(false);
@@ -245,7 +247,7 @@ const form = reactive({
   real_name: "",
   student_id: "",
   advisor: "",
-  expected_graduation_year: new Date().getFullYear() + 3,
+  expected_graduation_year: defaultGraduationYear,
   expected_graduation_month: 6,
   phone: "",
 });

@@ -54,7 +54,7 @@ import { ApiClient, type Announcement } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
 import { renderMarkdown } from "../../lib/markdown";
-import { formatServerDateTime } from "../../lib/time";
+import { formatServerDateTime, toServerEpochMs } from "../../lib/time";
 
 const loading = ref(false);
 const error = ref("");
@@ -75,7 +75,7 @@ function markAnnouncementSeen(rows: Announcement[]) {
   const latest = rows
     .map((x) => String(x.created_at || "").trim())
     .filter(Boolean)
-    .sort()
+    .sort((a, b) => toServerEpochMs(a) - toServerEpochMs(b))
     .at(-1);
   if (latest) {
     try {
