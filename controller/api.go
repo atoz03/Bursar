@@ -2803,41 +2803,20 @@ func (s *Server) handleUserAccountsUpsert(c *gin.Context) {
 		var cooldownErr *NodeBindCooldownError
 		if errors.As(err, &cooldownErr) {
 			c.JSON(http.StatusTooManyRequests, gin.H{
-				"error":          fmt.Sprintf("绑定失败后冷却中，请于 %s 后再申请", formatRFC3339InBeijing(cooldownErr.CooldownUntil)),
+				"error":          fmt.Sprintf("绑定失败后冷却中，请于 %s 后再申请", formatDisplayTimeInBeijing(cooldownErr.CooldownUntil)),
 				"reason":         "bind_cooldown_active",
 				"cooldown_until": cooldownErr.CooldownUntil,
 			})
 			return
 		}
-		var frozenErr *NodeBindTargetFrozenError
-		if errors.As(err, &frozenErr) {
-			_ = s.store.WithTx(c.Request.Context(), func(tx *sql.Tx) error {
-				reportID := fmt.Sprintf("bind-freeze-%d", time.Now().UnixNano())
-				_, txErr := s.store.InsertNodeSecurityEventTx(
-					c.Request.Context(),
-					tx,
-					reportID,
-					frozenErr.NodeID,
-					"mapping_contention",
-					"warning",
-					"节点账号绑定争抢触发冻结",
-					[]string{frozenErr.LocalUsername},
-					map[string]any{
-						"billing_username": billing,
-						"node_id":          frozenErr.NodeID,
-						"local_username":   frozenErr.LocalUsername,
-						"freeze_until":     frozenErr.FreezeUntil,
-					},
-					2*time.Minute,
-				)
-				return txErr
-			})
-			c.JSON(http.StatusLocked, gin.H{
-				"error":          fmt.Sprintf("该节点账号存在多人争抢，已冻结至 %s", formatRFC3339InBeijing(frozenErr.FreezeUntil)),
-				"reason":         "mapping_target_frozen",
-				"node_id":        frozenErr.NodeID,
-				"local_username": frozenErr.LocalUsername,
-				"freeze_until":   frozenErr.FreezeUntil,
+		var busyErr *NodeBindTargetBusyError
+		if errors.As(err, &busyErr) {
+			c.JSON(http.StatusConflict, gin.H{
+				"error":             "该节点账号当前已有进行中的绑定 challenge（先到先得），请稍后再试",
+				"reason":            "mapping_target_busy",
+				"node_id":           busyErr.NodeID,
+				"local_username":    busyErr.LocalUsername,
+				"active_expires_at": busyErr.Challenge.ExpiresAt,
 			})
 			return
 		}
@@ -3026,7 +3005,7 @@ func (s *Server) handleAdminBindCooldownsList(c *gin.Context) {
 		activeOnly = vv != "0" && vv != "false" && vv != "no" && vv != "off"
 	}
 	limit := parseLimit(c.Query("limit"), 500, 5000)
-	rows, err := s.store.ListUserNodeBindCooldowns(c.Request.Context(), activeOnly, limit, time.Now())
+	rows, err := s.store.ListUserNodeBindCooldowns(c.Request.Context(), activeOnly, limit, nowInBeijing())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -3045,7 +3024,7 @@ func (s *Server) handleAdminBindCooldownUnfreeze(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "billing_username 不能为空"})
 		return
 	}
-	cooldown, err := s.store.ClearUserNodeBindCooldown(c.Request.Context(), req.BillingUsername, time.Now())
+	cooldown, err := s.store.ClearUserNodeBindCooldown(c.Request.Context(), req.BillingUsername, nowInBeijing())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

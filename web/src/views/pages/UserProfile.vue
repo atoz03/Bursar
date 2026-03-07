@@ -93,7 +93,7 @@ import { reactive, ref } from "vue";
 import { ApiClient, type ProfileChangeRequest } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
-import { formatServerDateTime } from "../../lib/time";
+import { formatServerDateTime, getServerCurrentYear } from "../../lib/time";
 
 function toYYYYMM(year: number, month: number): string {
   return `${year}-${String(month).padStart(2, "0")}`;
@@ -113,7 +113,8 @@ const saving = ref(false);
 const error = ref("");
 const success = ref("");
 const requests = ref<ProfileChangeRequest[]>([]);
-const graduationYm = ref(toYYYYMM(new Date().getFullYear() + 3, 6));
+const defaultGraduationYear = getServerCurrentYear() + 3;
+const graduationYm = ref(toYYYYMM(defaultGraduationYear, 6));
 
 const form = reactive({
   email: "",
@@ -121,7 +122,7 @@ const form = reactive({
   real_name: "",
   student_id: "",
   advisor: "",
-  expected_graduation_year: new Date().getFullYear() + 3,
+  expected_graduation_year: defaultGraduationYear,
   expected_graduation_month: 6,
   phone: "",
   change_reason: "",
@@ -145,7 +146,7 @@ async function reload() {
     form.real_name = me.real_name ?? "";
     form.student_id = me.student_id ?? "";
     form.advisor = me.advisor ?? "";
-    form.expected_graduation_year = me.expected_graduation_year ?? new Date().getFullYear() + 3;
+    form.expected_graduation_year = me.expected_graduation_year ?? defaultGraduationYear;
     form.expected_graduation_month = me.expected_graduation_month ?? 6;
     graduationYm.value = toYYYYMM(form.expected_graduation_year, form.expected_graduation_month);
     form.phone = me.phone ?? "";

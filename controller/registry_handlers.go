@@ -189,17 +189,6 @@ func (s *Server) handleRegistryBindClaim(c *gin.Context) {
 			c.JSON(http.StatusConflict, gin.H{"error": "该节点账号已绑定到当前平台账号", "reason": "mapping_exists_same_user"})
 			return
 		}
-		var frozenErr *NodeBindTargetFrozenError
-		if errors.As(err, &frozenErr) {
-			c.JSON(http.StatusLocked, gin.H{
-				"error":          fmt.Sprintf("目标映射处于争抢冻结期，结束时间 %s", formatRFC3339InBeijing(frozenErr.FreezeUntil)),
-				"reason":         "mapping_target_frozen",
-				"freeze_until":   frozenErr.FreezeUntil,
-				"node_id":        frozenErr.NodeID,
-				"local_username": frozenErr.LocalUsername,
-			})
-			return
-		}
 		var conflictErr *NodeAccountOwnershipConflictError
 		if errors.As(err, &conflictErr) {
 			c.JSON(http.StatusConflict, gin.H{

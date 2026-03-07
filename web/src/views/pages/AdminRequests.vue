@@ -238,7 +238,7 @@
 
       <div class="section-inline-title order-node-title">
         <span class="section-icon tone-link"><el-icon><Connection /></el-icon></span>
-        <span class="title">节点账号开通/绑定申请审核</span>
+        <span class="title">节点账号开通申请审核</span>
       </div>
       <el-form inline class="order-node-form">
         <el-form-item label="状态">
@@ -267,7 +267,7 @@
         </el-table-column>
         <el-table-column prop="node_id" label="端口" width="110" />
         <el-table-column prop="local_username" label="节点账号" width="160" />
-        <el-table-column prop="message" label="开通/绑定理由" min-width="240" />
+        <el-table-column prop="message" label="开通理由" min-width="240" />
         <el-table-column prop="status" label="状态" width="120" />
         <el-table-column prop="apply_count_by_billing" label="申请次数" width="100" />
         <el-table-column prop="duplicate_reason" label="风险提示" width="220" />
@@ -806,7 +806,7 @@ async function reloadRequests() {
   rows.value = [];
   try {
     const r = await client().adminRequests({ status: status.value, limit: 500 });
-    rows.value = r.requests ?? [];
+    rows.value = (r.requests ?? []).filter((x) => String(x.request_type || "").trim() === "open");
   } catch (e: any) {
     error.value = e?.message ?? String(e);
   } finally {

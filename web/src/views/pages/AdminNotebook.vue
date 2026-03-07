@@ -77,7 +77,7 @@ import { ApiClient, type AdminNote } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
 import { Document } from "@element-plus/icons-vue";
-import { formatServerDateTime } from "../../lib/time";
+import { formatServerDateTime, getServerTodayDateText } from "../../lib/time";
 
 const loading = ref(false);
 const saving = ref(false);
@@ -104,11 +104,7 @@ function client() {
 }
 
 function todayText(): string {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+  return getServerTodayDateText();
 }
 
 function resetForm() {

@@ -34,6 +34,13 @@ func formatRFC3339InBeijing(t time.Time) string {
 	return inBeijing(t).Format(time.RFC3339)
 }
 
+func formatDisplayTimeInBeijing(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return inBeijing(t).Format("2006-01-02 15:04:05")
+}
+
 func beijingOffsetMinutes(t time.Time) int {
 	_, offset := inBeijing(t).Zone()
 	return offset / 60

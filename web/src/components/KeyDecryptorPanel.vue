@@ -29,7 +29,7 @@
         <el-descriptions-item label="平台账号">{{ env.billing_username || "-" }}</el-descriptions-item>
         <el-descriptions-item label="SSH 地址">{{ sshHost }}:{{ sshPort }}</el-descriptions-item>
         <el-descriptions-item label="建议文件名">{{ fileName }}</el-descriptions-item>
-        <el-descriptions-item label="签发时间">{{ env.issued_at || "-" }}</el-descriptions-item>
+        <el-descriptions-item label="签发时间">{{ formatServerDateTime(env.issued_at || "") }}</el-descriptions-item>
       </el-descriptions>
 
       <el-alert
@@ -58,7 +58,9 @@
 import { computed, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 import { ApiClient } from "../lib/api";
+import { writeClipboardText } from "../lib/clipboard";
 import { settingsState } from "../lib/settingsStore";
+import { formatServerDateTime } from "../lib/time";
 
 type KeyEnvelope = {
   v: string;
@@ -265,7 +267,7 @@ function downloadKey() {
 
 async function copySSHCommand() {
   try {
-    await navigator.clipboard.writeText(sshCommand.value);
+    await writeClipboardText(sshCommand.value);
     ElMessage.success("SSH 命令已复制");
   } catch {
     ElMessage.error("复制失败，请手动复制");
