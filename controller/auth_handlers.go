@@ -20,8 +20,10 @@ import (
 const sessionCookieName = "gpuops_session"
 
 type loginReq struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
+	Username      string `json:"username"`
+	Password      string `json:"password"`
+	CaptchaID     string `json:"captcha_id"`
+	CaptchaOption int    `json:"captcha_option"`
 }
 
 type registerReq struct {
@@ -125,6 +127,23 @@ func (s *Server) handleAuthLogin(c *gin.Context) {
 	req.Username = strings.TrimSpace(req.Username)
 	if req.Username == "" || req.Password == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "username/password 不能为空"})
+		return
+	}
+	clientIP := trimmedClientIP(c.ClientIP())
+	now := time.Now()
+	if strings.TrimSpace(req.CaptchaID) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "captcha_missing"})
+		return
+	}
+	if err := s.store.VerifyAndConsumeRegisterCaptcha(c.Request.Context(), req.CaptchaID, clientIP, req.CaptchaOption, now); err != nil {
+		switch {
+		case errors.Is(err, errRegisterCaptchaExpired):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "captcha_expired"})
+		case errors.Is(err, errRegisterCaptchaUsed):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "captcha_used"})
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "captcha_invalid"})
+		}
 		return
 	}
 

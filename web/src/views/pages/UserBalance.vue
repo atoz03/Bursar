@@ -55,11 +55,15 @@
       />
       <el-alert
         v-if="resp && resp.status === 'blocked'"
-        :title="`已欠费：当前欠费 ${fmt2(resp.current_overdraft_points ?? 0)}，每月最大欠费上限 ${fmt2(resp.monthly_max_overdraft_limit ?? 0)}。${
-          resp.overdraft_exceeded
-            ? '已超过欠费上限：GPU 已禁用，CPU 已限速，且首次越线会强制清理全部进程。'
-            : '未超过欠费上限：当前以限速为主，GPU 暂不禁用。'
-        }`"
+        :title="
+          resp.manual_blocked
+            ? '该平台账号已被管理员加入黑名单。当前不能使用平台资源，如有疑问请联系管理员。'
+            : `已欠费：当前欠费 ${fmt2(resp.current_overdraft_points ?? 0)}，每月最大欠费上限 ${fmt2(resp.monthly_max_overdraft_limit ?? 0)}。${
+                resp.overdraft_exceeded
+                  ? '已超过欠费上限：GPU 已禁用，CPU 已限速，且首次越线会强制清理全部进程。'
+                  : '未超过欠费上限：当前以限速为主，GPU 暂不禁用。'
+              }`
+        "
         type="error"
         show-icon
         :closable="false"
@@ -248,7 +252,7 @@ function statusLabel(status: string): string {
   if (status === "normal") return "正常";
   if (status === "warning") return "预警";
   if (status === "limited") return "受限";
-  if (status === "blocked") return "欠费受限";
+  if (status === "blocked") return resp.value?.manual_blocked ? "已拉黑" : "欠费受限";
   return status || "未知";
 }
 
@@ -268,6 +272,9 @@ const statusReason = computed(() => {
   }
   if (s === "limited") return "已触发限速，仍可登录但性能受限";
   if (s === "blocked") {
+    if (resp.value?.manual_blocked) {
+      return "管理员已将该账号加入平台黑名单";
+    }
     return resp.value?.overdraft_exceeded
       ? "已超过欠费上限：GPU 已禁用，CPU 已限速，并触发一次性清进程"
       : "已欠费但未超过欠费上限：当前主要执行限速"

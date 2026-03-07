@@ -97,12 +97,12 @@ func StatusForBalance(balance, warningThreshold, limitedThreshold float64) strin
 	return "normal"
 }
 
-// EffectiveStatusForBalance 用于接口展示/运行时控制：
+// EffectiveStatusForBalance 用于接口展示：
 // 1) 默认按“实时可用积分”计算状态；
-// 2) 若数据库状态为 blocked（例如管理员手动封禁），则保持 blocked，不被余额自动覆盖。
-func EffectiveStatusForBalance(storedStatus string, effectiveBalance, warningThreshold, limitedThreshold float64) string {
+// 2) 仅当账号确实处于管理员手动拉黑时，才强制保持 blocked。
+func EffectiveStatusForBalance(storedStatus string, manualBlocked bool, effectiveBalance, warningThreshold, limitedThreshold float64) string {
 	derived := StatusForBalance(effectiveBalance, warningThreshold, limitedThreshold)
-	if strings.EqualFold(strings.TrimSpace(storedStatus), "blocked") && derived != "blocked" {
+	if manualBlocked && strings.EqualFold(strings.TrimSpace(storedStatus), "blocked") && derived != "blocked" {
 		return "blocked"
 	}
 	return derived

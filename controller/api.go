@@ -745,6 +745,7 @@ func (s *Server) RouterWeb() *gin.Engine {
 
 	api := r.Group("/api")
 	api.GET("/auth/me", s.handleAuthMe)
+	api.GET("/auth/login/captcha", s.handleAuthLoginCaptcha)
 	api.POST("/auth/login", s.handleAuthLogin)
 	api.POST("/auth/logout", s.handleAuthLogout)
 	api.POST("/auth/register", s.handleAuthRegister)
@@ -1278,8 +1279,13 @@ func (s *Server) handleBalance(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	manualBlocked, err := s.store.IsUserManuallyBlocked(ctx, username)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	effectiveBalance := u.Balance + u.CarryoverBalance
-	effectiveStatus := EffectiveStatusForBalance(u.Status, effectiveBalance, s.cfg.WarningThreshold, s.cfg.LimitedThreshold)
+	effectiveStatus := EffectiveStatusForBalance(u.Status, manualBlocked, effectiveBalance, s.cfg.WarningThreshold, s.cfg.LimitedThreshold)
 	currentOverdraft := 0.0
 	if effectiveBalance < 0 {
 		currentOverdraft = -effectiveBalance
@@ -1299,6 +1305,7 @@ func (s *Server) handleBalance(c *gin.Context) {
 		"monthly_max_overdraft_limit": maxOverdraftLimit,
 		"current_overdraft_points":    currentOverdraft,
 		"overdraft_exceeded":          isOverdraftExceeded(effectiveBalance, maxOverdraftLimit),
+		"manual_blocked":              manualBlocked,
 	})
 }
 
@@ -2267,8 +2274,13 @@ func (s *Server) handleUserMyBalance(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	manualBlocked, err := s.store.IsUserManuallyBlocked(c.Request.Context(), username)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	effectiveBalance := balance + carryoverBalance
-	effectiveStatus := EffectiveStatusForBalance(status, effectiveBalance, s.cfg.WarningThreshold, s.cfg.LimitedThreshold)
+	effectiveStatus := EffectiveStatusForBalance(status, manualBlocked, effectiveBalance, s.cfg.WarningThreshold, s.cfg.LimitedThreshold)
 	currentOverdraft := 0.0
 	if effectiveBalance < 0 {
 		currentOverdraft = -effectiveBalance
@@ -2293,6 +2305,7 @@ func (s *Server) handleUserMyBalance(c *gin.Context) {
 		"monthly_max_overdraft_limit": maxOverdraftLimit,
 		"current_overdraft_points":    currentOverdraft,
 		"overdraft_exceeded":          isOverdraftExceeded(effectiveBalance, maxOverdraftLimit),
+		"manual_blocked":              manualBlocked,
 	})
 }
 
@@ -3936,7 +3949,7 @@ func (s *Server) validateAdminReservedNodeMapping(ctx context.Context, nodeID st
 		return false, "", err
 	}
 	if localIsAdminName {
-		return true, fmt.Sprintf("节点账号 %s 为管理员保留账号名，仅管理员可绑定映射", localUsername), nil
+		return true, fmt.Sprintf("节点 %s 的账号 %s 已被绑定，当前不可申请", nodeID, localUsername), nil
 	}
 	// 若该节点账号当前映射到管理员，也禁止改绑给非管理员。
 	currentBilling, mapped, err := s.store.ResolveBillingUsername(ctx, nodeID, localUsername)
@@ -3951,7 +3964,7 @@ func (s *Server) validateAdminReservedNodeMapping(ctx context.Context, nodeID st
 				return false, "", err
 			}
 			if currentIsAdmin {
-				return true, fmt.Sprintf("节点 %s 的账号 %s 已保留给管理员账号 %s，非管理员不可绑定", nodeID, localUsername, currentBilling), nil
+				return true, fmt.Sprintf("节点 %s 的账号 %s 已被绑定，当前不可申请", nodeID, localUsername), nil
 			}
 		}
 	}
