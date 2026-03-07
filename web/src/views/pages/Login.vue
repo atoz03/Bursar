@@ -44,6 +44,20 @@
               @keyup.enter="doLogin"
             />
           </el-form-item>
+          <el-form-item label="登录验证码">
+            <div class="captcha-wrap">
+              <div class="captcha-head">
+                <div class="captcha-title">{{ captchaQuestionLabel }}</div>
+                <el-button text type="primary" :loading="captchaLoading" @click="loadCaptcha">换一题</el-button>
+              </div>
+              <el-radio-group v-model="captchaOption" class="captcha-options">
+                <el-radio-button v-for="(op, idx) in captchaOptions" :key="`${captchaId}-${idx}-${op}`" :label="idx">
+                  {{ op }}
+                </el-radio-button>
+              </el-radio-group>
+              <div class="captcha-tip">每次登录都需要重新完成验证码。</div>
+            </div>
+          </el-form-item>
         </el-form>
 
         <el-button :loading="loading" type="primary" class="login-btn" size="large" @click="doLogin">立即登录</el-button>
@@ -58,9 +72,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { login, authState } from "../../lib/authStore";
+import { ApiClient } from "../../lib/api";
+import { settingsState } from "../../lib/settingsStore";
 import { Cpu, Key, User } from "@element-plus/icons-vue";
 
 const router = useRouter();
@@ -68,12 +84,41 @@ const loading = ref(false);
 const error = ref("");
 const username = ref("");
 const password = ref("");
+const captchaLoading = ref(false);
+const captchaId = ref("");
+const captchaQuestion = ref("");
+const captchaOptions = ref<number[]>([]);
+const captchaOption = ref<number | null>(null);
+const captchaQuestionLabel = computed(() => captchaQuestion.value || "验证码加载中...");
+
+async function loadCaptcha() {
+  captchaLoading.value = true;
+  try {
+    const client = new ApiClient(settingsState.baseUrl);
+    const r = await client.authLoginCaptcha();
+    captchaId.value = String(r.captcha_id || "").trim();
+    captchaQuestion.value = String(r.question || "").trim();
+    captchaOptions.value = Array.isArray(r.options) ? r.options.map((v) => Number(v)) : [];
+    captchaOption.value = null;
+  } catch {
+    captchaId.value = "";
+    captchaQuestion.value = "验证码加载失败，请稍后重试";
+    captchaOptions.value = [];
+    captchaOption.value = null;
+  } finally {
+    captchaLoading.value = false;
+  }
+}
 
 async function doLogin() {
+  if (!captchaId.value || captchaOption.value === null) {
+    error.value = "请先完成登录验证码";
+    return;
+  }
   loading.value = true;
   error.value = "";
   try {
-    await login(username.value.trim(), password.value);
+    await login(username.value.trim(), password.value, captchaId.value, Number(captchaOption.value));
     if (authState.role === "admin") {
       await router.push("/admin/board");
     } else if (authState.role === "power_user") {
@@ -91,10 +136,15 @@ async function doLogin() {
     }
   } catch (e: any) {
     error.value = e?.message ?? String(e);
+    await loadCaptcha();
   } finally {
     loading.value = false;
   }
 }
+
+onMounted(() => {
+  loadCaptcha();
+});
 </script>
 
 <style scoped>
@@ -196,6 +246,39 @@ async function doLogin() {
   font-size: 15px;
   font-weight: 700;
 }
+.captcha-wrap {
+  width: 100%;
+  padding: 14px;
+  border-radius: 16px;
+  background: #f8fafc;
+  border: 1px solid #dbe7f3;
+}
+.captcha-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.captcha-title {
+  color: #0f172a;
+  font-size: 14px;
+  line-height: 1.6;
+  font-weight: 700;
+}
+.captcha-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.captcha-options :deep(.el-radio-button__inner) {
+  min-width: 60px;
+}
+.captcha-tip {
+  margin-top: 10px;
+  font-size: 12px;
+  color: #475569;
+}
 .login-btn {
   width: 100%;
   margin-top: 8px;
@@ -240,6 +323,10 @@ async function doLogin() {
   }
   .intro p {
     font-size: 17px;
+  }
+  .captcha-head {
+    flex-direction: column;
+    align-items: flex-start;
   }
 }
 </style>

@@ -359,6 +359,55 @@ func normalizeNodeUserGPUVisibilityTimes(x *NodeUserGPUVisibility) {
 	x.UpdatedAt = asBeijingWallTime(x.UpdatedAt)
 }
 
+func normalizeSSHWhitelistEntryTimes(x *SSHWhitelistEntry) {
+	if x == nil {
+		return
+	}
+	x.CreatedAt = asBeijingWallTime(x.CreatedAt)
+	x.UpdatedAt = asBeijingWallTime(x.UpdatedAt)
+}
+
+func normalizeSSHBlacklistEntryTimes(x *SSHBlacklistEntry) {
+	if x == nil {
+		return
+	}
+	x.CreatedAt = asBeijingWallTime(x.CreatedAt)
+	x.UpdatedAt = asBeijingWallTime(x.UpdatedAt)
+}
+
+func normalizeSSHExemptionEntryTimes(x *SSHExemptionEntry) {
+	if x == nil {
+		return
+	}
+	x.CreatedAt = asBeijingWallTime(x.CreatedAt)
+	x.UpdatedAt = asBeijingWallTime(x.UpdatedAt)
+}
+
+func normalizeAnnouncementTimes(x *Announcement) {
+	if x == nil {
+		return
+	}
+	x.CreatedAt = asBeijingWallTime(x.CreatedAt)
+	x.UpdatedAt = asBeijingWallTime(x.UpdatedAt)
+}
+
+func normalizeAdminNoteTimes(x *AdminNote) {
+	if x == nil {
+		return
+	}
+	x.NoteDate = asBeijingWallTime(x.NoteDate)
+	x.CreatedAt = asBeijingWallTime(x.CreatedAt)
+	x.UpdatedAt = asBeijingWallTime(x.UpdatedAt)
+}
+
+func normalizeSpecialMonthlyPointsRuleTimes(x *SpecialMonthlyPointsRule) {
+	if x == nil {
+		return
+	}
+	x.CreatedAt = asBeijingWallTime(x.CreatedAt)
+	x.UpdatedAt = asBeijingWallTime(x.UpdatedAt)
+}
+
 func normalizeNodeSecurityEventTimes(e *NodeSecurityEvent) {
 	if e == nil {
 		return
@@ -3283,6 +3332,7 @@ LIMIT $2`, nodeID, limit)
 				return nil, err
 			}
 			v.Reason = ""
+			normalizeSSHWhitelistEntryTimes(&v)
 			out = append(out, v)
 		}
 		return out, rows.Err()
@@ -3297,6 +3347,7 @@ LIMIT $2`, nodeID, limit)
 		if err := rows.Scan(&v.NodeID, &v.LocalUsername, &v.CreatedBy, &v.Reason, &v.CreatedAt, &v.UpdatedAt); err != nil {
 			return nil, err
 		}
+		normalizeSSHWhitelistEntryTimes(&v)
 		out = append(out, v)
 	}
 	return out, rows.Err()
@@ -3459,6 +3510,7 @@ LIMIT $2`, nodeID, limit)
 				return nil, err
 			}
 			v.Reason = ""
+			normalizeSSHBlacklistEntryTimes(&v)
 			out = append(out, v)
 		}
 		return out, rows.Err()
@@ -3473,6 +3525,7 @@ LIMIT $2`, nodeID, limit)
 		if err := rows.Scan(&v.NodeID, &v.LocalUsername, &v.CreatedBy, &v.Reason, &v.CreatedAt, &v.UpdatedAt); err != nil {
 			return nil, err
 		}
+		normalizeSSHBlacklistEntryTimes(&v)
 		out = append(out, v)
 	}
 	return out, rows.Err()
@@ -3539,6 +3592,7 @@ LIMIT $2`, nodeID, limit)
 				return nil, err
 			}
 			v.Reason = ""
+			normalizeSSHExemptionEntryTimes(&v)
 			out = append(out, v)
 		}
 		return out, rows.Err()
@@ -3553,6 +3607,7 @@ LIMIT $2`, nodeID, limit)
 		if err := rows.Scan(&v.NodeID, &v.LocalUsername, &v.CreatedBy, &v.Reason, &v.CreatedAt, &v.UpdatedAt); err != nil {
 			return nil, err
 		}
+		normalizeSSHExemptionEntryTimes(&v)
 		out = append(out, v)
 	}
 	return out, rows.Err()
@@ -9565,17 +9620,65 @@ SELECT EXISTS(
 	if exists {
 		return "pending_email_verification", nil
 	}
-	// 平台用户被管理员拉黑时会写入全局 SSH 黑名单（node_id='*'）。
-	if err := s.db.QueryRowContext(ctx, `
-SELECT EXISTS(
-  SELECT 1 FROM ssh_blacklist WHERE node_id='*' AND local_username=$1
-)`, username).Scan(&exists); err != nil {
+	exists, err := s.IsUserManuallyBlocked(ctx, username)
+	if err != nil {
 		return "", err
 	}
 	if exists {
 		return "blacklisted_account", nil
 	}
 	return "", nil
+}
+
+func (s *Store) IsUserManuallyBlocked(ctx context.Context, username string) (bool, error) {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return false, nil
+	}
+	var exists bool
+	err := s.db.QueryRowContext(ctx, `
+SELECT EXISTS(
+  SELECT 1
+  FROM ssh_list_sources
+  WHERE list_type='blacklist'
+    AND source_type='platform'
+    AND source_platform_username=$1
+)`, username).Scan(&exists)
+	if err == nil {
+		return exists, nil
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	if !(strings.Contains(msg, "relation") && strings.Contains(msg, "ssh_list_sources") && strings.Contains(msg, "does not exist")) {
+		return false, err
+	}
+	if err := s.db.QueryRowContext(ctx, `
+SELECT EXISTS(
+  SELECT 1
+  FROM users u
+  WHERE u.username=$1
+    AND u.status='blocked'
+    AND EXISTS (
+      SELECT 1
+      FROM ssh_blacklist sb
+      WHERE (sb.node_id='*' AND sb.local_username=$1)
+         OR (sb.node_id='*' AND EXISTS (
+              SELECT 1
+              FROM user_node_accounts una
+              WHERE una.billing_username=$1
+                AND una.local_username=sb.local_username
+            ))
+         OR EXISTS (
+              SELECT 1
+              FROM user_node_accounts una
+              WHERE una.billing_username=$1
+                AND una.node_id=sb.node_id
+                AND una.local_username=sb.local_username
+            )
+    )
+)`, username).Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, nil
 }
 
 func (s *Store) GetUserAccountByUsername(ctx context.Context, username string) (UserAccount, error) {
@@ -11055,6 +11158,7 @@ LIMIT $1`, limit)
 		if err := rows.Scan(&a.AnnouncementID, &a.Title, &a.Content, &a.Pinned, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt); err != nil {
 			return nil, err
 		}
+		normalizeAnnouncementTimes(&a)
 		out = append(out, a)
 	}
 	return out, rows.Err()
@@ -11132,6 +11236,7 @@ FROM admin_notes`
 		if err := rows.Scan(&n.NoteID, &n.NoteDate, &n.Title, &n.Content, &n.UpdatedBy, &n.CreatedAt, &n.UpdatedAt); err != nil {
 			return nil, err
 		}
+		normalizeAdminNoteTimes(&n)
 		out = append(out, n)
 	}
 	return out, rows.Err()
@@ -11153,6 +11258,7 @@ RETURNING note_id, note_date, title, content, updated_by, created_at, updated_at
 	).Scan(&out.NoteID, &out.NoteDate, &out.Title, &out.Content, &out.UpdatedBy, &out.CreatedAt, &out.UpdatedAt); err != nil {
 		return AdminNote{}, err
 	}
+	normalizeAdminNoteTimes(&out)
 	return out, nil
 }
 
@@ -11176,6 +11282,7 @@ RETURNING note_id, note_date, title, content, updated_by, created_at, updated_at
 	).Scan(&out.NoteID, &out.NoteDate, &out.Title, &out.Content, &out.UpdatedBy, &out.CreatedAt, &out.UpdatedAt); err != nil {
 		return AdminNote{}, err
 	}
+	normalizeAdminNoteTimes(&out)
 	return out, nil
 }
 
@@ -11515,6 +11622,7 @@ LIMIT $1`, limit)
 		if err := rows.Scan(&v.Username, &v.MonthlyPoints, &v.Enabled, &v.UpdatedBy, &v.CreatedAt, &v.UpdatedAt); err != nil {
 			return nil, err
 		}
+		normalizeSpecialMonthlyPointsRuleTimes(&v)
 		out = append(out, v)
 	}
 	return out, rows.Err()

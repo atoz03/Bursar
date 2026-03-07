@@ -57,9 +57,9 @@ export async function refreshAuth(): Promise<void> {
     : Number.NaN;
 }
 
-export async function login(username: string, password: string): Promise<void> {
+export async function login(username: string, password: string, captchaID: string, captchaOption: number): Promise<void> {
   const client = new ApiClient(settingsState.baseUrl);
-  await client.authLogin(username, password);
+  await client.authLogin(username, password, captchaID, captchaOption);
   await refreshAuth();
 }
 

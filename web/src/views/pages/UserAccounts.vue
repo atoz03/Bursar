@@ -123,6 +123,13 @@
           class="mb"
         />
         <div class="section-surface">
+          <el-alert
+            title="发起前请先确认：你现在就能用这个节点账号 SSH 登录目标节点。challenge 只有 5 分钟，只有能立即登录时再继续。"
+            type="warning"
+            :closable="false"
+            show-icon
+            class="mb"
+          />
           <el-form inline class="editor">
             <el-form-item label="节点编号">
               <el-input v-model="nodeId" style="width: 220px" placeholder="例如 66666" />
@@ -221,16 +228,23 @@
             </div>
           </template>
           <div class="quota-tip-box mb">
+            <div class="quota-tip-head">存储使用提醒</div>
             <p class="quota-tip-line">
-              请重点关注 <span class="blue-keyword">CPU 单价</span>、<span class="blue-keyword">GPU 单价</span>、
+              请重点关注 <span class="blue-keyword">CPU 单价</span>、<span class="blue-keyword">GPU 单价</span> 和
               <span class="blue-keyword">/home 配额</span>。超过 <span class="blue-keyword">/home 配额</span> 后会
               <span class="blue-keyword">禁止写入</span>。
             </p>
             <p class="quota-tip-line">
-              建议将大文件转入 <span class="blue-keyword">/mnt</span> 或 <span class="blue-keyword">NFS(shared node)</span>，
-              通过 <span class="blue-keyword">软链接</span> 使用，并将关键数据
-              <span class="blue-keyword">备份到本地</span>。
+              建议将大文件转入 <span class="blue-keyword">/mnt/disk{x}/{用户名}</span> 或
+              <span class="blue-keyword">/shared/node/{用户名}</span>、
+              <span class="blue-keyword">/shared/cluster/{用户名}</span>，再通过
+              <span class="blue-keyword">软链接</span> 使用。
             </p>
+            <p class="quota-tip-line quota-tip-subline">
+              <span class="blue-keyword">/shared/cluster</span> 是所有节点共享的 NFS，
+              <span class="blue-keyword">/shared/node</span> 是每个节点各自独有的目录。
+            </p>
+            <p class="quota-tip-line quota-tip-subline">关键数据请及时备份到本地，避免误删或覆盖。</p>
           </div>
           <el-table :data="mappedNodeInfos" stripe size="small">
             <el-table-column prop="node_id" label="节点编号" width="120" />
@@ -796,9 +810,22 @@ async function add() {
       error.value = "请先填写节点编号和节点账号，再发起 challenge";
       return;
     }
+    try {
+      await ElMessageBox.confirm(
+        `请确认是否绑定节点 ${node} 的账号 ${local}。\n\n继续前请先确认：\n1. 你现在就能 SSH 登录这个节点账号；\n2. 点击后会立即进入 5 分钟 challenge 窗口；\n3. 你需要在时限内登录节点并执行 gpuops-claim。\n\n确认无误后再继续。`,
+        "发起 challenge 前确认",
+        {
+          type: "warning",
+          confirmButtonText: "确认发起 challenge",
+          cancelButtonText: "我再检查一下 SSH",
+        },
+      );
+    } catch {
+      return;
+    }
     const r = await client().userUpsertAccount(node, local, "用户页面发起 challenge 绑定");
     activeChallenge.value = r.challenge || null;
-    success.value = "challenge 已创建，请在节点上执行 gpuops-claim <token> 完成校验";
+    success.value = `challenge 已创建：请在 5 分钟内登录节点 ${node} 的账号 ${local}，执行 gpuops-claim 完成校验`;
     nodeId.value = "";
     localUsername.value = "";
     await reload();
@@ -1022,10 +1049,18 @@ reload();
   gap: 8px;
 }
 .quota-tip-box {
-  padding: 10px 12px;
+  padding: 14px 16px;
   border: 1px solid #bfdbfe;
-  border-radius: 10px;
-  background: #eff6ff;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #f8fbff 0%, #eaf3ff 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+.quota-tip-head {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: #1e3a8a;
 }
 .quota-tip-line {
   margin: 0;
@@ -1034,6 +1069,9 @@ reload();
 }
 .quota-tip-line + .quota-tip-line {
   margin-top: 6px;
+}
+.quota-tip-subline {
+  color: #334155;
 }
 .blue-keyword {
   color: #1d4ed8;

@@ -22,6 +22,10 @@ function normalizeServerError(status: number, bodyText: string): ApiError {
     pending_review: "管理员正在审核该账号，请耐心等待审核结果",
     pending_email_verification: "该账号尚未完成邮箱验证，请先前往邮箱点击验证链接",
     blacklisted_account: "该账号已进入黑名单，无法登录",
+    captcha_missing: "请先完成登录验证码",
+    captcha_invalid: "验证码错误，请换一题后重试",
+    captcha_expired: "验证码已过期，请换一题后重试",
+    captcha_used: "验证码已失效，请换一题后重试",
     session_disabled: "当前未启用登录会话",
     not_found: "请求的资源不存在",
     forbidden: "当前账号没有权限执行该操作",
@@ -91,6 +95,7 @@ export type BalanceResp = {
   monthly_max_overdraft_limit?: number;
   current_overdraft_points?: number;
   overdraft_exceeded?: boolean;
+  manual_blocked?: boolean;
 };
 
 export type NodeExclusivePointsBalance = {
@@ -1114,8 +1119,17 @@ export class ApiClient {
     return await this.getJson("/api/auth/me");
   }
 
-  async authLogin(username: string, password: string): Promise<{ ok: boolean }> {
-    return await this.postJson("/api/auth/login", { username, password });
+  async authLogin(username: string, password: string, captchaID: string, captchaOption: number): Promise<{ ok: boolean }> {
+    return await this.postJson("/api/auth/login", {
+      username,
+      password,
+      captcha_id: captchaID,
+      captcha_option: captchaOption,
+    });
+  }
+
+  async authLoginCaptcha(): Promise<RegisterCaptchaChallenge> {
+    return await this.getJson("/api/auth/login/captcha");
   }
 
   async authRegister(payload: {

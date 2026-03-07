@@ -17,13 +17,13 @@ type adminDisposableDomainUpsertReq struct {
 	Note    string `json:"note"`
 }
 
-func (s *Server) handleAuthRegisterCaptcha(c *gin.Context) {
+func (s *Server) issueAuthCaptcha(c *gin.Context) {
 	captchaID, err := randomTokenURLSafe(24)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	question, options, answerIndex, err := buildRegisterMathCaptcha()
+	question, options, answerIndex, err := buildNumericChoiceCaptcha()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -48,6 +48,14 @@ func (s *Server) handleAuthRegisterCaptcha(c *gin.Context) {
 		"options":    options,
 		"expire_at":  formatRFC3339InBeijing(expireAt),
 	})
+}
+
+func (s *Server) handleAuthLoginCaptcha(c *gin.Context) {
+	s.issueAuthCaptcha(c)
+}
+
+func (s *Server) handleAuthRegisterCaptcha(c *gin.Context) {
+	s.issueAuthCaptcha(c)
 }
 
 func (s *Server) handleAdminRegisterSecurityPolicy(c *gin.Context) {
