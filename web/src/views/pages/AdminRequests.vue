@@ -5,7 +5,11 @@
         <div class="section-title-wrap">
           <span class="section-icon"><el-icon><UserFilled /></el-icon></span>
           <div>
-          <div class="title">平台账号注册审核</div>
+          <div class="title">
+            <el-badge :is-dot="registrationTodoCount + profilePendingCount > 0" type="danger">
+              <span>平台账号注册审核</span>
+            </el-badge>
+          </div>
           <div class="sub">注册申请需审核通过后才创建平台账号</div>
           </div>
         </div>
@@ -41,11 +45,14 @@
         </el-form-item>
       </el-form>
 
-      <div class="section-inline-title">
+      <div class="section-inline-title order-pending-title">
         <span class="section-icon tone-pending"><el-icon><Clock /></el-icon></span>
-        <span class="title">待审核申请</span>
+        <el-badge :is-dot="registrationTodoCount > 0" type="danger">
+          <span class="title">平台账号待审核申请</span>
+        </el-badge>
+        <el-tag v-if="registrationTodoCount > 0" type="danger" size="small">{{ registrationTodoCount }}</el-tag>
       </div>
-      <el-table :data="registrationPendingRows" stripe height="280">
+      <el-table :data="registrationPendingRows" stripe height="280" class="order-pending-table">
         <el-table-column prop="request_id" label="ID" width="80" />
         <el-table-column prop="username" label="用户名" width="150" />
         <el-table-column prop="real_name" label="真实姓名" width="120" />
@@ -53,7 +60,7 @@
         <el-table-column prop="email" label="邮箱" min-width="220" />
         <el-table-column prop="advisor" label="导师" width="120" />
         <el-table-column prop="phone" label="电话" width="140" />
-        <el-table-column prop="created_at" label="提交时间" min-width="170" />
+        <el-table-column prop="created_at" label="提交时间" min-width="170" :formatter="tableTimeFormatter" />
         <el-table-column label="操作" width="220" fixed="right">
           <template #default="{ row }">
             <el-space>
@@ -78,11 +85,11 @@
         </el-table-column>
       </el-table>
 
-      <div class="section-inline-title">
+      <div class="section-inline-title order-conflict-title">
         <span class="section-icon tone-risk"><el-icon><WarningFilled /></el-icon></span>
         <span class="title">唯一性冲突申请（自动筛出）</span>
       </div>
-      <el-table :data="registrationConflictRows" stripe height="240" :row-class-name="conflictRowClassName">
+      <el-table :data="registrationConflictRows" stripe height="240" class="order-conflict-table" :row-class-name="conflictRowClassName">
         <el-table-column prop="request_id" label="ID" width="80" />
         <el-table-column prop="username" label="用户名" width="150" />
         <el-table-column prop="student_id" label="学号" width="140" />
@@ -105,32 +112,46 @@
         </el-table-column>
       </el-table>
 
-      <div class="section-inline-title">
+      <div class="section-inline-title order-rejected-title">
         <span class="section-icon tone-reject"><el-icon><Document /></el-icon></span>
-        <span class="title">退回申请（作废）</span>
+        <span class="title">平台账号退回申请情况（作废）</span>
       </div>
-      <el-table :data="registrationRejectedRows" stripe height="220">
+      <el-table :data="registrationRejectedRows" stripe height="220" class="order-rejected-table">
         <el-table-column prop="request_id" label="ID" width="80" />
         <el-table-column prop="username" label="用户名" width="150" />
         <el-table-column prop="real_name" label="真实姓名" width="120" />
         <el-table-column prop="student_id" label="学号" width="140" />
         <el-table-column prop="email" label="邮箱" min-width="220" />
         <el-table-column prop="reject_reason" label="退回原因" min-width="260" />
+        <el-table-column label="邮件通知" width="120">
+          <template #default="{ row }">
+            <el-tag v-if="row.reject_notify_mail_checked && row.reject_notify_mail_sent" type="success">成功</el-tag>
+            <el-tag v-else-if="row.reject_notify_mail_checked" type="warning">未发送</el-tag>
+            <el-tag v-else type="info">未记录</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="邮件结果" min-width="240">
+          <template #default="{ row }">
+            <span v-if="row.reject_notify_mail_checked">{{ row.reject_notify_mail_sent ? "已发送通知邮件" : (row.reject_notify_mail_error || "未发送") }}</span>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="reviewed_by" label="处理人" width="120" />
-        <el-table-column prop="reviewed_at" label="处理时间" min-width="170" />
+        <el-table-column prop="reviewed_at" label="处理时间" min-width="170" :formatter="tableTimeFormatter" />
       </el-table>
 
-      <el-divider />
-      <div class="section-inline-title">
+      <el-divider class="order-security-divider" />
+      <div class="section-inline-title order-security-title">
         <span class="section-icon tone-security"><el-icon><Lock /></el-icon></span>
         <span class="title">注册安全防护查询</span>
       </div>
       <el-alert
+        class="order-security-alert"
         :title="`当前策略：IP窗口 ${registerSecurityPolicy.ip_window_seconds || '-'}s（上限 ${registerSecurityPolicy.ip_limit || '-'}），邮箱窗口 ${registerSecurityPolicy.email_window_seconds || '-'}s（上限 ${registerSecurityPolicy.email_limit || '-'}），IP冷却 ${registerSecurityPolicy.ip_cooldown_seconds || '-'}s，邮箱冷却 ${registerSecurityPolicy.email_cooldown_seconds || '-'}s`"
         type="info"
         :closable="false"
       />
-      <el-form inline class="compact-form">
+      <el-form inline class="compact-form order-security-form">
         <el-form-item label="查询字段">
           <el-select v-model="registerSecurityField" style="width: 140px" @change="reloadRegisterSecurityEvents">
             <el-option label="全部" value="all" />
@@ -162,9 +183,9 @@
           <el-button :loading="registerSecurityLoading" type="primary" @click="reloadRegisterSecurityEvents">查询</el-button>
         </el-form-item>
       </el-form>
-      <el-table :data="registerSecurityEvents" stripe height="280">
+      <el-table :data="registerSecurityEvents" stripe height="280" class="order-security-table">
         <el-table-column prop="event_id" label="ID" width="90" />
-        <el-table-column prop="created_at" label="时间" min-width="170" />
+        <el-table-column prop="created_at" label="时间" min-width="170" :formatter="tableTimeFormatter" />
         <el-table-column prop="client_ip" label="IP" width="150" />
         <el-table-column prop="username" label="用户名" width="130" />
         <el-table-column prop="student_id" label="学号" width="130" />
@@ -173,11 +194,11 @@
         <el-table-column prop="reason" label="命中原因" min-width="220" />
       </el-table>
 
-      <div class="section-inline-title">
+      <div class="section-inline-title order-disposable-title">
         <span class="section-icon tone-security"><el-icon><Lock /></el-icon></span>
         <span class="title">临时邮箱域名黑名单</span>
       </div>
-      <el-form inline class="compact-form">
+      <el-form inline class="compact-form order-disposable-form">
         <el-form-item label="域名">
           <el-input v-model="newDisposableDomain" placeholder="例如 mailinator.com" />
         </el-form-item>
@@ -195,14 +216,14 @@
           <el-button :loading="disposableDomainLoading" @click="reloadDisposableDomains">刷新</el-button>
         </el-form-item>
       </el-form>
-      <el-table :data="disposableDomains" stripe height="220">
+      <el-table :data="disposableDomains" stripe height="220" class="order-disposable-table">
         <el-table-column prop="domain" label="域名" min-width="220" />
         <el-table-column label="状态" width="110">
           <template #default="{ row }">{{ row.enabled ? "启用" : "禁用" }}</template>
         </el-table-column>
         <el-table-column prop="note" label="备注" min-width="220" />
         <el-table-column prop="updated_by" label="更新人" width="120" />
-        <el-table-column prop="updated_at" label="更新时间" min-width="170" />
+        <el-table-column prop="updated_at" label="更新时间" min-width="170" :formatter="tableTimeFormatter" />
         <el-table-column label="操作" width="220" fixed="right">
           <template #default="{ row }">
             <el-space>
@@ -213,13 +234,13 @@
         </el-table-column>
       </el-table>
 
-      <el-divider />
+      <el-divider class="order-node-divider" />
 
-      <div class="section-inline-title">
+      <div class="section-inline-title order-node-title">
         <span class="section-icon tone-link"><el-icon><Connection /></el-icon></span>
         <span class="title">节点账号开通/绑定申请审核</span>
       </div>
-      <el-form inline>
+      <el-form inline class="order-node-form">
         <el-form-item label="状态">
           <el-select v-model="status" style="width: 160px" @change="reloadRequests">
             <el-option label="待审核" value="pending" />
@@ -235,7 +256,7 @@
         </el-form-item>
       </el-form>
 
-      <el-table :data="rows" stripe height="360" @selection-change="onSelectionChange" :row-class-name="requestRowClassName">
+      <el-table :data="rows" stripe height="360" class="order-node-table" @selection-change="onSelectionChange" :row-class-name="requestRowClassName">
         <el-table-column type="selection" width="45" />
         <el-table-column prop="request_id" label="ID" width="80" />
         <el-table-column prop="request_type" label="类型" width="100" />
@@ -250,7 +271,7 @@
         <el-table-column prop="status" label="状态" width="120" />
         <el-table-column prop="apply_count_by_billing" label="申请次数" width="100" />
         <el-table-column prop="duplicate_reason" label="风险提示" width="220" />
-        <el-table-column prop="created_at" label="提交时间" min-width="180" />
+        <el-table-column prop="created_at" label="提交时间" min-width="180" :formatter="tableTimeFormatter" />
         <el-table-column label="操作" width="220" fixed="right">
           <template #default="{ row }">
             <el-space>
@@ -268,7 +289,7 @@
                 type="danger"
                 :disabled="row.status !== 'pending'"
                 :loading="actionLoadingId === row.request_id"
-                @click="reject(row.request_id)"
+                @click="reject(row)"
               >
                 拒绝
               </el-button>
@@ -277,12 +298,15 @@
         </el-table-column>
       </el-table>
 
-      <el-divider />
-      <div class="section-inline-title">
+      <el-divider class="order-profile-divider" />
+      <div class="section-inline-title order-profile-title">
         <span class="section-icon tone-profile"><el-icon><Document /></el-icon></span>
-        <span class="title">平台账号资料关键信息变更审核</span>
+        <el-badge :is-dot="profilePendingCount > 0" type="danger">
+          <span class="title">平台账号资料关键信息变更审核</span>
+        </el-badge>
+        <el-tag v-if="profilePendingCount > 0" type="danger" size="small">{{ profilePendingCount }}</el-tag>
       </div>
-      <el-form inline>
+      <el-form inline class="order-profile-form">
         <el-form-item label="平台账号筛选">
           <el-input v-model="profileUsername" placeholder="按平台账号筛选" @keyup.enter="reloadProfileChanges" />
         </el-form-item>
@@ -298,7 +322,7 @@
           <el-button :loading="profileLoading" type="primary" @click="reloadProfileChanges">刷新</el-button>
         </el-form-item>
       </el-form>
-      <el-table :data="profileRows" stripe height="320">
+      <el-table :data="profileRows" stripe height="320" class="order-profile-table">
         <el-table-column prop="request_id" label="ID" width="80" />
         <el-table-column label="申请用户" width="140">
           <template #default="{ row }">
@@ -306,12 +330,60 @@
           </template>
         </el-table-column>
         <el-table-column prop="status" label="状态" width="100" />
-        <el-table-column prop="old_username" label="原用户名" width="120" />
-        <el-table-column prop="new_username" label="新用户名" width="120" />
-        <el-table-column prop="old_email" label="原邮箱" min-width="170" />
-        <el-table-column prop="new_email" label="新邮箱" min-width="170" />
-        <el-table-column prop="old_student_id" label="原学号" width="120" />
-        <el-table-column prop="new_student_id" label="新学号" width="120" />
+        <el-table-column label="原用户名" width="140">
+          <template #default="{ row }">
+            <span class="diff-text">
+              <template v-for="(seg, idx) in diffOldTokens(row.old_username, row.new_username)" :key="`ou-${row.request_id}-${idx}`">
+                <span :class="{ 'diff-changed': seg.changed }">{{ seg.text }}</span>
+              </template>
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="新用户名" width="140">
+          <template #default="{ row }">
+            <span class="diff-text">
+              <template v-for="(seg, idx) in diffNewTokens(row.old_username, row.new_username)" :key="`nu-${row.request_id}-${idx}`">
+                <span :class="{ 'diff-changed': seg.changed }">{{ seg.text }}</span>
+              </template>
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="原邮箱" min-width="190">
+          <template #default="{ row }">
+            <span class="diff-text">
+              <template v-for="(seg, idx) in diffOldTokens(row.old_email, row.new_email)" :key="`oe-${row.request_id}-${idx}`">
+                <span :class="{ 'diff-changed': seg.changed }">{{ seg.text }}</span>
+              </template>
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="新邮箱" min-width="190">
+          <template #default="{ row }">
+            <span class="diff-text">
+              <template v-for="(seg, idx) in diffNewTokens(row.old_email, row.new_email)" :key="`ne-${row.request_id}-${idx}`">
+                <span :class="{ 'diff-changed': seg.changed }">{{ seg.text }}</span>
+              </template>
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="原学号" width="140">
+          <template #default="{ row }">
+            <span class="diff-text">
+              <template v-for="(seg, idx) in diffOldTokens(row.old_student_id, row.new_student_id)" :key="`os-${row.request_id}-${idx}`">
+                <span :class="{ 'diff-changed': seg.changed }">{{ seg.text }}</span>
+              </template>
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="新学号" width="140">
+          <template #default="{ row }">
+            <span class="diff-text">
+              <template v-for="(seg, idx) in diffNewTokens(row.old_student_id, row.new_student_id)" :key="`ns-${row.request_id}-${idx}`">
+                <span :class="{ 'diff-changed': seg.changed }">{{ seg.text }}</span>
+              </template>
+            </span>
+          </template>
+        </el-table-column>
         <el-table-column prop="reason" label="变更备注" min-width="180" />
         <el-table-column label="操作" width="220">
           <template #default="{ row }">
@@ -344,8 +416,8 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from "vue";
-import { ElMessageBox } from "element-plus";
+import { computed, onMounted, reactive, ref } from "vue";
+import { ElMessage, ElMessageBox } from "element-plus";
 import {
   ApiClient,
   type ProfileChangeRequest,
@@ -359,6 +431,7 @@ import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
 import PlatformUserDetailDialog from "../../components/PlatformUserDetailDialog.vue";
 import { Clock, Connection, Document, Lock, UserFilled, WarningFilled } from "@element-plus/icons-vue";
+import { formatServerDateTime } from "../../lib/time";
 
 const loading = ref(false);
 const error = ref("");
@@ -366,6 +439,7 @@ const error = ref("");
 const registrationPendingRows = ref<RegistrationRequestView[]>([]);
 const registrationConflictRows = ref<RegistrationRequestView[]>([]);
 const registrationRejectedRows = ref<RegistrationRequest[]>([]);
+const registrationTodoCount = computed(() => Number(registrationPendingRows.value.length + registrationConflictRows.value.length));
 const registrationActionId = ref<number | null>(null);
 const registrationFilterField = ref("all");
 const registrationKeyword = ref("");
@@ -402,13 +476,30 @@ const selectedIds = ref<number[]>([]);
 const profileLoading = ref(false);
 const profileActionId = ref<number | null>(null);
 const profileRows = ref<ProfileChangeRequest[]>([]);
+const profilePendingCount = ref(0);
 const profileStatus = ref("pending");
 const profileUsername = ref("");
 const profileVisible = ref(false);
 const selectedProfileUsername = ref("");
 
+type DiffToken = {
+  text: string;
+  changed: boolean;
+};
+
+type DiffPair = {
+  old: DiffToken[];
+  neu: DiffToken[];
+};
+
+const diffPairCache = new Map<string, DiffPair>();
+
 function client() {
   return new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+}
+
+function tableTimeFormatter(_: unknown, __: unknown, cellValue: unknown): string {
+  return formatServerDateTime(String(cellValue ?? ""));
 }
 
 function formatConflictFields(fields?: string[]): string {
@@ -422,6 +513,103 @@ function conflictRowClassName() {
 
 function requestRowClassName({ row }: { row: UserRequest }) {
   return row.duplicate_flag ? "dup-row" : "";
+}
+
+function normalizeDiffValue(v: unknown): string {
+  if (v == null) return "";
+  return String(v);
+}
+
+function mergeDiffTokens(tokens: DiffToken[]): DiffToken[] {
+  if (tokens.length === 0) return tokens;
+  const out: DiffToken[] = [];
+  for (const tok of tokens) {
+    if (!tok.text) continue;
+    const prev = out[out.length - 1];
+    if (prev && prev.changed === tok.changed) {
+      prev.text += tok.text;
+      continue;
+    }
+    out.push({ text: tok.text, changed: tok.changed });
+  }
+  return out;
+}
+
+function buildCharDiffPair(oldValue: string, newValue: string): DiffPair {
+  const a = Array.from(oldValue);
+  const b = Array.from(newValue);
+  const n = a.length;
+  const m = b.length;
+  const dp: number[][] = Array.from({ length: n + 1 }, () => Array.from({ length: m + 1 }, () => 0));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      if (a[i] === b[j]) {
+        dp[i][j] = dp[i + 1][j + 1] + 1;
+      } else {
+        dp[i][j] = Math.max(dp[i + 1][j], dp[i][j + 1]);
+      }
+    }
+  }
+  const oldTokens: DiffToken[] = [];
+  const newTokens: DiffToken[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) {
+      oldTokens.push({ text: a[i], changed: false });
+      newTokens.push({ text: b[j], changed: false });
+      i++;
+      j++;
+      continue;
+    }
+    if (dp[i + 1][j] >= dp[i][j + 1]) {
+      oldTokens.push({ text: a[i], changed: true });
+      i++;
+    } else {
+      newTokens.push({ text: b[j], changed: true });
+      j++;
+    }
+  }
+  while (i < n) {
+    oldTokens.push({ text: a[i], changed: true });
+    i++;
+  }
+  while (j < m) {
+    newTokens.push({ text: b[j], changed: true });
+    j++;
+  }
+  return {
+    old: mergeDiffTokens(oldTokens),
+    neu: mergeDiffTokens(newTokens),
+  };
+}
+
+function diffPair(oldValue: unknown, newValue: unknown): DiffPair {
+  const oldText = normalizeDiffValue(oldValue);
+  const newText = normalizeDiffValue(newValue);
+  const key = `${oldText}\u0000${newText}`;
+  const cached = diffPairCache.get(key);
+  if (cached) return cached;
+  const built = buildCharDiffPair(oldText, newText);
+  if (diffPairCache.size > 2000) diffPairCache.clear();
+  diffPairCache.set(key, built);
+  return built;
+}
+
+function diffOldTokens(oldValue: unknown, newValue: unknown): DiffToken[] {
+  const oldText = normalizeDiffValue(oldValue);
+  const tokens = diffPair(oldValue, newValue).old;
+  if (tokens.length > 0) return tokens;
+  if (oldText) return [{ text: oldText, changed: false }];
+  return [{ text: "-", changed: normalizeDiffValue(newValue) !== "" }];
+}
+
+function diffNewTokens(oldValue: unknown, newValue: unknown): DiffToken[] {
+  const newText = normalizeDiffValue(newValue);
+  const tokens = diffPair(oldValue, newValue).neu;
+  if (tokens.length > 0) return tokens;
+  if (newText) return [{ text: newText, changed: false }];
+  return [{ text: "-", changed: normalizeDiffValue(oldValue) !== "" }];
 }
 
 async function reloadRegistration() {
@@ -580,14 +768,15 @@ async function rejectRegistration(id: number, defaultReason = "") {
   let reason = String(defaultReason || "");
   try {
     const r: any = await ElMessageBox.prompt(
-      "请填写退回理由（可留空）。",
+      "请填写退回理由（必填）。",
       "退回注册申请",
       {
         confirmButtonText: "确认退回",
         cancelButtonText: "取消",
         inputType: "textarea",
         inputValue: reason,
-        inputPlaceholder: "例如：请补充真实姓名/修改重复邮箱（可留空）",
+        inputPlaceholder: "例如：学号与已有账号冲突，请修改后重新提交",
+        inputValidator: (v: string) => String(v || "").trim().length > 0 || "退回理由不能为空",
       },
     );
     reason = String(r?.value || "").trim();
@@ -597,8 +786,13 @@ async function rejectRegistration(id: number, defaultReason = "") {
   registrationActionId.value = id;
   error.value = "";
   try {
-    await client().adminRejectRegistrationRequest(id, reason);
+    const r = await client().adminRejectRegistrationRequest(id, reason);
     await reloadRegistration();
+    if (r.mail_sent) {
+      ElMessage.success("退回成功，通知邮件已发送");
+    } else {
+      ElMessage.warning(`退回成功，但邮件未发送：${String(r.mail_error || "未知原因")}`);
+    }
   } catch (e: any) {
     error.value = e?.message ?? String(e);
   } finally {
@@ -633,11 +827,32 @@ async function approve(id: number) {
   }
 }
 
-async function reject(id: number) {
+async function reject(row: UserRequest) {
+  const id = Number(row.request_id || 0);
+  if (!id) return;
+  let reason = "";
+  if (String(row.request_type || "").trim() === "unbind") {
+    try {
+      const input: any = await ElMessageBox.prompt(
+        "请填写拒绝解绑申请理由（必填）。",
+        "拒绝解绑申请",
+        {
+          confirmButtonText: "确认拒绝",
+          cancelButtonText: "取消",
+          inputType: "textarea",
+          inputPlaceholder: "例如：当前理由不充分，请补充真实解绑原因后重提",
+          inputValidator: (v: string) => String(v || "").trim().length > 0 || "拒绝理由不能为空",
+        },
+      );
+      reason = String(input?.value || "").trim();
+    } catch {
+      return;
+    }
+  }
   actionLoadingId.value = id;
   error.value = "";
   try {
-    await client().adminRejectRequest(id);
+    await client().adminRejectRequest(id, reason);
     await reloadRequests();
   } catch (e: any) {
     error.value = e?.message ?? String(e);
@@ -675,15 +890,27 @@ async function reloadProfileChanges() {
   profileLoading.value = true;
   error.value = "";
   try {
-    const r = await client().adminProfileChangeRequests({
-      status: profileStatus.value,
-      username: profileUsername.value,
-      limit: 500,
-    });
+    const reqs = [
+      client().adminProfileChangeRequests({
+        status: profileStatus.value,
+        username: profileUsername.value,
+        limit: 500,
+      }),
+      profileStatus.value === "pending"
+        ? Promise.resolve<{ requests: ProfileChangeRequest[] } | null>(null)
+        : client().adminProfileChangeRequests({ status: "pending", limit: 2000 }),
+    ] as const;
+    const [r, pendingResp] = await Promise.all(reqs);
     profileRows.value = r.requests ?? [];
+    if (profileStatus.value === "pending") {
+      profilePendingCount.value = profileRows.value.length;
+    } else {
+      profilePendingCount.value = Number((pendingResp?.requests ?? []).length);
+    }
   } catch (e: any) {
     if (e?.status === 404) {
       profileRows.value = [];
+      profilePendingCount.value = 0;
       return;
     }
     error.value = e?.message ?? String(e);
@@ -763,6 +990,28 @@ onMounted(() => {
 .compact-form {
   margin-bottom: 2px;
 }
+.order-pending-title { order: 10; }
+.order-pending-table { order: 11; }
+.order-rejected-title { order: 20; }
+.order-rejected-table { order: 21; }
+.order-node-divider { order: 30; }
+.order-node-title { order: 31; }
+.order-node-form { order: 32; }
+.order-node-table { order: 33; }
+.order-conflict-title { order: 40; }
+.order-conflict-table { order: 41; }
+.order-profile-divider { order: 50; }
+.order-profile-title { order: 51; }
+.order-profile-form { order: 52; }
+.order-profile-table { order: 53; }
+.order-security-divider { order: 60; }
+.order-security-title { order: 61; }
+.order-security-alert { order: 62; }
+.order-security-form { order: 63; }
+.order-security-table { order: 64; }
+.order-disposable-title { order: 70; }
+.order-disposable-form { order: 71; }
+.order-disposable-table { order: 72; }
 .title {
   font-weight: 700;
 }
@@ -815,6 +1064,19 @@ onMounted(() => {
   margin-top: 4px;
   font-size: 12px;
   color: #6b7280;
+}
+.diff-text {
+  display: inline-block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+  line-height: 1.35;
+}
+.diff-changed {
+  color: #b91c1c;
+  background: #fee2e2;
+  border-radius: 3px;
+  padding: 0 1px;
 }
 :deep(.dup-row > td) {
   background: #fee2e2 !important;

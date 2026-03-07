@@ -41,7 +41,7 @@ func (m *controllerMetrics) observeReport(receivedAt time.Time, duplicate bool, 
 			m.actionsBlockUserTotal.Add(1)
 		case "unblock_user":
 			m.actionsUnblockUserTotal.Add(1)
-		case "kill_process":
+		case "kill_process", "kill_all_processes", "kill_all_user_processes":
 			m.actionsKillTotal.Add(1)
 		case "set_cpu_quota":
 			m.actionsCPUQuotaTotal.Add(1)
@@ -51,7 +51,7 @@ func (m *controllerMetrics) observeReport(receivedAt time.Time, duplicate bool, 
 	}
 }
 
-func (m *controllerMetrics) render(queueLen int) string {
+func (m *controllerMetrics) render() string {
 	var b strings.Builder
 	write := func(name string, v int64) {
 		_, _ = fmt.Fprintf(&b, "%s %d\n", name, v)
@@ -67,7 +67,6 @@ func (m *controllerMetrics) render(queueLen int) string {
 	write("gpuops_controller_actions_set_cpu_quota_total", m.actionsCPUQuotaTotal.Load())
 	write("gpuops_controller_actions_set_memory_limit_total", m.actionsMemoryLimitTotal.Load())
 
-	write("gpuops_controller_queue_length", int64(queueLen))
 	write("gpuops_controller_last_report_unix", m.lastReportUnix.Load())
 	return b.String()
 }

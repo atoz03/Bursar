@@ -42,7 +42,7 @@
         <template #default="{row}">{{ row.pinned ? '是' : '否' }}</template>
       </el-table-column>
       <el-table-column prop="created_by" label="发布人" width="120" />
-      <el-table-column prop="created_at" label="发布时间" width="180" />
+      <el-table-column prop="created_at" label="发布时间" width="180" :formatter="tableTimeFormatter" />
       <el-table-column label="内容" min-width="260">
         <template #default="{ row }">
           <div class="md-body" v-html="renderMarkdown(row.content)" />
@@ -64,6 +64,7 @@ import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
 import { renderMarkdown } from "../../lib/markdown";
 import { Bell, Document } from "@element-plus/icons-vue";
+import { formatServerDateTime } from "../../lib/time";
 
 const loading = ref(false);
 const publishing = ref(false);
@@ -72,6 +73,10 @@ const rows = ref<Announcement[]>([]);
 const title = ref("");
 const content = ref("");
 const pinned = ref(false);
+
+function tableTimeFormatter(_: unknown, __: unknown, cellValue: unknown): string {
+  return formatServerDateTime(String(cellValue ?? ""));
+}
 
 async function reload() {
   loading.value = true;

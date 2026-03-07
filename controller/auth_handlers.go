@@ -66,15 +66,10 @@ type mailSettingsReq struct {
 
 func (s *Server) handleAuthMe(c *gin.Context) {
 	writeWithServerTime := func(status int, body gin.H) {
-		// 前端统一按北京时间展示，避免跨机房/跨时区部署造成页面时间错乱。
-		beijing := time.FixedZone("CST", 8*60*60)
-		if loc, err := time.LoadLocation("Asia/Shanghai"); err == nil {
-			beijing = loc
-		}
-		now := time.Now().In(beijing)
-		body["server_now"] = now.Format(time.RFC3339)
-		body["server_tz_name"] = "Asia/Shanghai"
-		body["server_tz_offset_minutes"] = 8 * 60
+		now := nowInBeijing()
+		body["server_now"] = formatRFC3339InBeijing(now)
+		body["server_tz_name"] = beijingTZName
+		body["server_tz_offset_minutes"] = beijingOffsetMinutes(now)
 		c.JSON(status, body)
 	}
 
@@ -109,8 +104,9 @@ func (s *Server) handleAuthMe(c *gin.Context) {
 		"can_view_board":      (perms & permViewBoard) != 0,
 		"can_view_nodes":      (perms & permViewNodes) != 0,
 		"can_manage_nodes":    (perms & permManageNodes) != 0,
+		"can_manage_points":   (perms & permManagePoints) != 0,
 		"can_review_requests": (perms & permReviewRequests) != 0,
-		"expires_at":          time.Unix(p.ExpUnix, 0).UTC().Format(time.RFC3339),
+		"expires_at":          formatRFC3339InBeijing(time.Unix(p.ExpUnix, 0)),
 		"csrf_token":          p.Nonce,
 	})
 }
@@ -138,7 +134,7 @@ func (s *Server) handleAuthLogin(c *gin.Context) {
 		return
 	}
 	role := "admin"
-	perms := uint32(permViewBoard | permViewNodes | permManageNodes | permReviewRequests)
+	perms := uint32(permViewBoard | permViewNodes | permManageNodes | permReviewRequests | permManagePoints)
 	if !ok {
 		power, okPower, err := s.store.VerifyPowerUserPassword(c.Request.Context(), req.Username, req.Password)
 		if err != nil {
@@ -156,6 +152,9 @@ func (s *Server) handleAuthLogin(c *gin.Context) {
 			}
 			if power.CanManageNodes {
 				perms |= permManageNodes
+			}
+			if power.CanManagePoints {
+				perms |= permManagePoints
 			}
 			if power.CanReviewRequests {
 				perms |= permReviewRequests

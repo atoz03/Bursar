@@ -8,7 +8,7 @@
 - **控制器（Go + Gin + PostgreSQL）**：落库、计费、限制动作下发、管理 API
 - **Web 管理端（Vue3）**：管理员与普通用户分角色界面
 - **用户能力**：注册、登录、找回密码、修改密码、查询个人余额/用量、管理个人服务器账号映射
-- **管理员能力**：运营看板、节点状态、价格配置、注册审核、账号映射管理、SSH 白/黑/豁免名单、邮件配置与测试发送、容灾同步状态查看
+- **管理员能力**：运营看板、节点状态、价格配置、注册审核、账号映射管理、SSH 白/黑/豁免名单、邮件配置与测试发送、容灾同步状态实时查看与配置（`/admin/ha` 支持自动/手动同步、日志、回切）
 
 ---
 
@@ -38,7 +38,7 @@
 - 作用：在“节点状态监控 -> 节点详情”中生成“疑似恶意用户名单”和“安全审计日志”，支持管理员一键拉黑（SSH 黑名单）。
 
 ### 4) 资源预留策略
-- 可选 CPU 预留：`ENABLE_USER_SLICE_CPU_RESERVE=1` 时给 `user.slice` 设置 CPU 上限（默认关闭）。
+- 默认开启 CPU 预留：`ENABLE_USER_SLICE_CPU_RESERVE=1`，并通过 `USER_SLICE_CPU_RESERVE_PERCENT` 给 `user.slice` 设置 CPU 上限（默认 `95`，约保留 `5%` 给系统）。
 - 默认内存预留：给系统保留 `8G`（`USER_SLICE_MEMORY_RESERVE_GB=8`），避免用户任务把节点内存打满导致卡死。
 
 ---
@@ -62,7 +62,7 @@
 
 补充说明：
 - `install_agent_local.sh` 默认支持 `NODE_ID` 自动识别（按本机 IP 匹配 `my_ssh_keys/server_ssh_map.csv`）。
-- `install_agent_local.sh` 已内置 SSH 防爆破（`fail2ban`）和 `user.slice` 资源预留（默认保留 `8G` 内存，可通过 `USER_SLICE_MEMORY_RESERVE_GB` 调整）。
+- `install_agent_local.sh` 已内置 SSH 防爆破（`fail2ban`）和 `user.slice` 资源预留（默认开启 CPU 预留 + 保留 `8G` 内存，可通过 `USER_SLICE_CPU_RESERVE_PERCENT`、`USER_SLICE_MEMORY_RESERVE_GB` 调整）。
 - `install_agent_local.sh` 与 `install_controller_local.sh` 会自动调用 `install_home_reserve_guard.sh`，可通过 `HOME_RESERVE_GB` 一行调整预留空间。
 - `distribute_workspace.sh` 支持并发，默认 `PARALLEL=6`。
 - `distribute_workspace.sh`/`check_server_connectivity.sh` 默认都是全量读取 `my_ssh_keys/server_ssh_map.csv`，不是只跑单节点。
@@ -138,10 +138,19 @@ go env -w GOSUMDB=off
 
 ```bash
 cd /home/gpuops/gpu-ops
-docker-compose up -d
+if docker compose version >/dev/null 2>&1; then
+  DC="docker compose"
+elif command -v docker-compose >/dev/null 2>&1; then
+  DC="docker-compose"
+else
+  echo "未检测到 docker compose / docker-compose，请先安装 docker-compose-plugin"
+  exit 1
+fi
 
-docker-compose ps -a
-docker-compose logs --tail=200 postgres
+$DC up -d
+
+$DC ps -a
+$DC logs --tail=200 postgres
 ```
 
 默认数据库：`gpuops`，账号密码：`gpuops/gpuops`，端口：`5432`。
@@ -214,7 +223,15 @@ go run .
 ```bash
 # 1) 控制端：数据库
 cd /home/gpuops/gpu-ops
-docker-compose up -d
+if docker compose version >/dev/null 2>&1; then
+  DC="docker compose"
+elif command -v docker-compose >/dev/null 2>&1; then
+  DC="docker-compose"
+else
+  echo "未检测到 docker compose / docker-compose，请先安装 docker-compose-plugin"
+  exit 1
+fi
+$DC up -d
 
 # 2) 控制端：控制器
 cd /home/gpuops/gpu-ops/controller
@@ -257,6 +274,7 @@ NODE_ID=60000 CONTROLLER_URL=http://127.0.0.1:60039 AGENT_TOKEN=<agent_token> go
 - 黑名单：`GET/POST/DELETE /api/admin/blacklist`
 - 豁免名单：`GET/POST/DELETE /api/admin/exemptions`
 - 容灾状态：`GET /api/admin/ha/status`（管理员）、`GET /api/ha/status`（主备内部）
+- 容灾同步：`GET/POST /api/admin/ha/sync/config`、`GET /api/admin/ha/sync/runs`、`POST /api/admin/ha/sync/now`、`POST /api/admin/ha/failover/activate`
 - 运营统计：`GET /api/admin/stats/users`、`GET /api/admin/stats/monthly`、`GET /api/admin/stats/recharges`
 - 积分管理：`GET /api/admin/points/users`、`POST /api/admin/points/adjust`、`POST /api/admin/points/batch-grant`
 - 月初发放：`GET/POST /api/admin/points/monthly-config`、`GET /api/admin/points/monthly-reset/status`、`POST /api/admin/points/monthly-reset`
@@ -274,12 +292,12 @@ echo "gpuops ALL=(root) NOPASSWD: /bin/bash /home/gpuops/gpu-ops/scripts/install
 sudo chmod 440 /etc/sudoers.d/gpu-deploy && \
 sudo chown root:root /etc/sudoers.d/gpu-deploy && \
 sudo visudo -cf /etc/sudoers.d/gpu-deploy && \
-SSH_GUARD_EXCLUDE_USERS="root gpuops" USER_SLICE_MEMORY_RESERVE_GB=8 HOME_RESERVE_GB=8 CONTROLLER_URL=http://192.0.2.10:60039 AGENT_TOKEN=6af5911256a62c73d8ecaaf60ffec363f23247a0cf262a8f7c78b188fdeaaf4b bash scripts/install_agent_local.sh && \
+SSH_GUARD_EXCLUDE_USERS="root gpuops" ENABLE_USER_SLICE_CPU_RESERVE=1 USER_SLICE_CPU_RESERVE_PERCENT=90 USER_SLICE_MEMORY_RESERVE_GB=8 HOME_RESERVE_GB=8 CONTROLLER_URL=http://192.0.2.10:60039 AGENT_TOKEN=6af5911256a62c73d8ecaaf60ffec363f23247a0cf262a8f7c78b188fdeaaf4b bash scripts/install_agent_local.sh && \
 sudo systemctl enable --now gpu-node-agent && \
 sudo systemctl status gpu-node-agent --no-pager
 ```
 
-说明：`scripts/install_agent_local.sh` 默认已经会安装并启用 `gpu-node-agent`，上述命令用于手动确认或补开启。`USER_SLICE_MEMORY_RESERVE_GB` 默认 `8`，按节点实际情况可改为 `6`、`10` 等；`HOME_RESERVE_GB` 可改成任意整数（单位 GB），例如 `HOME_RESERVE_GB=12`。
+说明：`scripts/install_agent_local.sh` 默认已经会安装并启用 `gpu-node-agent`，上述命令用于手动确认或补开启。`USER_SLICE_CPU_RESERVE_PERCENT` 默认 `95`（预留约 `5%` CPU 给系统，保证 SSH 登录和系统服务响应），可按需改为 `90`、`85`；`USER_SLICE_MEMORY_RESERVE_GB` 默认 `8`，按节点实际情况可改为 `6`、`10` 等；`HOME_RESERVE_GB` 可改成任意整数（单位 GB），例如 `HOME_RESERVE_GB=12`。
 
 ---
 
@@ -289,7 +307,7 @@ sudo systemctl status gpu-node-agent --no-pager
 # 分发最新版脚本给计算节点
 bash ./scripts/distribute_workspace.sh
 # 一键并发分发并“仅重装已安装过 agent 的节点”，结果写入当前目录“计算节点部署情况.txt”
-cd /home/gpuops/gpu-ops && CONTROLLER_URL=http://192.0.2.10:60039 AGENT_TOKEN=6af5911256a62c73d8ecaaf60ffec363f23247a0cf262a8f7c78b188fdeaaf4b SSH_GUARD_EXCLUDE_USERS="root gpuops" USER_SLICE_MEMORY_RESERVE_GB=8 HOME_RESERVE_GB=8 PARALLEL=8 bash scripts/deploy_installed_nodes_only.sh
+cd /home/gpuops/gpu-ops && CONTROLLER_URL=http://192.0.2.10:60039 AGENT_TOKEN=6af5911256a62c73d8ecaaf60ffec363f23247a0cf262a8f7c78b188fdeaaf4b SSH_GUARD_EXCLUDE_USERS="root gpuops" ENABLE_USER_SLICE_CPU_RESERVE=1 USER_SLICE_CPU_RESERVE_PERCENT=95 USER_SLICE_MEMORY_RESERVE_GB=8 HOME_RESERVE_GB=8 PARALLEL=8 bash scripts/deploy_installed_nodes_only.sh
 # 计算节点服务开机自启（在每个计算节点执行一次）
 sudo systemctl enable --now gpu-node-agent
 sudo systemctl status gpu-node-agent --no-pager
@@ -323,6 +341,198 @@ systemctl list-timers --all | grep -E 'gpu-ssh-guard-(sync|enforce)\.timer|gpu-h
 
 ---
 
+
+## 🚀 60019 容灾一键部署（推荐）
+
+你给定的容灾节点（`60019`）可直接执行以下命令完成：
+- 容灾控制器部署（端口可改，默认 `60019`，不是 `60039`）
+- 主备工具版本一致化校验（go/node/pnpm/docker/psql）
+- 首次主→备全量同步（controller/web/dist/数据库）
+- 自动同步策略写入（默认每天凌晨 `03:00`）
+
+```bash
+cd /home/gpuops/gpu-ops
+PRIMARY_HOST=<主控制节点IP> \
+DR_SSH_USER=<60019-SSH用户> \
+DR_CONTROLLER_PORT=60019 \
+SYNC_INTERVAL_DAYS=1 \
+SYNC_START_HOUR=3 \
+bash scripts/deploy_dr_node_60019.sh
+```
+
+说明：
+- 默认读取容灾私钥：`/home/gpuops/gpu-ops/my_ssh_keys/node_60019.txt`。
+- 可在管理界面 `/admin/ha` 修改“每隔几天同步、几点开始、容灾端口、手动正反向同步、查看上次同步时间与日志”。  
+
+## 🛡️ 将 `60009` 改为容灾节点（退出计算节点）
+
+目标：
+- `60009` 不再作为计算节点上报（不再运行 `gpu-node-agent`）。
+- `60009` 改为控制器备机（`ha_role=standby`）。
+- 备机 controller 版本与主控完全一致（可对齐二进制 + 前端 dist）。
+- 自动实时探测主控健康，主控故障自动切到备机，主控恢复后自动回切。
+- 管理后台在 `/admin/ha` 实时查看主备状态（自动刷新）。
+
+### 1) 在 `60009` 上停止并禁用计算节点服务
+
+```bash
+sudo systemctl stop gpu-node-agent gpu-ssh-guard-sync.timer gpu-ssh-guard-enforce.timer gpu-home-reserve-enforce.timer
+sudo systemctl disable gpu-node-agent gpu-ssh-guard-sync.timer gpu-ssh-guard-enforce.timer gpu-home-reserve-enforce.timer
+systemctl is-active gpu-node-agent gpu-ssh-guard-sync.timer gpu-ssh-guard-enforce.timer gpu-home-reserve-enforce.timer
+```
+
+### 2) （可选）从控制器清理 `60009` 的“计算节点实时状态”
+
+> 下面只清理节点运行态/策略/映射，不删除历史 `usage_records` 计费记录。
+
+```bash
+cd /home/gpuops/gpu-ops
+if docker compose version >/dev/null 2>&1; then
+  DC="docker compose"
+elif command -v docker-compose >/dev/null 2>&1; then
+  DC="docker-compose"
+else
+  echo "未检测到 docker compose / docker-compose，请先安装 docker-compose-plugin"
+  exit 1
+fi
+$DC exec -T postgres psql -U gpuops -d gpuops <<'SQL'
+BEGIN;
+DELETE FROM node_user_cpu_limits      WHERE node_id='60009';
+DELETE FROM node_user_memory_limits   WHERE node_id='60009';
+DELETE FROM node_user_disk_quotas     WHERE node_id='60009';
+DELETE FROM node_local_users          WHERE node_id='60009';
+DELETE FROM node_runtime_snapshots    WHERE node_id='60009';
+DELETE FROM node_security_events      WHERE node_id='60009';
+DELETE FROM node_policies             WHERE node_id='60009';
+DELETE FROM node_exclusive_gpu_users  WHERE node_id='60009';
+DELETE FROM node_exclusive_users      WHERE node_id='60009';
+DELETE FROM node_view_acl             WHERE node_id='60009';
+DELETE FROM user_node_accounts        WHERE node_id='60009';
+DELETE FROM nodes                     WHERE node_id='60009';
+COMMIT;
+SQL
+```
+
+### 3) 配置主备控制器（主机与 `60009` 互指）
+
+先生成一份共享 token（两边相同）：
+
+```bash
+openssl rand -hex 32
+```
+
+主控制器（primary）配置示例：
+
+```bash
+cd /home/gpuops/gpu-ops
+sed -i 's/^ha_enabled:.*/ha_enabled: true/' config/controller.yaml
+sed -i 's/^ha_node:.*/ha_node: "controller-primary"/' config/controller.yaml
+sed -i 's/^ha_role:.*/ha_role: "primary"/' config/controller.yaml
+sed -i 's#^ha_peer_url:.*#ha_peer_url: "http://<60009-IP>:60039"#' config/controller.yaml
+sed -i 's#^ha_token:.*#ha_token: "<同一份HA_TOKEN>"#' config/controller.yaml
+sudo systemctl restart gpu-controller
+```
+
+`60009`（standby）配置示例：
+
+```bash
+cd /home/gpuops/gpu-ops
+sed -i 's/^ha_enabled:.*/ha_enabled: true/' config/controller.yaml
+sed -i 's/^ha_node:.*/ha_node: "controller-60009"/' config/controller.yaml
+sed -i 's/^ha_role:.*/ha_role: "standby"/' config/controller.yaml
+sed -i 's#^ha_peer_url:.*#ha_peer_url: "http://<PRIMARY-IP>:60039"#' config/controller.yaml
+sed -i 's#^ha_token:.*#ha_token: "<同一份HA_TOKEN>"#' config/controller.yaml
+cd /home/gpuops/gpu-ops && HOME_RESERVE_GB=8 bash scripts/install_controller_local.sh
+sudo systemctl restart gpu-controller
+```
+
+说明：
+- 建议主备控制器连接同一个 PostgreSQL（`database_dsn` 一致），这样 `/admin/ha` 更容易保持“已同步”。
+- 主备间 `/api/ha/status` 会走 `X-Agent-Token` 鉴权，因此两边 `agent_token` 也要一致。
+
+### 4) 验证容灾状态
+
+```bash
+curl -s -H "Authorization: Bearer <admin_token>" http://127.0.0.1:60039/api/admin/ha/status | jq
+```
+
+后台页面：`/admin/ha`（自动刷新）。
+
+### 5) 让备机版本与主控完全一致（推荐）
+
+在 `60009`（standby）执行：
+
+```bash
+cd /home/gpuops/gpu-ops
+PRIMARY_HOST=gpuops@<PRIMARY-IP> \
+SYNC_WEB_DIST=1 \
+RESTART_SERVICE=1 \
+bash scripts/sync_controller_release_from_primary.sh
+```
+
+说明：
+- 该脚本会把主控 `/usr/local/bin/gpu-controller` 拉到备机并校验 `sha256` 一致。
+- 默认同步 `web/dist`，并重启 `gpu-controller`。
+- `--version` 信息也会在脚本末尾输出，便于人工核对。
+
+### 6) 开启自动故障切换/恢复回切（VIP + Keepalived）
+
+先选一个业务 VIP（示例 `192.0.2.10/24`），并让所有 Node Agent / 管理访问都走这个 VIP 的 `:60039`。
+
+主控（primary）执行：
+
+```bash
+cd /home/gpuops/gpu-ops
+HA_ROLE=primary \
+HA_INTERFACE=eth0 \
+HA_VIP=192.0.2.10/24 \
+HA_PEER_IP=<60009-IP> \
+HA_AUTH_PASS=gpuhavip \
+CONTROLLER_HEALTH_URL=http://127.0.0.1:60039/healthz \
+bash scripts/install_ha_vip_local.sh
+```
+
+备机（standby）执行：
+
+```bash
+cd /home/gpuops/gpu-ops
+HA_ROLE=standby \
+HA_INTERFACE=eth0 \
+HA_VIP=192.0.2.10/24 \
+HA_PEER_IP=<PRIMARY-IP> \
+HA_AUTH_PASS=gpuhavip \
+CONTROLLER_HEALTH_URL=http://127.0.0.1:60039/healthz \
+bash scripts/install_ha_vip_local.sh
+```
+
+说明：
+- `install_ha_vip_local.sh` 会安装 `keepalived`，每 2 秒检测本机 `gpu-controller + /healthz`。
+- primary 优先级更高：故障时 VIP 自动漂移到 standby；primary 修复后会自动抢回 VIP（回切）。
+
+### 7) 演练自动切换与回切
+
+在 primary 执行（模拟故障）：
+
+```bash
+sudo systemctl stop gpu-controller
+```
+
+在 standby 看 VIP 是否接管：
+
+```bash
+ip -4 addr show dev <网卡名> | grep 192.0.2.10
+```
+
+修复后在 primary 执行：
+
+```bash
+sudo systemctl start gpu-controller
+```
+
+等待数秒后，VIP 应自动回到 primary。
+
+---
+
 ## 🛠️ scripts 目录说明（作用 + 用法）
 
 > 路径：`/home/gpuops/gpu-ops/scripts`
@@ -331,6 +541,10 @@ systemctl list-timers --all | grep -E 'gpu-ssh-guard-(sync|enforce)\.timer|gpu-h
 |---|---|---|
 | `install_deps_ubuntu2204.sh` | Ubuntu 22.04 一键安装项目依赖（Go/Node/pnpm/Docker 等） | `bash scripts/install_deps_ubuntu2204.sh` |
 | `install_controller_local.sh` | 在控制器本机安装并启用 `gpu-controller` systemd 服务 | `cd /home/gpuops/gpu-ops && bash scripts/install_controller_local.sh` |
+| `sync_controller_release_from_primary.sh` | 备机从主控拉取 controller 二进制（+可选 web/dist），确保版本完全一致 | `PRIMARY_HOST=gpuops@<PRIMARY-IP> bash scripts/sync_controller_release_from_primary.sh` |
+| `ha_sync_worker.sh` | 容灾同步执行器（主→备 / 备→主，含版本一致性校验、二进制/前端/数据库同步） | `HA_SYNC_DIRECTION=primary_to_standby DR_HOST=<DR-IP> DR_SSH_USER=<user> DR_KEY_FILE=... bash scripts/ha_sync_worker.sh` |
+| `deploy_dr_node_60019.sh` | 一键部署 60019 容灾节点并写入自动同步策略（默认每天 03:00） | `PRIMARY_HOST=<PRIMARY-IP> DR_SSH_USER=<user> DR_CONTROLLER_PORT=60019 bash scripts/deploy_dr_node_60019.sh` |
+| `install_ha_vip_local.sh` | 安装 Keepalived VRRP VIP，主备自动切换与修复回切 | `HA_ROLE=primary HA_INTERFACE=eth0 HA_VIP=192.0.2.10/24 HA_PEER_IP=<standby-ip> bash scripts/install_ha_vip_local.sh` |
 | `install_agent_local.sh` | 在计算节点本机一键安装并启用 `gpu-node-agent` | `NODE_ID=60001 CONTROLLER_URL=http://<控制器IP>:60039 AGENT_TOKEN=<token> bash scripts/install_agent_local.sh` |
 | `deploy_agent.sh` | 从控制端批量部署 agent 到多台节点 | `NODES='60000:192.0.2.10 60001:192.0.2.10' AGENT_TOKEN=<token> CONTROLLER_URL=http://<控制器IP>:60039 bash scripts/deploy_agent.sh` |
 | `deploy_controller.sh` | 部署 controller 二进制与配置到远端控制器主机 | `HOST=<控制器主机> CONTROLLER_BIN=./controller/controller bash scripts/deploy_controller.sh` |

@@ -14,7 +14,14 @@ import (
 )
 
 func main() {
+	setDefaultTimezone()
+	initControllerBuildInfo()
+
 	args := parseArgs()
+	if args.showVer {
+		printControllerVersion()
+		return
+	}
 
 	cfgPath := args.configPath
 	if cfgPath == "" {
@@ -47,6 +54,8 @@ func main() {
 
 	srv := NewServer(cfg, store)
 	srv.StartPointsMonthlyResetScheduler(context.Background())
+	srv.StartUsageAutoDeleteScheduler(context.Background())
+	srv.StartHASyncScheduler(context.Background())
 
 	internalAddr := strings.TrimSpace(cfg.InternalListenAddr)
 	if internalAddr == "" {

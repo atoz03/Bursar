@@ -37,7 +37,7 @@
     </el-tabs>
     <el-alert
       v-if="mode === 'exemptions'"
-      title="豁免账号权限：1) 登录校验最高优先级，忽略黑名单/白名单/注册映射限制；2) 不受“清除SSH状态”和黑名单加入时的强制断连影响；3) 控制器不可达时仍可通过本地豁免缓存登录。"
+      title="豁免账号权限：1) 登录校验最高优先级，忽略黑名单/白名单/注册映射限制；2) 不受“清除SSH状态”和黑名单加入时的强制断连影响；3) 控制器不可达时仍可通过本地豁免缓存登录；4) 不扣积分（仅记录使用），且不触发积分限速/欠费动作。"
       type="warning"
       show-icon
       class="mb"
@@ -146,6 +146,11 @@
           <el-tag :type="row.source_type === 'platform' ? 'success' : 'info'" effect="plain">
             {{ row.source_type === "platform" ? "平台账号" : "节点账号" }}
           </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column v-if="mode === 'exemptions'" label="积分策略" width="180">
+        <template #default>
+          <el-tag type="warning" effect="plain">不扣积分</el-tag>
         </template>
       </el-table-column>
       <el-table-column prop="reason" label="理由" min-width="220" />

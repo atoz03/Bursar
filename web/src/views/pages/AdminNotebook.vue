@@ -37,7 +37,7 @@
       <el-table-column prop="title" label="标题" min-width="180" />
       <el-table-column prop="content" label="内容" min-width="360" show-overflow-tooltip />
       <el-table-column prop="updated_by" label="更新人" width="130" />
-      <el-table-column prop="updated_at" label="更新时间" min-width="180" />
+      <el-table-column prop="updated_at" label="更新时间" min-width="180" :formatter="tableTimeFormatter" />
       <el-table-column label="操作" width="180" fixed="right">
         <template #default="{ row }">
           <el-space>
@@ -77,6 +77,7 @@ import { ApiClient, type AdminNote } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
 import { Document } from "@element-plus/icons-vue";
+import { formatServerDateTime } from "../../lib/time";
 
 const loading = ref(false);
 const saving = ref(false);
@@ -93,6 +94,10 @@ const form = reactive({
   title: "",
   content: "",
 });
+
+function tableTimeFormatter(_: unknown, __: unknown, cellValue: unknown): string {
+  return formatServerDateTime(String(cellValue ?? ""));
+}
 
 function client() {
   return new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });

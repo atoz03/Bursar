@@ -28,9 +28,10 @@ type cpuSample struct {
 
 func (a *NodeAgent) CollectMetrics(ctx context.Context) (*MetricsData, error) {
 	metrics := &MetricsData{
-		NodeID:    a.nodeID,
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-		Users:     []UserProcess{},
+		NodeID:       a.nodeID,
+		Timestamp:    formatRFC3339InBeijing(nowInBeijing()),
+		AgentVersion: currentAgentVersionLabel(),
+		Users:        []UserProcess{},
 	}
 	metrics.CPUCount = a.numCPU
 	if infos, err := cpu.InfoWithContext(ctx); err == nil && len(infos) > 0 {
@@ -292,13 +293,13 @@ func collectNodeLocalUsers(ctx context.Context) []NodeLocalUser {
 		homeDir := filepath.Join("/home", username)
 		var createdAt *string
 		if ts, ok := detectHomeCreatedAt(homeDir); ok {
-			v := ts.UTC().Format(time.RFC3339)
+			v := formatRFC3339InBeijing(ts)
 			createdAt = &v
 		}
 		var lastLoginAt *string
 		loginCtx, cancelLogin := context.WithTimeout(ctx, 1200*time.Millisecond)
 		if ts, ok := detectLastLoginAt(loginCtx, username); ok {
-			v := ts.UTC().Format(time.RFC3339)
+			v := formatRFC3339InBeijing(ts)
 			lastLoginAt = &v
 		}
 		cancelLogin()

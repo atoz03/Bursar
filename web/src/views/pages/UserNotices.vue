@@ -24,11 +24,6 @@
       <el-alert v-if="error" :title="error" type="error" show-icon class="mb" />
 
       <el-card class="mb">
-        <template #header><b>用户准则</b></template>
-        <div class="md-body" v-html="renderMarkdown(guidelineContent)" />
-      </el-card>
-
-      <el-card>
         <template #header>
           <div class="row">
             <b>公告通知</b>
@@ -39,10 +34,15 @@
         <div v-for="a in announcements" :key="a.announcement_id" class="ann-item">
           <div class="ann-head">
             <div class="ann-title">{{ a.pinned ? "📌 " : "" }}{{ a.title }}</div>
-            <div class="ann-time">{{ fmtTime(a.created_at) }}</div>
+            <div class="ann-time">发布时间：{{ fmtTime(a.created_at) }}</div>
           </div>
           <div class="md-body" v-html="renderMarkdown(a.content)" />
         </div>
+      </el-card>
+
+      <el-card>
+        <template #header><b>用户准则</b></template>
+        <div class="md-body" v-html="renderMarkdown(guidelineContent)" />
       </el-card>
     </el-card>
   </div>
@@ -54,7 +54,7 @@ import { ApiClient, type Announcement } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
 import { renderMarkdown } from "../../lib/markdown";
-import { formatServerHMS } from "../../lib/time";
+import { formatServerDateTime } from "../../lib/time";
 
 const loading = ref(false);
 const error = ref("");
@@ -67,7 +67,7 @@ function noticeSeenKey(): string {
 }
 
 function fmtTime(v: string): string {
-  return formatServerHMS(v);
+  return formatServerDateTime(v);
 }
 
 function markAnnouncementSeen(rows: Announcement[]) {

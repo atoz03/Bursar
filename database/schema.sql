@@ -27,11 +27,23 @@ CREATE TABLE IF NOT EXISTS usage_records (
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS process_kill_records (
+    record_id BIGSERIAL PRIMARY KEY,
+    node_id VARCHAR(50) NOT NULL,
+    local_username VARCHAR(64) NOT NULL DEFAULT '',
+    billing_username VARCHAR(50) NOT NULL DEFAULT '',
+    action_type VARCHAR(40) NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    pids_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS recharge_records (
     recharge_id SERIAL PRIMARY KEY,
     username VARCHAR(50) NOT NULL,
     amount DECIMAL(10,2) NOT NULL,
     method VARCHAR(50) NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
@@ -69,6 +81,7 @@ CREATE TABLE IF NOT EXISTS nodes (
     gpu_count INT NOT NULL DEFAULT 0,
     os_version TEXT NOT NULL DEFAULT '',
     kernel_version TEXT NOT NULL DEFAULT '',
+    agent_version TEXT NOT NULL DEFAULT '',
     node_ip TEXT NOT NULL DEFAULT '',
     node_mac TEXT NOT NULL DEFAULT '',
     disk_total_gb DOUBLE PRECISION NOT NULL DEFAULT 0,
@@ -118,6 +131,42 @@ CREATE TABLE IF NOT EXISTS node_user_disk_quotas (
 CREATE INDEX IF NOT EXISTS idx_node_user_disk_quotas_node_mount
     ON node_user_disk_quotas(node_id, mountpoint, updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS node_user_cpu_limits (
+    node_id VARCHAR(50) NOT NULL,
+    local_username VARCHAR(64) NOT NULL,
+    cpu_quota_percent DOUBLE PRECISION NOT NULL CHECK (cpu_quota_percent > 0 AND cpu_quota_percent <= 100),
+    reason TEXT NOT NULL DEFAULT '',
+    updated_by VARCHAR(50) NOT NULL DEFAULT 'admin',
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (node_id, local_username)
+);
+CREATE INDEX IF NOT EXISTS idx_node_user_cpu_limits_node_updated
+    ON node_user_cpu_limits(node_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS node_user_memory_limits (
+    node_id VARCHAR(50) NOT NULL,
+    local_username VARCHAR(64) NOT NULL,
+    memory_limit_gb DOUBLE PRECISION NOT NULL CHECK (memory_limit_gb > 0),
+    reason TEXT NOT NULL DEFAULT '',
+    updated_by VARCHAR(50) NOT NULL DEFAULT 'admin',
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (node_id, local_username)
+);
+CREATE INDEX IF NOT EXISTS idx_node_user_memory_limits_node_updated
+    ON node_user_memory_limits(node_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS node_user_gpu_visibility (
+    node_id VARCHAR(50) NOT NULL,
+    local_username VARCHAR(64) NOT NULL,
+    gpu_index INTEGER NOT NULL CHECK (gpu_index >= 0),
+    reason TEXT NOT NULL DEFAULT '',
+    updated_by VARCHAR(50) NOT NULL DEFAULT 'admin',
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (node_id, local_username, gpu_index)
+);
+CREATE INDEX IF NOT EXISTS idx_node_user_gpu_visibility_node_updated
+    ON node_user_gpu_visibility(node_id, local_username, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS node_security_events (
     event_id BIGSERIAL PRIMARY KEY,
     report_id TEXT NOT NULL DEFAULT '',
@@ -140,6 +189,7 @@ CREATE TABLE IF NOT EXISTS node_policies (
     node_id VARCHAR(50) PRIMARY KEY,
     ssh_guard_enabled BOOLEAN NOT NULL DEFAULT FALSE,
     ssh_exclusive_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    ssh_exclusive_block_others BOOLEAN NOT NULL DEFAULT TRUE,
     points_intercept_enabled BOOLEAN NOT NULL DEFAULT TRUE,
     points_throttle_threshold DOUBLE PRECISION NULL,
     points_limited_cpu_quota_percent DOUBLE PRECISION NULL,
@@ -150,6 +200,7 @@ CREATE TABLE IF NOT EXISTS node_policies (
     disk_quota_soft_mb DOUBLE PRECISION NULL,
     disk_quota_hard_mb DOUBLE PRECISION NULL,
     node_price_per_minute DOUBLE PRECISION NULL,
+    node_cpu_price_per_core_minute DOUBLE PRECISION NULL,
     node_model_price_overrides JSONB NOT NULL DEFAULT '{}'::jsonb,
     updated_by VARCHAR(50) NOT NULL DEFAULT 'admin',
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
@@ -163,6 +214,17 @@ CREATE TABLE IF NOT EXISTS node_exclusive_users (
     PRIMARY KEY (node_id, local_username)
 );
 CREATE INDEX IF NOT EXISTS idx_node_exclusive_users_node ON node_exclusive_users(node_id);
+
+CREATE TABLE IF NOT EXISTS node_exclusive_gpu_users (
+    node_id VARCHAR(50) NOT NULL,
+    local_username VARCHAR(64) NOT NULL,
+    gpu_index INTEGER NOT NULL CHECK (gpu_index >= 0),
+    updated_by VARCHAR(50) NOT NULL DEFAULT 'admin',
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (node_id, gpu_index)
+);
+CREATE INDEX IF NOT EXISTS idx_node_exclusive_gpu_users_node_user
+    ON node_exclusive_gpu_users(node_id, local_username);
 
 CREATE TABLE IF NOT EXISTS node_view_acl (
     node_id VARCHAR(50) NOT NULL,
@@ -189,6 +251,7 @@ CREATE TABLE IF NOT EXISTS power_users (
     can_view_board BOOLEAN NOT NULL DEFAULT TRUE,
     can_view_nodes BOOLEAN NOT NULL DEFAULT TRUE,
     can_manage_nodes BOOLEAN NOT NULL DEFAULT FALSE,
+    can_manage_points BOOLEAN NOT NULL DEFAULT FALSE,
     can_review_requests BOOLEAN NOT NULL DEFAULT FALSE,
     created_by VARCHAR(50) NOT NULL DEFAULT 'admin',
     updated_by VARCHAR(50) NOT NULL DEFAULT 'admin',
@@ -216,6 +279,16 @@ CREATE TABLE IF NOT EXISTS user_node_accounts (
     updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
     PRIMARY KEY (node_id, local_username)
 );
+
+CREATE TABLE IF NOT EXISTS user_node_account_risk_clears (
+    node_id VARCHAR(50) NOT NULL,
+    local_username VARCHAR(64) NOT NULL,
+    cleared_by VARCHAR(50) NOT NULL DEFAULT 'admin',
+    cleared_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (node_id, local_username)
+);
+CREATE INDEX IF NOT EXISTS idx_user_node_account_risk_clears_cleared_at
+    ON user_node_account_risk_clears(cleared_at DESC);
 
 CREATE TABLE IF NOT EXISTS user_node_account_audits (
     audit_id BIGSERIAL PRIMARY KEY,
@@ -270,16 +343,90 @@ CREATE TABLE IF NOT EXISTS user_provision_messages (
 -- 用户自助登记/开号申请（管理员审核）
 CREATE TABLE IF NOT EXISTS user_requests (
     request_id SERIAL PRIMARY KEY,
-    request_type VARCHAR(20) NOT NULL, -- bind, open
+    request_type VARCHAR(20) NOT NULL, -- bind, open, unbind
     billing_username VARCHAR(50) NOT NULL,
     node_id VARCHAR(50) NOT NULL,
     local_username VARCHAR(50) NOT NULL,
     message TEXT NOT NULL DEFAULT '',
-    status VARCHAR(20) NOT NULL DEFAULT 'pending', -- pending, approved, rejected
+    status VARCHAR(20) NOT NULL DEFAULT 'pending', -- pending, verified, approved, rejected, challenge_active
     reviewed_by VARCHAR(50) NULL,
     reviewed_at TIMESTAMP NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS user_node_unbind_records (
+    record_id BIGSERIAL PRIMARY KEY,
+    source_type VARCHAR(20) NOT NULL DEFAULT 'user_request', -- user_request, admin_forced
+    request_id INT NULL,
+    billing_username VARCHAR(50) NOT NULL,
+    node_id VARCHAR(50) NOT NULL,
+    local_username VARCHAR(64) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending', -- pending, approved, rejected, forced
+    reason TEXT NOT NULL DEFAULT '',
+    initiated_by VARCHAR(50) NOT NULL DEFAULT '',
+    reviewed_by VARCHAR(50) NULL,
+    reviewed_at TIMESTAMP NULL,
+    executed_at TIMESTAMP NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_node_unbind_records_request
+    ON user_node_unbind_records(request_id);
+CREATE INDEX IF NOT EXISTS idx_user_node_unbind_records_created
+    ON user_node_unbind_records(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_user_node_unbind_records_node_local
+    ON user_node_unbind_records(node_id, local_username, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_user_node_unbind_records_billing
+    ON user_node_unbind_records(billing_username, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS user_node_bind_challenges (
+    challenge_id BIGSERIAL PRIMARY KEY,
+    request_id INT NOT NULL DEFAULT 0,
+    billing_username VARCHAR(50) NOT NULL,
+    node_id VARCHAR(50) NOT NULL,
+    local_username VARCHAR(64) NOT NULL,
+    challenge_token VARCHAR(128) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'active', -- active, verified, approved, failed, expired, cancelled
+    fail_reason TEXT NOT NULL DEFAULT '',
+    expires_at TIMESTAMP NOT NULL,
+    claimed_at TIMESTAMP NULL,
+    verified_at TIMESTAMP NULL,
+    cooldown_until TIMESTAMP NULL,
+    failure_processed BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS user_node_bind_cooldowns (
+    billing_username VARCHAR(50) PRIMARY KEY,
+    failure_streak INT NOT NULL DEFAULT 0,
+    cooldown_until TIMESTAMP NULL,
+    last_failed_at TIMESTAMP NULL,
+    last_succeeded_at TIMESTAMP NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS user_node_bind_freezes (
+    node_id VARCHAR(50) NOT NULL,
+    local_username VARCHAR(64) NOT NULL,
+    freeze_until TIMESTAMP NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    triggered_by VARCHAR(50) NOT NULL DEFAULT '',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (node_id, local_username)
+);
+
+CREATE TABLE IF NOT EXISTS user_node_bind_temp_access (
+    node_id VARCHAR(50) NOT NULL,
+    local_username VARCHAR(64) NOT NULL,
+    billing_username VARCHAR(50) NOT NULL,
+    challenge_id BIGINT NOT NULL,
+    expires_at TIMESTAMP NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (node_id, local_username)
 );
 
 CREATE INDEX IF NOT EXISTS idx_usage_username ON usage_records(username);
@@ -287,6 +434,9 @@ CREATE INDEX IF NOT EXISTS idx_usage_local_username ON usage_records(local_usern
 CREATE INDEX IF NOT EXISTS idx_usage_timestamp ON usage_records(timestamp);
 CREATE INDEX IF NOT EXISTS idx_usage_node ON usage_records(node_id);
 CREATE INDEX IF NOT EXISTS idx_usage_timestamp_username ON usage_records(timestamp, username);
+CREATE INDEX IF NOT EXISTS idx_process_kill_records_created_at ON process_kill_records(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_process_kill_records_billing_created ON process_kill_records(billing_username, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_process_kill_records_node_local_created ON process_kill_records(node_id, local_username, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_user_node_accounts_billing ON user_node_accounts(billing_username);
 CREATE INDEX IF NOT EXISTS idx_account_provision_logs_created_at ON account_provision_logs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_account_provision_logs_billing ON account_provision_logs(billing_username, created_at DESC);
@@ -297,6 +447,21 @@ CREATE INDEX IF NOT EXISTS idx_user_provision_messages_destroy_after
     WHERE destroy_after_at IS NOT NULL AND destroyed_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_user_requests_status ON user_requests(status);
 CREATE INDEX IF NOT EXISTS idx_user_requests_billing ON user_requests(billing_username);
+CREATE INDEX IF NOT EXISTS idx_user_node_bind_challenges_billing_created
+    ON user_node_bind_challenges(billing_username, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_user_node_bind_challenges_target_created
+    ON user_node_bind_challenges(node_id, local_username, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_user_node_bind_challenges_active_expires
+    ON user_node_bind_challenges(expires_at ASC)
+    WHERE status='active';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_node_bind_challenges_unique_token
+    ON user_node_bind_challenges(challenge_token);
+CREATE INDEX IF NOT EXISTS idx_user_node_bind_freezes_until
+    ON user_node_bind_freezes(freeze_until ASC);
+CREATE INDEX IF NOT EXISTS idx_user_node_bind_temp_access_billing
+    ON user_node_bind_temp_access(billing_username, expires_at DESC);
+CREATE INDEX IF NOT EXISTS idx_user_node_bind_temp_access_expires
+    ON user_node_bind_temp_access(expires_at ASC);
 
 -- 普通用户账号（Web 登录）
 CREATE TABLE IF NOT EXISTS user_accounts (
@@ -326,6 +491,22 @@ CREATE TABLE IF NOT EXISTS app_settings (
     value TEXT NOT NULL,
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+
+-- 容灾同步任务日志（手动/定时/回切）
+CREATE TABLE IF NOT EXISTS ha_sync_runs (
+    run_id BIGSERIAL PRIMARY KEY,
+    trigger_mode VARCHAR(32) NOT NULL DEFAULT 'manual',
+    direction VARCHAR(32) NOT NULL DEFAULT 'primary_to_standby',
+    status VARCHAR(24) NOT NULL DEFAULT 'running',
+    started_by VARCHAR(64) NOT NULL DEFAULT 'system',
+    started_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    finished_at TIMESTAMP NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    detail_json JSONB NOT NULL DEFAULT '[]'::jsonb
+);
+CREATE INDEX IF NOT EXISTS idx_ha_sync_runs_started_at_desc ON ha_sync_runs(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ha_sync_runs_status_started_at ON ha_sync_runs(status, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ha_sync_runs_trigger_started_at ON ha_sync_runs(trigger_mode, started_at DESC);
 
 CREATE TABLE IF NOT EXISTS announcements (
     announcement_id SERIAL PRIMARY KEY,
@@ -386,6 +567,9 @@ CREATE TABLE IF NOT EXISTS registration_requests (
     reviewed_by VARCHAR(50) NULL,
     reviewed_at TIMESTAMP NULL,
     reject_reason TEXT NOT NULL DEFAULT '',
+    reject_notify_mail_checked BOOLEAN NOT NULL DEFAULT FALSE,
+    reject_notify_mail_sent BOOLEAN NOT NULL DEFAULT FALSE,
+    reject_notify_mail_error TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );

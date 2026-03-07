@@ -1,5 +1,6 @@
 <template>
-  <el-container class="shell">
+  <el-container class="shell" :class="{ 'mobile-shell': isMobile, 'mobile-menu-open': mobileMenuOpen }">
+    <div v-if="isMobile && mobileMenuOpen" class="mobile-mask" @click="mobileMenuOpen = false" />
     <el-aside width="250px" class="aside">
       <div class="brand">
         <el-icon :size="30"><Cpu /></el-icon>
@@ -9,13 +10,12 @@
         </div>
       </div>
 
-      <el-menu :default-active="activePath" :default-openeds="defaultOpeneds" router class="menu">
+      <el-menu :default-active="activePath" :default-openeds="defaultOpeneds" router class="menu" @select="onMenuSelect">
         <template v-if="authState.role === 'admin'">
           <el-sub-menu index="grp-ops">
             <template #title><el-icon><DataBoard /></el-icon><span>运营分析</span></template>
             <el-menu-item index="/admin/board">运营看板</el-menu-item>
-            <el-menu-item index="/admin/usage">使用记录</el-menu-item>
-            <el-menu-item index="/admin/queue">排队队列</el-menu-item>
+            <el-menu-item index="/admin/usage">进程记录</el-menu-item>
           </el-sub-menu>
           <el-sub-menu index="grp-resource">
             <template #title><el-icon><Monitor /></el-icon><span>资源管理</span></template>
@@ -34,7 +34,7 @@
               </el-badge>
             </el-menu-item>
             <el-menu-item index="/admin/requests">
-              <el-badge :value="reviewTodoCount" :hidden="reviewTodoCount === 0">
+              <el-badge :is-dot="reviewTodoCount > 0" type="danger">
                 <span>平台账号注册审核</span>
               </el-badge>
             </el-menu-item>
@@ -57,8 +57,9 @@
             <template #title><el-icon><DataBoard /></el-icon><span>授权功能</span></template>
             <el-menu-item v-if="authState.canViewBoard" index="/admin/board">运营看板</el-menu-item>
             <el-menu-item v-if="authState.canViewNodes" index="/admin/nodes">节点状态</el-menu-item>
+            <el-menu-item v-if="authState.canManagePoints" index="/admin/points">积分管理</el-menu-item>
             <el-menu-item v-if="authState.canReviewRequests" index="/admin/requests">
-              <el-badge :value="reviewTodoCount" :hidden="reviewTodoCount === 0">
+              <el-badge :is-dot="reviewTodoCount > 0" type="danger">
                 <span>平台账号注册审核</span>
               </el-badge>
             </el-menu-item>
@@ -70,10 +71,18 @@
                 <span>公告与用户准则</span>
               </el-badge>
             </el-menu-item>
-            <el-menu-item index="/user/balance">我的积分</el-menu-item>
+            <el-menu-item index="/user/balance">
+              <el-badge :is-dot="userPointsUnreadCount > 0" type="danger">
+                <span>我的积分</span>
+              </el-badge>
+            </el-menu-item>
             <el-menu-item index="/user/usage">我的用量</el-menu-item>
             <el-menu-item index="/user/profile">个人资料</el-menu-item>
-            <el-menu-item index="/user/accounts">节点账号</el-menu-item>
+            <el-menu-item index="/user/accounts">
+              <el-badge :is-dot="userAccountProvisionHasNew" type="danger">
+                <span>节点账号</span>
+              </el-badge>
+            </el-menu-item>
             <el-menu-item index="/user/change-password">修改密码</el-menu-item>
           </el-sub-menu>
         </template>
@@ -85,10 +94,18 @@
                 <span>公告与用户准则</span>
               </el-badge>
             </el-menu-item>
-            <el-menu-item index="/user/balance">我的积分</el-menu-item>
+            <el-menu-item index="/user/balance">
+              <el-badge :is-dot="userPointsUnreadCount > 0" type="danger">
+                <span>我的积分</span>
+              </el-badge>
+            </el-menu-item>
             <el-menu-item index="/user/usage">我的用量</el-menu-item>
             <el-menu-item index="/user/profile">个人资料</el-menu-item>
-            <el-menu-item index="/user/accounts">节点账号</el-menu-item>
+            <el-menu-item index="/user/accounts">
+              <el-badge :is-dot="userAccountProvisionHasNew" type="danger">
+                <span>节点账号</span>
+              </el-badge>
+            </el-menu-item>
             <el-menu-item index="/user/change-password">修改密码</el-menu-item>
           </el-sub-menu>
         </template>
@@ -98,6 +115,10 @@
     <el-container>
       <el-header class="header">
         <div class="header-left">
+          <el-button v-if="isMobile" text class="mobile-menu-toggle" @click="toggleMobileMenu">
+            <el-icon><Menu /></el-icon>
+            <span>菜单</span>
+          </el-button>
           <template v-if="authState.role === 'admin'">
             <el-button text class="controller-toggle" @click="showControllerConfig = !showControllerConfig">
               <el-icon><Link /></el-icon>
@@ -145,11 +166,13 @@ import { persistSettings, settingsState } from "../lib/settingsStore";
 import { authState, logout } from "../lib/authStore";
 import { ElMessage } from "element-plus";
 import { ApiClient, type UserNodeAccountMappingRisk, type UserRequest } from "../lib/api";
+import { toServerEpochMs } from "../lib/time";
 import {
   Check,
   Cpu,
   DataBoard,
   Link,
+  Menu,
   Monitor,
   SwitchButton,
   Setting,
@@ -164,11 +187,20 @@ const defaultOpeneds = computed(() => ["grp-ops", "grp-resource", "grp-points", 
 const reviewTodoCount = ref(0);
 const accountOpenTodoCount = ref(0);
 const accountRiskTodoCount = ref(0);
-const accountTodoCount = computed(() => Number(accountOpenTodoCount.value || 0) + Number(accountRiskTodoCount.value || 0));
+const accountUnbindTodoCount = ref(0);
+const accountTodoCount = computed(() =>
+  Number(accountOpenTodoCount.value || 0) + Number(accountRiskTodoCount.value || 0) + Number(accountUnbindTodoCount.value || 0),
+);
 const showControllerConfig = ref(false);
 const userNoticeHasNew = ref(false);
+const userPointsUnreadCount = ref(0);
+const userAccountProvisionHasNew = ref(false);
+const isMobile = ref(false);
+const mobileMenuOpen = ref(false);
 let reviewTodoTimer: ReturnType<typeof setInterval> | null = null;
 let userNoticeTimer: ReturnType<typeof setInterval> | null = null;
+let userPointsTimer: ReturnType<typeof setInterval> | null = null;
+let userAccountProvisionTimer: ReturnType<typeof setInterval> | null = null;
 
 function persist() {
   persistSettings();
@@ -178,6 +210,25 @@ function persist() {
 async function doLogout() {
   await logout();
   await router.push("/login");
+}
+
+function syncMobileState() {
+  const next = window.innerWidth <= 920;
+  isMobile.value = next;
+  if (!next) {
+    mobileMenuOpen.value = false;
+  }
+}
+
+function toggleMobileMenu() {
+  if (!isMobile.value) return;
+  mobileMenuOpen.value = !mobileMenuOpen.value;
+}
+
+function onMenuSelect() {
+  if (isMobile.value) {
+    mobileMenuOpen.value = false;
+  }
 }
 
 function clearReviewTodoTimer() {
@@ -191,6 +242,20 @@ function clearUserNoticeTimer() {
   if (userNoticeTimer) {
     clearInterval(userNoticeTimer);
     userNoticeTimer = null;
+  }
+}
+
+function clearUserPointsTimer() {
+  if (userPointsTimer) {
+    clearInterval(userPointsTimer);
+    userPointsTimer = null;
+  }
+}
+
+function clearUserAccountProvisionTimer() {
+  if (userAccountProvisionTimer) {
+    clearInterval(userAccountProvisionTimer);
+    userAccountProvisionTimer = null;
   }
 }
 
@@ -208,9 +273,22 @@ function canLoadUserNotice(): boolean {
   return !!authState.authenticated && (authState.role === "user" || authState.role === "power_user");
 }
 
+function canLoadUserPoints(): boolean {
+  return !!authState.authenticated && (authState.role === "user" || authState.role === "power_user");
+}
+
+function canLoadUserAccountProvision(): boolean {
+  return !!authState.authenticated && (authState.role === "user" || authState.role === "power_user");
+}
+
 function userAnnouncementSeenKey(): string {
   const u = String(authState.username || "").trim() || "anonymous";
   return `gpuops_seen_announcement_ts_${u}`;
+}
+
+function userPointsSeenKey(): string {
+  const u = String(authState.username || "").trim() || "anonymous";
+  return `gpuops_seen_points_recharge_id_${u}`;
 }
 
 async function loadReviewTodoCount() {
@@ -219,6 +297,7 @@ async function loadReviewTodoCount() {
     if (!canLoadAccountOpenTodo()) {
       accountOpenTodoCount.value = 0;
       accountRiskTodoCount.value = 0;
+      accountUnbindTodoCount.value = 0;
     }
     return;
   }
@@ -249,10 +328,13 @@ async function loadReviewTodoCount() {
     reviewTodoCount.value = total;
     if (openRes.status === "fulfilled") {
       accountOpenTodoCount.value = Number((openRes.value.requests ?? []).filter((x) => String(x.request_type || "").trim() === "open").length);
+      accountUnbindTodoCount.value = Number((openRes.value.requests ?? []).filter((x) => String(x.request_type || "").trim() === "unbind").length);
     } else if (!canLoadAccountOpenTodo()) {
       accountOpenTodoCount.value = 0;
+      accountUnbindTodoCount.value = 0;
     } else {
       accountOpenTodoCount.value = 0;
+      accountUnbindTodoCount.value = 0;
     }
     if (riskRes.status === "fulfilled") {
       const totalRisk = Number(riskRes.value.total_risky || 0);
@@ -269,6 +351,7 @@ async function loadReviewTodoCount() {
       reviewTodoCount.value = 0;
       accountOpenTodoCount.value = 0;
       accountRiskTodoCount.value = 0;
+      accountUnbindTodoCount.value = 0;
       return;
     }
   }
@@ -322,25 +405,118 @@ function resetUserNoticePolling() {
   }, 30000);
 }
 
+async function loadUserPointsState() {
+  if (!canLoadUserPoints()) {
+    userPointsUnreadCount.value = 0;
+    return;
+  }
+  try {
+    const raw = String(localStorage.getItem(userPointsSeenKey()) || "").trim();
+    const seenID = Number(raw);
+    const sinceID = Number.isFinite(seenID) && seenID > 0 ? Math.floor(seenID) : 0;
+    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+    const r = await client.userMyPointsIncrements({ sinceId: sinceID, limit: 200 });
+    const unread = Number(r.unread_count || 0);
+    userPointsUnreadCount.value = Number.isFinite(unread) ? Math.max(0, Math.floor(unread)) : 0;
+  } catch (e: any) {
+    if (e?.status === 404 || e?.status === 403 || e?.status === 401) {
+      userPointsUnreadCount.value = 0;
+      return;
+    }
+    userPointsUnreadCount.value = 0;
+  }
+}
+
+function resetUserPointsPolling() {
+  clearUserPointsTimer();
+  loadUserPointsState();
+  if (!canLoadUserPoints()) return;
+  userPointsTimer = setInterval(() => {
+    loadUserPointsState();
+  }, 30000);
+}
+
+function isProvisionMessageDestroyedLike(row: any): boolean {
+  if (!row) return true;
+  if (String(row.destroyed_at || "").trim()) return true;
+  if (!String(row.encrypted_payload || "").trim()) return true;
+  const destroyAfterText = String(row.destroy_after_at || "").trim();
+  if (!destroyAfterText) return false;
+  const destroyAfterMs = toServerEpochMs(destroyAfterText);
+  if (Number.isNaN(destroyAfterMs)) return false;
+  return Date.now() >= destroyAfterMs;
+}
+
+async function loadUserAccountProvisionState() {
+  if (!canLoadUserAccountProvision()) {
+    userAccountProvisionHasNew.value = false;
+    return;
+  }
+  try {
+    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+    const r = await client.userProvisionMessages(60);
+    const items = Array.isArray(r.messages) ? r.messages : [];
+    userAccountProvisionHasNew.value = items.some((x) => {
+      if (isProvisionMessageDestroyedLike(x)) return false;
+      return !String(x?.first_decrypted_at || "").trim();
+    });
+  } catch (e: any) {
+    if (e?.status === 404 || e?.status === 403 || e?.status === 401) {
+      userAccountProvisionHasNew.value = false;
+      return;
+    }
+    userAccountProvisionHasNew.value = false;
+  }
+}
+
+function resetUserAccountProvisionPolling() {
+  clearUserAccountProvisionTimer();
+  loadUserAccountProvisionState();
+  if (!canLoadUserAccountProvision()) return;
+  userAccountProvisionTimer = setInterval(() => {
+    loadUserAccountProvisionState();
+  }, 30000);
+}
+
 watch(
   () => [authState.authenticated, authState.role, authState.canReviewRequests, settingsState.baseUrl, authState.csrfToken],
   () => {
     resetReviewTodoPolling();
     resetUserNoticePolling();
+    resetUserPointsPolling();
+    resetUserAccountProvisionPolling();
   },
   { immediate: true },
 );
 
+watch(
+  () => route.path,
+  () => {
+    if (isMobile.value) {
+      mobileMenuOpen.value = false;
+    }
+  },
+);
+
 onMounted(() => {
+  syncMobileState();
   resetReviewTodoPolling();
   resetUserNoticePolling();
+  resetUserPointsPolling();
+  resetUserAccountProvisionPolling();
+  window.addEventListener("resize", syncMobileState);
   window.addEventListener("gpuops-announcement-seen", loadUserNoticeState);
+  window.addEventListener("gpuops-points-seen", loadUserPointsState);
 });
 
 onBeforeUnmount(() => {
   clearReviewTodoTimer();
   clearUserNoticeTimer();
+  clearUserPointsTimer();
+  clearUserAccountProvisionTimer();
+  window.removeEventListener("resize", syncMobileState);
   window.removeEventListener("gpuops-announcement-seen", loadUserNoticeState);
+  window.removeEventListener("gpuops-points-seen", loadUserPointsState);
 });
 </script>
 
@@ -459,8 +635,43 @@ onBeforeUnmount(() => {
   position: relative;
   z-index: 1;
 }
+.mobile-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  background: rgba(15, 23, 42, 0.45);
+  backdrop-filter: blur(1px);
+}
+.mobile-menu-toggle {
+  color: #0f172a;
+  font-weight: 700;
+  padding: 0;
+}
 
 @media (max-width: 920px) {
+  .shell {
+    overflow-x: hidden;
+  }
+  .mobile-shell .aside {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 250px !important;
+    z-index: 1200;
+    overflow-y: auto;
+    transform: translateX(-104%);
+    transition: transform 0.2s ease;
+  }
+  .mobile-shell.mobile-menu-open .aside {
+    transform: translateX(0);
+  }
+  .mobile-shell .header {
+    border-radius: 0;
+  }
+  .mobile-shell .main {
+    padding: 10px;
+  }
   .header {
     flex-wrap: wrap;
   }

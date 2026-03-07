@@ -69,8 +69,8 @@ migration_dir: ""
 web_dir: ""
 
 # 容灾（主备控制器）配置
-ha_enabled: false
-ha_node: "controller-a"
-ha_role: "primary" # primary / standby
-ha_peer_url: ""    # 例如 http://192.0.2.10:60039
-ha_token: ""       # 主备间状态查询鉴权（建议强随机）
+ha_enabled: true
+ha_node: "controller-primary"
+ha_role: "primary"
+ha_peer_url: "http://<60009-IP>:60039"
+ha_token: "c8a4b52c0dcbfdb6ca76769110f16d22c38851b8f6833f055908a920f8abc7e2"

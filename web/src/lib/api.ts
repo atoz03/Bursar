@@ -37,6 +37,7 @@ export type AuthMeResp = {
   can_view_board?: boolean;
   can_view_nodes?: boolean;
   can_manage_nodes?: boolean;
+  can_manage_points?: boolean;
   can_review_requests?: boolean;
   expires_at?: string;
   csrf_token?: string;
@@ -117,6 +118,18 @@ export type UsageRecord = {
   cost: number;
 };
 
+export type ProcessKillRecord = {
+  record_id: number;
+  node_id: string;
+  local_username: string;
+  billing_username: string;
+  registered?: boolean;
+  action_type: string;
+  reason: string;
+  pids: number[];
+  timestamp: string;
+};
+
 export type UsageUserSummary = {
   username: string;
   usage_records: number;
@@ -157,6 +170,7 @@ export type NodeStatus = {
   gpu_count?: number;
   os_version?: string;
   kernel_version?: string;
+  agent_version?: string;
   node_ip?: string;
   node_mac?: string;
   disk_total_gb?: number;
@@ -207,8 +221,15 @@ export type NodeViewAccessResp = {
 export type NodeSSHExclusiveResp = {
   node_id: string;
   enabled: boolean;
+  block_other_ssh: boolean;
   exclusive_users: string[];
   candidate_local_users: string[];
+  gpu_count: number;
+  gpu_assignments: Array<{
+    local_username: string;
+    gpu_indices: number[];
+  }>;
+  exempt_users?: string[];
 };
 
 export type NodeLocalUser = {
@@ -217,6 +238,17 @@ export type NodeLocalUser = {
   platform_username?: string;
   mapping_exists: boolean;
   platform_exists: boolean;
+  admin_mapping?: boolean;
+  admin_username?: string;
+  cpu_quota_percent?: number;
+  cpu_quota_reason?: string;
+  cpu_quota_updated_at?: string;
+  memory_limit_gb?: number;
+  memory_limit_reason?: string;
+  memory_limit_updated_at?: string;
+  gpu_visible_indices?: number[];
+  gpu_visibility_reason?: string;
+  gpu_visibility_updated_at?: string;
   home_created_at?: string;
   last_login_at?: string;
   home_used_gb: number;
@@ -227,6 +259,30 @@ export type NodeLocalUser = {
   has_sudo?: boolean;
   has_docker?: boolean;
   updated_at?: string;
+};
+
+export type NodeUserCPULimit = {
+  node_id: string;
+  local_username: string;
+  billing_username?: string;
+  mapping_exists: boolean;
+  platform_exists: boolean;
+  cpu_quota_percent: number;
+  reason?: string;
+  updated_by?: string;
+  updated_at: string;
+};
+
+export type NodeUserMemoryLimit = {
+  node_id: string;
+  local_username: string;
+  billing_username?: string;
+  mapping_exists: boolean;
+  platform_exists: boolean;
+  memory_limit_gb: number;
+  reason?: string;
+  updated_by?: string;
+  updated_at: string;
 };
 
 export type NodeRuntimeSnapshot = {
@@ -303,6 +359,8 @@ export type NodeSSHUserPlatformResp = {
   mapped_username?: string;
   platform_exists: boolean;
   platform_username?: string;
+  admin_mapping?: boolean;
+  admin_username?: string;
   real_name?: string;
   message: string;
 };
@@ -359,6 +417,7 @@ export type PointsOperationRecord = {
   method: string;
   points_scope?: "general" | "carryover" | "node_exclusive" | string;
   node_id?: string;
+  reason?: string;
   created_at: string;
 };
 
@@ -368,6 +427,88 @@ export type UserNodeAccount = {
   billing_username: string;
   created_at: string;
   updated_at: string;
+};
+
+export type UserNodeBindChallengeInfo = {
+  challenge_id: number;
+  request_id: number;
+  node_id: string;
+  local_username: string;
+  status: string;
+  expires_at: string;
+  challenge_token: string;
+  claim_command: string;
+};
+
+export type UserNodeBindCooldown = {
+  billing_username: string;
+  failure_streak: number;
+  cooldown_until?: string;
+  last_failed_at?: string;
+  last_succeeded_at?: string;
+  updated_at: string;
+};
+
+export type UserMappedNodeInfo = {
+  node_id: string;
+  local_username: string;
+  cpu_model?: string;
+  cpu_count?: number;
+  gpu_model?: string;
+  gpu_count?: number;
+  effective_gpu_price_per_minute: number;
+  gpu_price_source: string;
+  effective_cpu_price_per_core_minute: number;
+  cpu_price_source: string;
+  home_quota_mountpoint?: string;
+  home_quota_used_mb?: number;
+  home_quota_soft_mb?: number;
+  home_quota_hard_mb?: number;
+  home_quota_updated_at?: string;
+  home_quota_enforced?: boolean;
+};
+
+export type UserNodeUnbindRecord = {
+  record_id: number;
+  source_type: "user_request" | "admin_forced" | string;
+  request_id?: number;
+  billing_username: string;
+  node_id: string;
+  local_username: string;
+  status: "pending" | "approved" | "rejected" | "forced" | string;
+  reason: string;
+  initiated_by: string;
+  reviewed_by?: string;
+  reviewed_at?: string;
+  executed_at?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type NodeBindSecurityPolicy = {
+  challenge_window_seconds: number;
+  trial_cpu_quota_percent: number;
+  trial_memory_limit_gb: number;
+  trial_gpu_blocked: boolean;
+  single_active_challenge_per_billing: boolean;
+  all_failure_cooldown_minutes: number;
+  first_failure_cooldown_minutes: number;
+  repeat_failure_cooldown_minutes: number;
+  contention_freeze_minutes: number;
+};
+
+export type AdminUserNodeBindCooldownRow = {
+  billing_username: string;
+  failure_streak: number;
+  cooldown_until?: string;
+  last_failed_at?: string;
+  last_succeeded_at?: string;
+  updated_at: string;
+  remaining_cooldown_seconds: number;
+  active_challenge_id?: number;
+  active_challenge_node_id?: string;
+  active_challenge_local_username?: string;
+  active_challenge_expires_at?: string;
 };
 
 export type UserNodeAccountMappingRisk = {
@@ -490,6 +631,18 @@ export type SSHExemptionEntry = {
 };
 
 export type PriceRow = { Model?: string; Price?: number; model?: string; price?: number };
+export type UsageDayStat = { date: string; record_count: number; estimated_csv_bytes: number };
+export type UsageRetentionStatus = {
+  retention_days: number;
+  enabled: boolean;
+  last_deleted_at?: string;
+  last_deleted_day?: string;
+  last_deleted_from?: string;
+  last_deleted_to?: string;
+  last_deleted_records: number;
+  last_deleted_mode?: string;
+  last_deleted_by?: string;
+};
 
 export type RegistryResolveResp = {
   registered: boolean;
@@ -529,6 +682,9 @@ export type RegistrationRequest = {
   reviewed_by?: string;
   reviewed_at?: string;
   reject_reason?: string;
+  reject_notify_mail_checked?: boolean;
+  reject_notify_mail_sent?: boolean;
+  reject_notify_mail_error?: string;
   created_at: string;
   updated_at: string;
 };
@@ -692,11 +848,12 @@ export type ProfileChangeRequest = {
 export type PlatformUsageUserSummary = {
   platform_username: string;
   usage_records: number;
-  gpu_process_records: number;
-  cpu_process_records: number;
-  total_cpu_percent: number;
-  total_memory_mb: number;
+  cpu_usage_seconds: number;
+  gpu_usage_seconds: number;
+  cpu_util_percent: number;
+  gpu_util_percent: number;
   total_cost: number;
+  general_balance: number;
 };
 
 export type PlatformUsageNodeDetail = {
@@ -709,6 +866,8 @@ export type PlatformUsageNodeDetail = {
   usage_records: number;
   total_cpu_percent: number;
   total_memory_mb: number;
+  cpu_cost: number;
+  gpu_cost: number;
   total_cost: number;
   last_usage_at: string;
 };
@@ -719,6 +878,7 @@ export type PowerUser = {
   can_view_board: boolean;
   can_view_nodes: boolean;
   can_manage_nodes: boolean;
+  can_manage_points: boolean;
   can_review_requests: boolean;
   created_by: string;
   updated_by: string;
@@ -748,6 +908,12 @@ export type HANodeStatus = {
   role: string;
   listen_addr: string;
   checked_at: string;
+  app_version?: string;
+  app_commit?: string;
+  app_build_at?: string;
+  app_binary_sha256?: string;
+  started_at?: string;
+  uptime_seconds?: number;
   summary: HANodeSummary;
 };
 
@@ -761,10 +927,55 @@ export type HAStatusResp = {
     status?: HANodeStatus;
   };
   in_sync: boolean;
+  version_match?: boolean;
   note?: string;
   checked?: string;
   peer_url?: string;
   message?: string;
+};
+
+export type HASyncConfig = {
+  enabled: boolean;
+  interval_days: number;
+  start_hour: number;
+  dr_node_id: string;
+  dr_host: string;
+  dr_ssh_port: number;
+  dr_ssh_user: string;
+  dr_key_file: string;
+  dr_controller_port: number;
+  primary_host: string;
+  primary_controller_port: number;
+  script_path: string;
+  sync_web_dist: boolean;
+  sync_database: boolean;
+  auto_failover: boolean;
+};
+
+export type HASyncStep = {
+  name: string;
+  success: boolean;
+  message: string;
+};
+
+export type HASyncRun = {
+  run_id: number;
+  trigger_mode: string;
+  direction: string;
+  status: string;
+  started_by: string;
+  started_at: string;
+  finished_at?: string;
+  summary: string;
+  detail: HASyncStep[];
+};
+
+export type HASyncConfigResp = {
+  config: HASyncConfig;
+  runs: HASyncRun[];
+  running: boolean;
+  last_run?: HASyncRun;
+  next_run_at?: string;
 };
 
 function trimSlashRight(v: string): string {
@@ -1008,11 +1219,30 @@ export class ApiClient {
     return await this.getJson("/api/user/me/balance");
   }
 
+  async userMyPointsIncrements(params?: { sinceId?: number; limit?: number }): Promise<{
+    records: PointsOperationRecord[];
+    unread_count: number;
+    unread_amount: number;
+    latest_recharge_id: number;
+  }> {
+    const q = new URLSearchParams();
+    if (Number.isFinite(Number(params?.sinceId)) && Number(params?.sinceId) > 0) {
+      q.set("since_id", String(Math.floor(Number(params?.sinceId))));
+    }
+    q.set("limit", String(params?.limit ?? 200));
+    return await this.getJson(`/api/user/me/points-increments?${q.toString()}`);
+  }
+
   async userMyUsage(limit: number): Promise<{ records: UsageRecord[] }> {
     return await this.getJson(`/api/user/me/usage?limit=${limit}`);
   }
 
-  async userAccounts(): Promise<{ accounts: UserNodeAccount[] }> {
+  async userAccounts(): Promise<{
+    accounts: UserNodeAccount[];
+    active_challenge?: UserNodeBindChallengeInfo;
+    bind_cooldown?: UserNodeBindCooldown;
+    mapped_node_infos?: UserMappedNodeInfo[];
+  }> {
     return await this.getJson("/api/user/accounts");
   }
 
@@ -1024,8 +1254,12 @@ export class ApiClient {
     return await this.postJson(`/api/user/provision-messages/${Math.floor(Number(messageId))}/decrypt-start`, {});
   }
 
-  async userUpsertAccount(nodeId: string, localUsername: string): Promise<{ ok: boolean }> {
-    return await this.postJson("/api/user/accounts", { node_id: nodeId, local_username: localUsername });
+  async userUpsertAccount(
+    nodeId: string,
+    localUsername: string,
+    message = "",
+  ): Promise<{ ok: boolean; challenge: UserNodeBindChallengeInfo; policy: NodeBindSecurityPolicy }> {
+    return await this.postJson("/api/user/accounts", { node_id: nodeId, local_username: localUsername, message });
   }
 
   async userUpdateAccount(payload: {
@@ -1047,8 +1281,8 @@ export class ApiClient {
     return (await res.json()) as { ok: boolean };
   }
 
-  async userDeleteAccount(nodeId: string, localUsername: string): Promise<{ ok: boolean }> {
-    const q = new URLSearchParams({ node_id: nodeId, local_username: localUsername });
+  async userDeleteAccount(nodeId: string, localUsername: string, reason: string): Promise<{ ok: boolean; request_id: number; message: string }> {
+    const q = new URLSearchParams({ node_id: nodeId, local_username: localUsername, reason });
     const res = await fetch(this.url(`/api/user/accounts?${q.toString()}`), {
       method: "DELETE",
       headers: { ...this.csrfHeaders() },
@@ -1058,7 +1292,7 @@ export class ApiClient {
       const text = await this.readText(res);
       throw normalizeServerError(res.status, text);
     }
-    return (await res.json()) as { ok: boolean };
+    return (await res.json()) as { ok: boolean; request_id: number; message: string };
   }
 
   async registryResolve(nodeId: string, localUsername: string): Promise<RegistryResolveResp> {
@@ -1068,29 +1302,25 @@ export class ApiClient {
     return await this.getJson(`/api/registry/resolve?${q.toString()}`);
   }
 
-  async userRequests(billingUsername: string, limit: number): Promise<{ requests: UserRequest[] }> {
+  async userRequests(limit: number): Promise<{ requests: UserRequest[] }> {
     const q = new URLSearchParams();
-    q.set("billing_username", billingUsername.trim());
     q.set("limit", String(limit));
-    return await this.getJson(`/api/requests?${q.toString()}`);
+    return await this.getJson(`/api/user/requests?${q.toString()}`);
   }
 
   async createBindRequests(
-    billingUsername: string,
     items: Array<{ node_id: string; local_username: string }>,
     message: string,
   ): Promise<{ ok: boolean; request_ids: number[] }> {
-    return await this.postJson("/api/requests/bind", { billing_username: billingUsername, items, message });
+    return await this.postJson("/api/user/requests/bind", { items, message });
   }
 
   async createOpenRequest(
-    billingUsername: string,
     message: string,
     nodeId = "待分配",
     localUsername = "待分配",
   ): Promise<{ ok: boolean; request_id: number }> {
-    return await this.postJson("/api/requests/open", {
-      billing_username: billingUsername,
+    return await this.postJson("/api/user/requests/open", {
       node_id: nodeId,
       local_username: localUsername,
       message,
@@ -1252,13 +1482,78 @@ export class ApiClient {
     );
   }
 
-  async adminUsage(params: { billingUsername?: string; localUsername?: string; unregisteredOnly?: boolean; limit: number }): Promise<{ records: UsageRecord[] }> {
+  async adminUsage(params: { billingUsername?: string; localUsername?: string; unregisteredOnly?: boolean; limit: number }): Promise<{ records: UsageRecord[]; kill_records: ProcessKillRecord[] }> {
     const q = new URLSearchParams();
     if ((params.billingUsername ?? "").trim()) q.set("billing_username", (params.billingUsername ?? "").trim());
     if ((params.localUsername ?? "").trim()) q.set("local_username", (params.localUsername ?? "").trim());
     if (params.unregisteredOnly) q.set("unregistered_only", "1");
     q.set("limit", String(params.limit));
     return await this.getJson(`/api/admin/usage?${q.toString()}`, this.adminHeaders());
+  }
+
+  async adminUsageDays(params: {
+    billingUsername?: string;
+    localUsername?: string;
+    unregisteredOnly?: boolean;
+    from?: string;
+    to?: string;
+  }): Promise<{ days: UsageDayStat[] }> {
+    const q = new URLSearchParams();
+    if ((params.billingUsername ?? "").trim()) q.set("billing_username", (params.billingUsername ?? "").trim());
+    if ((params.localUsername ?? "").trim()) q.set("local_username", (params.localUsername ?? "").trim());
+    if (params.unregisteredOnly) q.set("unregistered_only", "1");
+    if ((params.from ?? "").trim()) q.set("from", (params.from ?? "").trim());
+    if ((params.to ?? "").trim()) q.set("to", (params.to ?? "").trim());
+    return await this.getJson(`/api/admin/usage/days?${q.toString()}`, this.adminHeaders());
+  }
+
+  async adminUsageRangeEstimate(params: {
+    from: string;
+    to: string;
+    billingUsername?: string;
+    localUsername?: string;
+    unregisteredOnly?: boolean;
+  }): Promise<{
+    from: string;
+    to: string;
+    records: number;
+    estimated_csv_bytes: number;
+    estimated_db_bytes: number;
+  }> {
+    const q = new URLSearchParams();
+    q.set("from", params.from);
+    q.set("to", params.to);
+    if ((params.billingUsername ?? "").trim()) q.set("billing_username", (params.billingUsername ?? "").trim());
+    if ((params.localUsername ?? "").trim()) q.set("local_username", (params.localUsername ?? "").trim());
+    if (params.unregisteredOnly) q.set("unregistered_only", "1");
+    return await this.getJson(`/api/admin/usage/range-estimate?${q.toString()}`, this.adminHeaders());
+  }
+
+  async adminUsageRetentionGet(): Promise<UsageRetentionStatus> {
+    return await this.getJson("/api/admin/usage/retention", this.adminHeaders());
+  }
+
+  async adminUsageRetentionSet(payload: { retention_days: number }): Promise<UsageRetentionStatus> {
+    return await this.postJson("/api/admin/usage/retention", payload, this.adminHeaders());
+  }
+
+  async adminUsageDeleteRange(payload: {
+    from: string;
+    to: string;
+    billing_username?: string;
+    local_username?: string;
+    unregistered_only?: boolean;
+    confirm: boolean;
+  }): Promise<{
+    ok: boolean;
+    from: string;
+    to: string;
+    records_before: number;
+    deleted_records: number;
+    estimated_csv_bytes: number;
+    estimated_db_bytes: number;
+  }> {
+    return await this.postJson("/api/admin/usage/delete-range", payload, this.adminHeaders());
   }
 
   async adminNodes(limit: number): Promise<{ nodes: NodeStatus[] }> {
@@ -1286,6 +1581,19 @@ export class ApiClient {
 
   async adminKillAllUserProcesses(nodeId: string): Promise<{ ok: boolean; node_id: string; message: string }> {
     return await this.postJson(`/api/admin/nodes/${encodeURIComponent(nodeId)}/processes/kill-all-users`, {}, this.adminHeaders());
+  }
+
+  async adminKillNodeUserProcesses(nodeId: string, localUsername: string): Promise<{
+    ok: boolean;
+    node_id: string;
+    local_username: string;
+    message: string;
+  }> {
+    return await this.postJson(
+      `/api/admin/nodes/${encodeURIComponent(nodeId)}/processes/kill-user`,
+      { local_username: localUsername },
+      this.adminHeaders(),
+    );
   }
 
   async adminDisconnectNodeSSHUser(nodeId: string, localUsername: string): Promise<{ ok: boolean; node_id: string; local_username: string; message: string }> {
@@ -1437,29 +1745,162 @@ export class ApiClient {
     return await this.postJson(`/api/admin/nodes/${encodeURIComponent(nodeId)}/disk-quota/apply`, payload, this.adminHeaders());
   }
 
+  async adminNodeCPULimits(nodeId: string, limit = 1000): Promise<{ node_id: string; rows: NodeUserCPULimit[] }> {
+    return await this.getJson(`/api/admin/nodes/${encodeURIComponent(nodeId)}/cpu-limits?limit=${limit}`, this.adminHeaders());
+  }
+
+  async adminSetNodeUserCPULimit(
+    nodeId: string,
+    payload: { local_username: string; cpu_quota_percent: number; reason?: string },
+  ): Promise<{ ok: boolean; node_id: string; local_username: string; row: NodeUserCPULimit }> {
+    return await this.postJson(`/api/admin/nodes/${encodeURIComponent(nodeId)}/cpu-limits`, payload, this.adminHeaders());
+  }
+
+  async adminDeleteNodeUserCPULimit(
+    nodeId: string,
+    localUsername: string,
+  ): Promise<{ ok: boolean; node_id: string; local_username: string }> {
+    const q = new URLSearchParams({ local_username: localUsername });
+    const res = await fetch(this.url(`/api/admin/nodes/${encodeURIComponent(nodeId)}/cpu-limits?${q.toString()}`), {
+      method: "DELETE",
+      headers: { ...this.adminHeaders(), ...this.csrfHeaders() },
+      credentials: "include",
+    });
+    if (!res.ok) {
+      const text = await this.readText(res);
+      throw normalizeServerError(res.status, text);
+    }
+    return (await res.json()) as { ok: boolean; node_id: string; local_username: string };
+  }
+
+  async adminCPULimits(params: { billingUsername?: string; nodeId?: string; limit?: number }): Promise<{
+    billing_username: string;
+    node_id: string;
+    rows: NodeUserCPULimit[];
+  }> {
+    const q = new URLSearchParams();
+    if (params.billingUsername) q.set("billing_username", params.billingUsername);
+    if (params.nodeId) q.set("node_id", params.nodeId);
+    q.set("limit", String(params.limit ?? 1000));
+    return await this.getJson(`/api/admin/cpu-limits?${q.toString()}`, this.adminHeaders());
+  }
+
+  async adminNodeMemoryLimits(nodeId: string, limit = 1000): Promise<{ node_id: string; rows: NodeUserMemoryLimit[] }> {
+    return await this.getJson(`/api/admin/nodes/${encodeURIComponent(nodeId)}/memory-limits?limit=${limit}`, this.adminHeaders());
+  }
+
+  async adminSetNodeUserMemoryLimit(
+    nodeId: string,
+    payload: { local_username: string; memory_limit_gb: number; reason?: string },
+  ): Promise<{ ok: boolean; node_id: string; local_username: string; row: NodeUserMemoryLimit }> {
+    return await this.postJson(`/api/admin/nodes/${encodeURIComponent(nodeId)}/memory-limits`, payload, this.adminHeaders());
+  }
+
+  async adminDeleteNodeUserMemoryLimit(
+    nodeId: string,
+    localUsername: string,
+  ): Promise<{ ok: boolean; node_id: string; local_username: string }> {
+    const q = new URLSearchParams({ local_username: localUsername });
+    const res = await fetch(this.url(`/api/admin/nodes/${encodeURIComponent(nodeId)}/memory-limits?${q.toString()}`), {
+      method: "DELETE",
+      headers: { ...this.adminHeaders(), ...this.csrfHeaders() },
+      credentials: "include",
+    });
+    if (!res.ok) {
+      const text = await this.readText(res);
+      throw normalizeServerError(res.status, text);
+    }
+    return (await res.json()) as { ok: boolean; node_id: string; local_username: string };
+  }
+
+  async adminMemoryLimits(params: { billingUsername?: string; nodeId?: string; limit?: number }): Promise<{
+    billing_username: string;
+    node_id: string;
+    rows: NodeUserMemoryLimit[];
+  }> {
+    const q = new URLSearchParams();
+    if (params.billingUsername) q.set("billing_username", params.billingUsername);
+    if (params.nodeId) q.set("node_id", params.nodeId);
+    q.set("limit", String(params.limit ?? 1000));
+    return await this.getJson(`/api/admin/memory-limits?${q.toString()}`, this.adminHeaders());
+  }
+
+  async adminSetNodeUserGPUVisibility(
+    nodeId: string,
+    payload: { local_username: string; gpu_indices: number[]; reason?: string },
+  ): Promise<{
+    ok: boolean;
+    node_id: string;
+    local_username: string;
+    gpu_count?: number;
+    row: {
+      node_id: string;
+      local_username: string;
+      gpu_indices: number[];
+      reason?: string;
+      updated_by?: string;
+      updated_at: string;
+    };
+  }> {
+    return await this.postJson(`/api/admin/nodes/${encodeURIComponent(nodeId)}/gpu-visibility`, payload, this.adminHeaders());
+  }
+
+  async adminDeleteNodeUserGPUVisibility(
+    nodeId: string,
+    localUsername: string,
+  ): Promise<{ ok: boolean; node_id: string; local_username: string }> {
+    const q = new URLSearchParams({ local_username: localUsername });
+    const res = await fetch(this.url(`/api/admin/nodes/${encodeURIComponent(nodeId)}/gpu-visibility?${q.toString()}`), {
+      method: "DELETE",
+      headers: { ...this.adminHeaders(), ...this.csrfHeaders() },
+      credentials: "include",
+    });
+    if (!res.ok) {
+      const text = await this.readText(res);
+      throw normalizeServerError(res.status, text);
+    }
+    return (await res.json()) as { ok: boolean; node_id: string; local_username: string };
+  }
+
   async adminNodePrice(nodeId: string): Promise<{
     ok: boolean;
     node_id: string;
     price_per_minute: number | null;
+    cpu_price_per_core_minute: number | null;
+    effective_price_per_minute: number;
+    effective_cpu_price_per_core_minute: number;
     model_price_overrides: NodeModelPriceOverride[];
     mode: "default" | "custom" | string;
     default_price_per_minute: number;
+    default_cpu_price_per_core_minute: number;
+    billing_rules?: {
+      gpu_formula?: string;
+      cpu_formula?: string;
+      combined_formula?: string;
+      sample_interval_seconds?: number;
+      billing_interval_formula?: string;
+      gpu_price_priority?: string[];
+      cpu_price_priority?: string[];
+    };
   }> {
     return await this.getJson(`/api/admin/nodes/${encodeURIComponent(nodeId)}/price`, this.adminHeaders());
   }
 
   async adminSetNodePrice(
     nodeId: string,
-    payload: { price_per_minute: number },
+    payload: { price_per_minute: number; cpu_price_per_core_minute?: number },
   ): Promise<{
     ok: boolean;
     node_id: string;
     previous_price_per_minute: number | null;
+    previous_cpu_price_per_core_minute: number | null;
     previous_model_price_overrides?: NodeModelPriceOverride[];
     price_per_minute: number | null;
+    cpu_price_per_core_minute: number | null;
     model_price_overrides: NodeModelPriceOverride[];
     mode: "default" | "custom" | string;
     default_price_per_minute: number;
+    default_cpu_price_per_core_minute: number;
   }> {
     return await this.postJson(`/api/admin/nodes/${encodeURIComponent(nodeId)}/price`, payload, this.adminHeaders());
   }
@@ -1470,8 +1911,21 @@ export class ApiClient {
 
   async adminSetNodeSSHExclusive(
     nodeId: string,
-    payload: { enabled: boolean; exclusive_users: string[] },
-  ): Promise<{ ok: boolean; node_id: string; enabled: boolean; exclusive_users: string[] }> {
+    payload: {
+      enabled: boolean;
+      block_other_ssh: boolean;
+      exclusive_users: string[];
+      gpu_assignments: Array<{ local_username: string; gpu_indices: number[] }>;
+    },
+  ): Promise<{
+    ok: boolean;
+    node_id: string;
+    enabled: boolean;
+    block_other_ssh: boolean;
+    exclusive_users: string[];
+    gpu_assignments: Array<{ local_username: string; gpu_indices: number[] }>;
+    exempt_ignored_users?: string[];
+  }> {
     return await this.postJson(`/api/admin/nodes/${encodeURIComponent(nodeId)}/ssh-exclusive`, payload, this.adminHeaders());
   }
 
@@ -1557,8 +2011,15 @@ export class ApiClient {
     return await this.postJson("/api/admin/points/adjust", payload, this.adminHeaders());
   }
 
-  async adminPointsBatchGrant(payload: { amount: number; reason?: string }): Promise<{
+  async adminPointsBatchGrant(payload: {
+    amount: number;
+    reason?: string;
+    scope?: "general" | "carryover" | "node_exclusive";
+    node_id?: string;
+  }): Promise<{
     ok: boolean;
+    scope: "general" | "carryover" | "node_exclusive" | string;
+    node_id?: string;
     granted_users: number;
     adjusted_users: number;
     amount: number;
@@ -1570,8 +2031,16 @@ export class ApiClient {
     return await this.postJson("/api/admin/points/batch-grant", payload, this.adminHeaders());
   }
 
-  async adminPointsBatchAdjustUsers(payload: { amount: number; usernames: string[]; reason?: string }): Promise<{
+  async adminPointsBatchAdjustUsers(payload: {
+    amount: number;
+    usernames: string[];
+    reason?: string;
+    scope?: "general" | "carryover" | "node_exclusive";
+    node_id?: string;
+  }): Promise<{
     ok: boolean;
+    scope: "general" | "carryover" | "node_exclusive" | string;
+    node_id?: string;
     amount: number;
     requested_users: number;
     matched_users: number;
@@ -1585,6 +2054,32 @@ export class ApiClient {
     quota_refresh_errors: number;
   }> {
     return await this.postJson("/api/admin/points/batch-adjust-users", payload, this.adminHeaders());
+  }
+
+  async adminPointsBatchSetUsers(payload: {
+    value: number;
+    usernames: string[];
+    reason?: string;
+    scope?: "general" | "carryover" | "node_exclusive";
+    node_id?: string;
+  }): Promise<{
+    ok: boolean;
+    scope: "general" | "carryover" | "node_exclusive" | string;
+    node_id?: string;
+    value: number;
+    requested_users: number;
+    matched_users: number;
+    changed_users: number;
+    unchanged_users: number;
+    skipped_users: number;
+    total_delta: number;
+    interrupted_users: number;
+    interrupted_nodes: number;
+    quota_refresh_users: number;
+    quota_refresh_nodes: number;
+    quota_refresh_errors: number;
+  }> {
+    return await this.postJson("/api/admin/points/batch-set-users", payload, this.adminHeaders());
   }
 
   async adminPointsRecords(params?: { username?: string; method?: string; limit?: number }): Promise<{ records: PointsOperationRecord[] }> {
@@ -1722,7 +2217,12 @@ export class ApiClient {
     return await this.postJson(`/api/admin/registration-requests/${requestId}/approve`, {}, this.adminHeaders());
   }
 
-  async adminRejectRegistrationRequest(requestId: number, reason?: string): Promise<{ ok: boolean; request: RegistrationRequest }> {
+  async adminRejectRegistrationRequest(requestId: number, reason?: string): Promise<{
+    ok: boolean;
+    request: RegistrationRequest;
+    mail_sent: boolean;
+    mail_error?: string;
+  }> {
     return await this.postJson(`/api/admin/registration-requests/${requestId}/reject`, { reason: reason ?? "" }, this.adminHeaders());
   }
 
@@ -1730,8 +2230,8 @@ export class ApiClient {
     return await this.postJson(`/api/admin/requests/${requestId}/approve`, {}, this.adminHeaders());
   }
 
-  async adminRejectRequest(requestId: number): Promise<{ ok: boolean; request: UserRequest }> {
-    return await this.postJson(`/api/admin/requests/${requestId}/reject`, {}, this.adminHeaders());
+  async adminRejectRequest(requestId: number, reason = ""): Promise<{ ok: boolean; request: UserRequest }> {
+    return await this.postJson(`/api/admin/requests/${requestId}/reject`, { reason }, this.adminHeaders());
   }
 
   async adminReopenRequest(requestId: number): Promise<{ ok: boolean; request: UserRequest }> {
@@ -1822,13 +2322,20 @@ export class ApiClient {
     return await this.postJson("/api/admin/guideline", { content }, this.adminHeaders());
   }
 
-  async adminQueue(): Promise<{ queue: Array<{ username: string; gpu_type: string; count: number; timestamp: string }> }> {
-    return await this.getJson("/api/admin/gpu/queue", this.adminHeaders());
-  }
-
-  async adminExportUsageCSV(params: { username?: string; from?: string; to?: string; limit?: number }): Promise<Blob> {
+  async adminExportUsageCSV(params: {
+    username?: string;
+    billingUsername?: string;
+    localUsername?: string;
+    unregisteredOnly?: boolean;
+    from?: string;
+    to?: string;
+    limit?: number;
+  }): Promise<Blob> {
     const q = new URLSearchParams();
-    if (params.username?.trim()) q.set("username", params.username.trim());
+    if (params.billingUsername?.trim()) q.set("billing_username", params.billingUsername.trim());
+    else if (params.username?.trim()) q.set("username", params.username.trim());
+    if (params.localUsername?.trim()) q.set("local_username", params.localUsername.trim());
+    if (params.unregisteredOnly) q.set("unregistered_only", "1");
     if (params.from?.trim()) q.set("from", params.from.trim());
     if (params.to?.trim()) q.set("to", params.to.trim());
     q.set("limit", String(params.limit ?? 20000));
@@ -1888,10 +2395,46 @@ export class ApiClient {
     return await this.postJson("/api/admin/mail/send", payload, this.adminHeaders());
   }
 
-  async adminAccounts(billingUsername = ""): Promise<{ accounts: UserNodeAccount[] }> {
+  async adminAccounts(
+    filters: string | { billing_username?: string; node_id?: string; local_username?: string } = "",
+  ): Promise<{ accounts: UserNodeAccount[] }> {
     const q = new URLSearchParams();
-    if (billingUsername.trim()) q.set("billing_username", billingUsername.trim());
+    if (typeof filters === "string") {
+      const billingUsername = filters.trim();
+      if (billingUsername) q.set("billing_username", billingUsername);
+    } else {
+      const billingUsername = String(filters.billing_username || "").trim();
+      const nodeID = String(filters.node_id || "").trim();
+      const localUsername = String(filters.local_username || "").trim();
+      if (billingUsername) q.set("billing_username", billingUsername);
+      if (nodeID) q.set("node_id", nodeID);
+      if (localUsername) q.set("local_username", localUsername);
+    }
     return await this.getJson(`/api/admin/accounts?${q.toString()}`, this.adminHeaders());
+  }
+
+  async adminGetBindPolicy(): Promise<NodeBindSecurityPolicy> {
+    return await this.getJson("/api/admin/accounts/bind-policy", this.adminHeaders());
+  }
+
+  async adminSetBindPolicy(payload: NodeBindSecurityPolicy): Promise<{ ok: boolean; policy: NodeBindSecurityPolicy }> {
+    return await this.postJson("/api/admin/accounts/bind-policy", payload, this.adminHeaders());
+  }
+
+  async adminBindCooldowns(params: {
+    active_only?: boolean;
+    limit?: number;
+  } = {}): Promise<{ rows: AdminUserNodeBindCooldownRow[] }> {
+    const q = new URLSearchParams();
+    if (typeof params.active_only === "boolean") q.set("active_only", String(params.active_only));
+    if (Number.isFinite(params.limit) && Number(params.limit) > 0) q.set("limit", String(Math.floor(Number(params.limit))));
+    return await this.getJson(`/api/admin/accounts/bind-cooldowns?${q.toString()}`, this.adminHeaders());
+  }
+
+  async adminUnfreezeBindCooldown(payload: {
+    billing_username: string;
+  }): Promise<{ ok: boolean; cooldown: UserNodeBindCooldown }> {
+    return await this.postJson("/api/admin/accounts/bind-cooldowns/unfreeze", payload, this.adminHeaders());
   }
 
   async adminAccountMappingRisks(params: {
@@ -1911,6 +2454,13 @@ export class ApiClient {
     return await this.getJson(`/api/admin/accounts/mapping-risks?${q.toString()}`, this.adminHeaders());
   }
 
+  async adminClearAccountMappingRisk(payload: {
+    node_id: string;
+    local_username: string;
+  }): Promise<{ ok: boolean; node_id: string; local_username: string }> {
+    return await this.postJson("/api/admin/accounts/mapping-risks/clear", payload, this.adminHeaders());
+  }
+
   async adminProvisionLogs(params: {
     billing_username?: string;
     node_id?: string;
@@ -1923,6 +2473,40 @@ export class ApiClient {
     if (String(params.local_username || "").trim()) q.set("local_username", String(params.local_username).trim());
     if (Number.isFinite(params.limit) && Number(params.limit) > 0) q.set("limit", String(Math.floor(Number(params.limit))));
     return await this.getJson(`/api/admin/accounts/provision-logs?${q.toString()}`, this.adminHeaders());
+  }
+
+  async adminUnbindRecords(params: {
+    billing_username?: string;
+    node_id?: string;
+    local_username?: string;
+    status?: string;
+    source_type?: string;
+    limit?: number;
+  } = {}): Promise<{ records: UserNodeUnbindRecord[] }> {
+    const q = new URLSearchParams();
+    if (String(params.billing_username || "").trim()) q.set("billing_username", String(params.billing_username).trim());
+    if (String(params.node_id || "").trim()) q.set("node_id", String(params.node_id).trim());
+    if (String(params.local_username || "").trim()) q.set("local_username", String(params.local_username).trim());
+    if (String(params.status || "").trim()) q.set("status", String(params.status).trim());
+    if (String(params.source_type || "").trim()) q.set("source_type", String(params.source_type).trim());
+    if (Number.isFinite(params.limit) && Number(params.limit) > 0) q.set("limit", String(Math.floor(Number(params.limit))));
+    return await this.getJson(`/api/admin/accounts/unbind-records?${q.toString()}`, this.adminHeaders());
+  }
+
+  async adminCreateUnbindRequest(payload: {
+    billing_username?: string;
+    node_id: string;
+    local_username: string;
+    reason: string;
+  }): Promise<{
+    ok: boolean;
+    request_id: number;
+    billing_username: string;
+    node_id: string;
+    local_username: string;
+    message: string;
+  }> {
+    return await this.postJson("/api/admin/accounts/unbind-request", payload, this.adminHeaders());
   }
 
   async adminUpsertAccount(payload: { billing_username: string; node_id: string; local_username: string }): Promise<{ ok: boolean }> {
@@ -1997,7 +2581,13 @@ export class ApiClient {
     return (await res.json()) as { ok: boolean };
   }
 
-  async adminDeleteAccount(params: { billing_username: string; node_id: string; local_username: string }): Promise<{ ok: boolean }> {
+  async adminDeleteAccount(params: { billing_username: string; node_id: string; local_username: string; reason: string }): Promise<{
+    ok: boolean;
+    billing_username: string;
+    node_id: string;
+    local_username: string;
+    message: string;
+  }> {
     const q = new URLSearchParams(params);
     const res = await fetch(this.url(`/api/admin/accounts?${q.toString()}`), {
       method: "DELETE",
@@ -2008,7 +2598,13 @@ export class ApiClient {
       const text = await this.readText(res);
       throw normalizeServerError(res.status, text);
     }
-    return (await res.json()) as { ok: boolean };
+    return (await res.json()) as {
+      ok: boolean;
+      billing_username: string;
+      node_id: string;
+      local_username: string;
+      message: string;
+    };
   }
 
   async decryptProvisionKey(encryptedPayload: string, decryptCode: string): Promise<{
@@ -2154,6 +2750,7 @@ export class ApiClient {
     can_view_board: boolean;
     can_view_nodes: boolean;
     can_manage_nodes: boolean;
+    can_manage_points: boolean;
     can_review_requests: boolean;
   }): Promise<{ ok: boolean }> {
     return await this.postJson("/api/admin/power-users", payload, this.adminHeaders());
@@ -2164,6 +2761,7 @@ export class ApiClient {
     can_view_board: boolean;
     can_view_nodes: boolean;
     can_manage_nodes: boolean;
+    can_manage_points: boolean;
     can_review_requests: boolean;
   }): Promise<{ ok: boolean }> {
     return await this.postJson("/api/admin/power-users/promote", payload, this.adminHeaders());
@@ -2171,7 +2769,7 @@ export class ApiClient {
 
   async adminUpdatePowerUserPermissions(
     username: string,
-    payload: { can_view_board: boolean; can_view_nodes: boolean; can_manage_nodes: boolean; can_review_requests: boolean },
+    payload: { can_view_board: boolean; can_view_nodes: boolean; can_manage_nodes: boolean; can_manage_points: boolean; can_review_requests: boolean },
   ): Promise<{ ok: boolean }> {
     const res = await fetch(this.url(`/api/admin/power-users/${encodeURIComponent(username)}/permissions`), {
       method: "PUT",
@@ -2205,6 +2803,26 @@ export class ApiClient {
 
   async adminHAStatus(): Promise<HAStatusResp> {
     return await this.getJson("/api/admin/ha/status", this.adminHeaders());
+  }
+
+  async adminHASyncConfig(limit = 20): Promise<HASyncConfigResp> {
+    return await this.getJson(`/api/admin/ha/sync/config?limit=${encodeURIComponent(String(limit))}`, this.adminHeaders());
+  }
+
+  async adminSetHASyncConfig(payload: HASyncConfig): Promise<{ ok: boolean; config: HASyncConfig }> {
+    return await this.postJson("/api/admin/ha/sync/config", payload, this.adminHeaders());
+  }
+
+  async adminHASyncRuns(limit = 50): Promise<{ runs: HASyncRun[]; running: boolean }> {
+    return await this.getJson(`/api/admin/ha/sync/runs?limit=${encodeURIComponent(String(limit))}`, this.adminHeaders());
+  }
+
+  async adminHASyncNow(payload: { direction: "primary_to_standby" | "standby_to_primary"; trigger_mode?: string }): Promise<{ ok: boolean; run_id: number; message: string }> {
+    return await this.postJson("/api/admin/ha/sync/now", payload, this.adminHeaders());
+  }
+
+  async adminHAFailoverActivate(): Promise<{ ok: boolean; message: string; steps: HASyncStep[] }> {
+    return await this.postJson("/api/admin/ha/failover/activate", {}, this.adminHeaders());
   }
 
   async adminStatsUsers(params: { from?: string; to?: string; limit?: number }): Promise<{ from: string; to: string; rows: UsageUserSummary[] }> {

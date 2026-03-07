@@ -55,6 +55,8 @@ type NodeAgent struct {
 }
 
 func main() {
+	setDefaultTimezone()
+
 	agent := &NodeAgent{
 		nodeID:                    strings.TrimSpace(os.Getenv("NODE_ID")),
 		controllerURL:             strings.TrimSpace(os.Getenv("CONTROLLER_URL")),
@@ -146,6 +148,16 @@ func (a *NodeAgent) Run(ctx context.Context) {
 	defer reportTicker.Stop()
 	defer actionTicker.Stop()
 
+	restoreCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	a.reconcilePersistedMemoryLimits(restoreCtx)
+	cancel()
+	restoreGPUCtx, cancelGPU := context.WithTimeout(ctx, 30*time.Second)
+	a.reconcilePersistedGPUExclusive(restoreGPUCtx)
+	cancelGPU()
+	restoreGPUVisibilityCtx, cancelGPUVisibility := context.WithTimeout(ctx, 30*time.Second)
+	a.reconcilePersistedGPUVisibility(restoreGPUVisibilityCtx)
+	cancelGPUVisibility()
+
 	if err := a.tick(ctx); err != nil {
 		a.logger.Printf("tick 异常：%v", err)
 	}
@@ -189,6 +201,11 @@ func (a *NodeAgent) tick(ctx context.Context) error {
 	}
 
 	a.executeActions(ctx, resp.Actions)
+	enforceCtx, cancel3 := context.WithTimeout(ctx, 20*time.Second)
+	if err := a.enforcePersistedMemoryLimits(enforceCtx); err != nil {
+		a.logger.Printf("内存限额巡检异常：%v", err)
+	}
+	cancel3()
 
 	return nil
 }
@@ -206,6 +223,13 @@ func (a *NodeAgent) actionTick(ctx context.Context) error {
 		return err
 	}
 	a.executeActions(ctx, resp.Actions)
+	if hasPositiveMemoryLimitAction(resp.Actions) {
+		enforceCtx, cancel2 := context.WithTimeout(ctx, 20*time.Second)
+		if err := a.enforcePersistedMemoryLimits(enforceCtx); err != nil {
+			a.logger.Printf("动作后内存限额巡检异常：%v", err)
+		}
+		cancel2()
+	}
 	return nil
 }
 
@@ -217,6 +241,15 @@ func (a *NodeAgent) executeActions(ctx context.Context, actions []Action) {
 		}
 		cancel()
 	}
+}
+
+func hasPositiveMemoryLimitAction(actions []Action) bool {
+	for _, act := range actions {
+		if act.Type == "set_memory_limit" && act.MemoryLimitGB > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *NodeAgent) triggerForceSync(reason string) {

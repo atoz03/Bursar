@@ -43,7 +43,7 @@ SSH_FAIL2BAN_MAXRETRY="${SSH_FAIL2BAN_MAXRETRY:-20}"
 SSH_FAIL2BAN_FINDTIME="${SSH_FAIL2BAN_FINDTIME:-5m}"
 SSH_FAIL2BAN_BANTIME="${SSH_FAIL2BAN_BANTIME:-12h}"
 SSH_FAIL2BAN_IGNOREIP="${SSH_FAIL2BAN_IGNOREIP:-}"
-ENABLE_USER_SLICE_CPU_RESERVE="${ENABLE_USER_SLICE_CPU_RESERVE:-0}"
+ENABLE_USER_SLICE_CPU_RESERVE="${ENABLE_USER_SLICE_CPU_RESERVE:-1}"
 USER_SLICE_CPU_RESERVE_PERCENT="${USER_SLICE_CPU_RESERVE_PERCENT:-95}"
 ENABLE_USER_SLICE_MEMORY_RESERVE="${ENABLE_USER_SLICE_MEMORY_RESERVE:-1}"
 USER_SLICE_MEMORY_RESERVE_GB="${USER_SLICE_MEMORY_RESERVE_GB:-8}"
@@ -212,8 +212,8 @@ usage() {
   SSH_FAIL2BAN_FINDTIME=5m         fail2ban SSH 统计窗口（默认 5m）
   SSH_FAIL2BAN_BANTIME=12h         fail2ban SSH 封禁时长（默认 12h）
   SSH_FAIL2BAN_IGNOREIP="..."      fail2ban 忽略网段（默认空，不忽略 localhost）
-  ENABLE_USER_SLICE_CPU_RESERVE=0  为 user.slice 预留 5% CPU（默认 0，关闭）
-  USER_SLICE_CPU_RESERVE_PERCENT=95 user.slice CPU 上限百分比（默认 95）
+  ENABLE_USER_SLICE_CPU_RESERVE=1  为 user.slice 预留 CPU（默认 1，开启）
+  USER_SLICE_CPU_RESERVE_PERCENT=95 user.slice CPU 上限百分比（默认 95，约保留 5% 给系统）
   ENABLE_USER_SLICE_MEMORY_RESERVE=1 是否为系统保留内存（默认 1，开启）
   USER_SLICE_MEMORY_RESERVE_GB=8     为系统保留内存（GB，默认 8）
   RESET_USER_CPU_QUOTA_ON_INSTALL=1 安装时清理历史用户 CPU 限速残留（默认 1）
@@ -268,6 +268,7 @@ echo "CONTROLLER_URL=${CONTROLLER_URL}"
 echo "SERVICE_NAME=${SERVICE_NAME}"
 echo "SYNC_TIME_WITH_CONTROLLER=${SYNC_TIME_WITH_CONTROLLER}"
 echo "ENABLE_SSH_GUARD=${ENABLE_SSH_GUARD} (FAIL_OPEN=${SSH_GUARD_FAIL_OPEN})"
+echo "ENABLE_USER_SLICE_CPU_RESERVE=${ENABLE_USER_SLICE_CPU_RESERVE} (USER_SLICE_CPU_RESERVE_PERCENT=${USER_SLICE_CPU_RESERVE_PERCENT})"
 echo "ENABLE_USER_SLICE_MEMORY_RESERVE=${ENABLE_USER_SLICE_MEMORY_RESERVE} (USER_SLICE_MEMORY_RESERVE_GB=${USER_SLICE_MEMORY_RESERVE_GB})"
 echo "INSTALL_NODE_DEPS=${INSTALL_NODE_DEPS}"
 echo "INSTALL_DOCKER_DEPS=${INSTALL_DOCKER_DEPS}"
@@ -584,6 +585,38 @@ EOF_CHECK
   ${SUDO} chmod +x /opt/gpu-cluster/ssh_login_check.sh
   ${SUDO} touch /var/log/gpu-ssh-guard.log || true
   ${SUDO} chmod 0644 /var/log/gpu-ssh-guard.log || true
+
+  ${SUDO} tee /usr/local/bin/gpuops-claim >/dev/null <<'EOF_CLAIM'
+#!/bin/bash
+set -euo pipefail
+
+CONF="/etc/gpu-cluster/ssh_guard.conf"
+if [[ -f "${CONF}" ]]; then
+  # shellcheck disable=SC1090
+  source "${CONF}"
+fi
+
+TOKEN="${1:-}"
+if [[ -z "${TOKEN}" ]]; then
+  echo "用法：gpuops-claim <challenge_token>" >&2
+  exit 2
+fi
+
+CONTROLLER_URL="${CONTROLLER_URL:-}"
+NODE_ID="${NODE_ID:-}"
+LOCAL_USER="$(id -un 2>/dev/null || whoami)"
+
+if [[ -z "${CONTROLLER_URL}" || -z "${NODE_ID}" || -z "${LOCAL_USER}" ]]; then
+  echo "缺少 CONTROLLER_URL/NODE_ID/LOCAL_USER，无法提交 challenge" >&2
+  exit 2
+fi
+
+api="${CONTROLLER_URL%/}/api/registry/bind-claim"
+payload="$(printf '{\"token\":\"%s\",\"node_id\":\"%s\",\"local_username\":\"%s\"}' "${TOKEN}" "${NODE_ID}" "${LOCAL_USER}")"
+curl -fsS -H "Content-Type: application/json" --data "${payload}" "${api}"
+echo
+EOF_CLAIM
+  ${SUDO} chmod 0755 /usr/local/bin/gpuops-claim
 
   ${SUDO} tee /opt/gpu-cluster/enforce_ssh_sessions.sh >/dev/null <<'EOF_ENFORCE'
 #!/bin/bash

@@ -187,6 +187,10 @@ func detectPortScan(ctx context.Context) (bool, []string, []int) {
 	if err != nil || len(out) == 0 {
 		return false, nil, nil
 	}
+	suspiciousStates := map[string]struct{}{
+		"SYN-RECV": {},
+		"SYN-SENT": {},
+	}
 	portsBySource := map[string]map[int]struct{}{}
 	connsBySource := map[string]int{}
 
@@ -200,7 +204,7 @@ func detectPortScan(ctx context.Context) (bool, []string, []int) {
 			continue
 		}
 		state := strings.ToUpper(strings.TrimSpace(fields[0]))
-		if state == "LISTEN" || state == "ESTAB" {
+		if _, ok := suspiciousStates[state]; !ok {
 			continue
 		}
 		local := strings.TrimSpace(fields[len(fields)-2])

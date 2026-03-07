@@ -138,6 +138,54 @@ CSRF 说明（Web 登录场景）：
 
 ### `GET /api/admin/users`
 
+### 容灾同步接口（管理员）
+
+#### `GET /api/admin/ha/status`
+- 返回主备状态摘要（本机/对端可达性、摘要 digest、一致性、版本哈希比对）。
+
+#### `GET /api/admin/ha/sync/config`
+- 返回容灾同步配置、最近同步日志、任务运行状态、下次计划时间。
+
+#### `POST /api/admin/ha/sync/config`
+- 设置容灾同步配置。
+- 关键字段：`interval_days`、`start_hour`、`dr_controller_port`、`sync_web_dist`、`sync_database`。
+
+请求示例：
+```json
+{
+  "enabled": true,
+  "interval_days": 1,
+  "start_hour": 3,
+  "dr_host": "192.0.2.10",
+  "dr_ssh_user": "gpuops",
+  "dr_ssh_port": 22,
+  "dr_key_file": "/home/gpuops/gpu-ops/my_ssh_keys/node_60019.txt",
+  "dr_controller_port": 60019,
+  "primary_host": "192.0.2.10",
+  "primary_controller_port": 60039,
+  "script_path": "/home/gpuops/gpu-ops/scripts/ha_sync_worker.sh",
+  "sync_web_dist": true,
+  "sync_database": true,
+  "auto_failover": true
+}
+```
+
+#### `GET /api/admin/ha/sync/runs`
+- 返回容灾同步日志（支持查看每个步骤成功/失败）。
+
+#### `POST /api/admin/ha/sync/now`
+- 立即触发同步任务（异步）。
+- `direction`：`primary_to_standby` 或 `standby_to_primary`。
+
+请求示例：
+```json
+{"direction":"standby_to_primary","trigger_mode":"recovery"}
+```
+
+#### `POST /api/admin/ha/failover/activate`
+- 立即尝试启动本机容灾接管服务（`gpu-controller`、`keepalived`）。
+- 返回每个服务启动步骤结果。
+
 ### `POST /api/admin/prices`
 
 请求：
@@ -150,39 +198,102 @@ CSRF 说明（Web 登录场景）：
 - CPU 计费使用特殊模型名 `CPU_CORE`（按核分钟：100% CPU ≈ 1 核）。
 - `set_cpu_quota` 需要节点支持 systemd CPUQuota 或 cgroup（v2 或 v1 的 cpu controller），且 Agent 以 root 运行。
 
-## 排队接口（可选）
-
-### `POST /api/gpu/request`
-
-请求：
-
-```json
-{"username":"alice","gpu_type":"rtx3090","count":2}
-```
-
-响应（当前实现为“只排队不分配”的可运行版本）：
-
-```json
-{"status":"queued","position":3,"estimated_minutes":30,"message":"当前无可用 GPU，已加入排队"}
-```
-
-### `GET /api/admin/gpu/queue`（管理员）
-
 ### `GET /api/admin/usage`（管理员）
 
 参数：
-- `username`：可选，按用户过滤
+- `billing_username` / `username`：可选，按平台账号过滤
+- `local_username`：可选，按节点账号过滤
+- `unregistered_only=1`：可选，仅查看未注册账号
 - `limit`：返回条数（默认 200，最大 5000）
+
+返回：
+
+```json
+{
+  "records": [
+    {
+      "node_id": "60000",
+      "billing_username": "alice",
+      "local_username": "alice",
+      "timestamp": "2026-02-05T16:00:00Z"
+    }
+  ],
+  "kill_records": [
+    {
+      "record_id": 1,
+      "node_id": "60000",
+      "billing_username": "alice",
+      "local_username": "alice",
+      "action_type": "kill_all_processes",
+      "reason": "余额超过欠费上限，执行一次性清理全部进程",
+      "pids": [],
+      "timestamp": "2026-02-05T16:01:00Z"
+    }
+  ]
+}
+```
 
 ### `GET /api/admin/usage/export.csv`（管理员）
 
 参数：
-- `username`：可选
+- `billing_username` / `username`：可选
+- `local_username`：可选
+- `unregistered_only=1`：可选
 - `from`：可选（RFC3339 或 YYYY-MM-DD）
 - `to`：可选（RFC3339 或 YYYY-MM-DD）
 - `limit`：可选（默认 20000，最大 200000）
 
 返回：CSV 文件（列：timestamp,node_id,username,cpu_percent,memory_mb,cost,gpu_usage_json）。
+
+### `GET /api/admin/usage/days`（管理员）
+
+用途：返回“有使用记录的日期列表”，前端可据此将无数据日期置灰不可选。
+
+参数：
+- `billing_username` / `username`：可选
+- `local_username`：可选
+- `unregistered_only=1`：可选
+- `from` / `to`：可选（RFC3339 或 YYYY-MM-DD）
+
+返回：
+```json
+{
+  "days":[
+    {"date":"2026-03-01","record_count":312,"estimated_csv_bytes":84512}
+  ]
+}
+```
+
+### `GET /api/admin/usage/range-estimate`（管理员）
+
+用途：估算某个日期区间内记录条数与体积（用于导出/删除前确认）。
+
+参数：
+- `from` / `to`：必填（RFC3339 或 YYYY-MM-DD）
+- `billing_username` / `username`：可选
+- `local_username`：可选
+- `unregistered_only=1`：可选
+
+### `POST /api/admin/usage/delete-range`（管理员）
+
+用途：删除指定日期区间内的 `usage_records`（仅使用记录，不影响账号/节点/计费配置等其它数据）。
+
+请求：
+```json
+{
+  "from":"2026-03-01",
+  "to":"2026-03-03",
+  "billing_username":"alice",
+  "local_username":"",
+  "unregistered_only":false,
+  "confirm":true
+}
+```
+
+返回：
+```json
+{"ok":true,"records_before":1200,"deleted_records":1200}
+```
 
 ### `GET /api/admin/nodes`（管理员）
 

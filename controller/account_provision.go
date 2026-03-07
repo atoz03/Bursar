@@ -15,7 +15,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/ssh"
@@ -109,7 +108,7 @@ func buildEncryptedPrivateKeyPayload(
 		SSHHost:         strings.TrimSpace(sshHost),
 		SSHPort:         sshPort,
 		FileName:        fileName,
-		IssuedAt:        time.Now().UTC().Format(time.RFC3339),
+		IssuedAt:        formatRFC3339InBeijing(nowInBeijing()),
 	}
 	raw, err := json.Marshal(env)
 	if err != nil {

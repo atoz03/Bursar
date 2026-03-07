@@ -25,13 +25,13 @@
           <template #default="{ row }">{{ Number(row.balance || 0).toFixed(2) }}</template>
         </el-table-column>
         <el-table-column prop="updated_by" label="最后调整人" width="140" />
-        <el-table-column prop="updated_at" label="更新时间" min-width="180" />
+        <el-table-column prop="updated_at" label="更新时间" min-width="180" :formatter="tableTimeFormatter" />
       </el-table>
       <div class="title">节点账号映射（该平台账号在哪些节点有号）</div>
       <el-table :data="user.node_accounts || []" stripe max-height="240" empty-text="暂无映射">
         <el-table-column prop="node_id" label="节点编号" width="140" />
         <el-table-column prop="local_username" label="节点账号" width="180" />
-        <el-table-column prop="updated_at" label="更新时间" min-width="180" />
+        <el-table-column prop="updated_at" label="更新时间" min-width="180" :formatter="tableTimeFormatter" />
       </el-table>
     </template>
   </el-dialog>
@@ -42,6 +42,7 @@ import { ref, watch } from "vue";
 import { ApiClient, type PlatformUserDetail } from "../lib/api";
 import { settingsState } from "../lib/settingsStore";
 import { authState } from "../lib/authStore";
+import { formatServerDateTime } from "../lib/time";
 
 const props = defineProps<{
   modelValue: boolean;
@@ -64,6 +65,10 @@ function roleText(role: string): string {
 function fmtGrad(year: number, month: number): string {
   if (!year || !month) return "-";
   return `${year}-${String(month).padStart(2, "0")}`;
+}
+
+function tableTimeFormatter(_: unknown, __: unknown, cellValue: unknown): string {
+  return formatServerDateTime(String(cellValue ?? ""));
 }
 
 async function load() {

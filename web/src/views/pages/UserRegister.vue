@@ -66,8 +66,8 @@
               <el-col :span="24">
                 <el-form-item required>
                   <template #label><span class="required">*</span> 用户名</template>
-                  <el-input v-model="form.username" placeholder="例如：zhangsan22B123456（不超过18字符）" @blur="checkUnique('username')" />
-                  <div class="field-tip">建议使用姓名缩写+学号，例如 zhangsan22B123456，最多 18 个字符。</div>
+                  <el-input v-model="form.username" placeholder="例如：zs22B123456（不超过18字符）" @blur="checkUnique('username')" />
+                  <div class="field-tip">建议使用姓名缩写+学号，例如 zs22B123456，最多 18 个字符。</div>
                   <div v-if="fieldErrors.username" class="field-error">{{ fieldErrors.username }}</div>
                 </el-form-item>
               </el-col>

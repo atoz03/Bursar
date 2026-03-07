@@ -7,23 +7,36 @@
       <div class="user-fun-blob b" />
       <div class="user-fun-spark a" />
       <div class="user-fun-spark b" />
-      <div class="user-fun-sticker left">立即生效</div>
-      <div class="user-fun-sticker right">识别更准确</div>
+      <div class="user-fun-sticker left">5分钟校验</div>
+      <div class="user-fun-sticker right">防冒充绑定</div>
     </div>
     <el-card class="user-fun-card accounts-card">
       <template #header>
         <div class="head">
           <div>
-            <h2 class="user-fun-head-title">我的节点账号映射</h2>
-            <p class="user-fun-head-sub">用于识别你在哪些节点有账号，无需管理员审核即可生效。</p>
+            <h2 class="user-fun-head-title">
+              <span>我的节点账号映射</span>
+              <span v-if="headerNeedAttention" class="menu-red-dot" aria-label="账号已开通提醒" />
+            </h2>
+            <p class="user-fun-head-sub">按步骤完成映射即可开始正常使用节点。</p>
           </div>
           <el-button :loading="loading" type="primary" @click="reload">刷新</el-button>
         </div>
       </template>
       <el-alert v-if="error" :title="error" type="error" show-icon class="mb" />
       <el-alert v-if="success" :title="success" type="success" show-icon class="mb" />
+      <div v-if="showFirstGuideRedDots" class="first-guide-banner mb">
+        <div class="first-guide-title">
+          <span class="menu-red-dot inline-dot" />
+          <span>首次登录请先看这里</span>
+        </div>
+        <div class="first-guide-body">
+          第一次使用请按顺序完成：① 发起 challenge，② 在挑战窗口执行命令，③ 确认映射生效；如果你还没有任何节点账号，再做 ④ 新生开通申请。
+        </div>
+        <el-button size="small" type="primary" plain @click="dismissFirstGuide">我已阅读</el-button>
+      </div>
       <el-alert
-        title="示例：如果你在 66666 端口上有一个叫 zhangsan 的账号，请填写：节点编号 66666，节点账号 zhangsan。"
+        title="示例：如果你在 66666 端口上有一个叫 zhangsan 的账号，请填写“节点编号 66666 + 节点账号 zhangsan”，系统会给出 gpuops-claim 命令。"
         type="info"
         :closable="false"
         show-icon
@@ -41,7 +54,10 @@
         <template #header>
           <div class="head">
             <div>
-              <strong>节点账号开通密钥通知（平台内）</strong>
+              <strong>
+                节点账号开通密钥通知（平台内）
+                <span v-if="hasNewProvisionMessage || showFirstGuideRedDots" class="menu-red-dot inline-dot" aria-label="账号已开通提醒" />
+              </strong>
               <div class="mini">密文与解密步骤在这里，提取码请查收注册邮箱。</div>
             </div>
           </div>
@@ -61,7 +77,7 @@
           class="mb"
         />
         <el-table :data="provisionMessages" stripe size="small" max-height="260">
-          <el-table-column prop="created_at" label="开通时间" min-width="170" />
+          <el-table-column prop="created_at" label="开通时间" min-width="170" :formatter="tableTimeFormatter" />
           <el-table-column prop="node_id" label="节点编号" width="120" />
           <el-table-column prop="local_username" label="节点账号" width="140" />
           <el-table-column prop="ssh_host" label="SSH 主机" min-width="160" />
@@ -72,7 +88,7 @@
                 <el-tag v-if="isMessageDestroyed(row)" type="info" effect="plain">已销毁</el-tag>
                 <el-tag v-else-if="row.first_decrypted_at" type="warning" effect="plain">倒计时中</el-tag>
                 <el-tag v-else type="success" effect="plain">未开始</el-tag>
-                <div v-if="row.destroy_after_at" class="msg-status-deadline">销毁时间：{{ formatDestroyAfter(row) }}</div>
+                <div v-if="row.destroy_after_at" class="msg-status-deadline">销毁时间：{{ formatServerDateTime(row.destroy_after_at) }}</div>
               </div>
             </template>
           </el-table-column>
@@ -95,17 +111,11 @@
         </el-table>
       </el-card>
       <div class="section-inline-title">
-        <span class="title">① 先添加你已有的节点账号映射（推荐优先完成）</span>
+        <span class="title">① 发起绑定 challenge</span>
+        <span v-if="showFirstGuideRedDots" class="menu-red-dot inline-dot" />
       </div>
       <el-alert
-        title="请优先添加你已经拥有的节点账号映射，这一步无需审核且立即生效。下面“申请账号”仅用于没有任何节点账号的新生。"
-        type="warning"
-        :closable="false"
-        show-icon
-        class="mb strong-tip"
-      />
-      <el-alert
-        title="若该节点账号已被他人绑定，系统会拒绝提交并提示具体账号。冒充绑定他人节点账号将被追责。"
+        title="严禁冒充绑定。冲突映射不会展示对方平台账号；若多人争抢同一映射，系统会自动冻结 30 分钟并告警。"
         type="error"
         :closable="false"
         show-icon
@@ -118,27 +128,140 @@
         <el-form-item label="节点账号">
           <el-input v-model="localUsername" style="width: 260px" placeholder="例如 zhangsan" />
         </el-form-item>
-        <el-form-item><el-button type="primary" @click="add">{{ isEditing ? "保存修改" : "新增/覆盖" }}</el-button></el-form-item>
+        <el-form-item><el-button type="primary" @click="add">发起 challenge</el-button></el-form-item>
       </el-form>
+      <el-alert
+        v-if="bindCooldownUntil"
+        :title="`当前账号在绑定冷却中，冷却结束时间：${bindCooldownUntil}`"
+        type="warning"
+        :closable="false"
+        show-icon
+        class="mb"
+      />
+      <div class="section-inline-title">
+        <span class="title">② 在挑战窗口执行命令完成校验</span>
+        <span v-if="showFirstGuideRedDots" class="menu-red-dot inline-dot" />
+      </div>
+      <el-card v-if="activeChallenge" class="mb provision-msg-card">
+        <template #header>
+          <div class="head">
+            <div>
+              <strong>当前 challenge 窗口</strong>
+              <div class="mini">请在节点上用目标账号登录后执行以下命令（5 分钟内有效）。</div>
+            </div>
+          </div>
+        </template>
+        <el-alert
+          title="挑战窗口仅存在 5 分钟（蓝色提示）：请立刻在目标节点账号下执行 gpuops-claim 命令，超时会失效并进入冷却。"
+          type="info"
+          :closable="false"
+          show-icon
+          class="mb challenge-blue-tip"
+        />
+        <el-descriptions :column="2" border size="small">
+          <el-descriptions-item label="节点编号">{{ activeChallenge.node_id }}</el-descriptions-item>
+          <el-descriptions-item label="节点账号">{{ activeChallenge.local_username }}</el-descriptions-item>
+          <el-descriptions-item label="到期时间">{{ formatServerDateTime(activeChallenge.expires_at) }}</el-descriptions-item>
+          <el-descriptions-item label="状态">{{ activeChallenge.status }}</el-descriptions-item>
+          <el-descriptions-item label="challenge token" :span="2">
+            <code>{{ activeChallenge.challenge_token }}</code>
+          </el-descriptions-item>
+          <el-descriptions-item label="执行命令" :span="2">
+            <code>{{ activeChallenge.claim_command }}</code>
+          </el-descriptions-item>
+        </el-descriptions>
+        <div class="payload-actions">
+          <el-button size="small" type="primary" @click="copyText(activeChallenge.claim_command)">复制命令</el-button>
+          <el-button size="small" @click="copyText(activeChallenge.challenge_token)">复制 token</el-button>
+        </div>
+      </el-card>
+      <el-alert
+        v-else
+        title="当前没有进行中的 challenge。请先完成步骤 ① 发起挑战。"
+        type="info"
+        :closable="false"
+        show-icon
+        class="mb challenge-blue-tip"
+      />
+      <div class="section-inline-title">
+        <span class="title">③ 查看已生效映射并管理解绑</span>
+        <span v-if="showFirstGuideRedDots" class="menu-red-dot inline-dot" />
+      </div>
       <el-table :data="rows" stripe class="table">
         <el-table-column prop="node_id" label="节点编号" width="160" />
         <el-table-column prop="local_username" label="节点账号" width="200" />
         <el-table-column prop="billing_username" label="平台账号" width="180" />
-        <el-table-column prop="updated_at" label="更新时间" min-width="190" />
-        <el-table-column label="操作" width="220">
+        <el-table-column prop="updated_at" label="更新时间" min-width="190" :formatter="tableTimeFormatter" />
+        <el-table-column label="操作" min-width="320">
           <template #default="{ row }">
-            <el-button size="small" @click="prefill(row)">编辑</el-button>
-            <el-button size="small" type="danger" @click="remove(row)">删除</el-button>
+            <el-button size="small" type="danger" :disabled="isUnbindSubmitBlocked(row)" @click="remove(row)">申请解绑</el-button>
+            <div v-if="isUnbindSubmitBlocked(row)" class="mini unbind-block-tip">{{ unbindSubmitBlockedMessage(row) }}</div>
           </template>
         </el-table-column>
       </el-table>
-
-      <el-divider v-if="rows.length === 0" />
-      <el-card v-if="rows.length === 0" class="mb open-request-card">
+      <el-card v-if="mappedNodeInfos.length > 0" class="mb provision-msg-card">
         <template #header>
           <div class="head">
             <div>
-              <strong>② 新生节点账号申请（无已有节点账号时使用）</strong>
+              <strong>已映射节点价格与 /home 配额</strong>
+              <div class="mini">仅展示你已成功映射的节点账号。</div>
+            </div>
+          </div>
+        </template>
+        <div class="quota-tip-box mb">
+          <p class="quota-tip-line">
+            请重点关注 <span class="blue-keyword">CPU 单价</span>、<span class="blue-keyword">GPU 单价</span>、
+            <span class="blue-keyword">/home 配额</span>。超过 <span class="blue-keyword">/home 配额</span> 后会
+            <span class="blue-keyword">禁止写入</span>。
+          </p>
+          <p class="quota-tip-line">
+            建议将大文件转入 <span class="blue-keyword">/mnt</span> 或 <span class="blue-keyword">NFS(shared node)</span>，
+            通过 <span class="blue-keyword">软链接</span> 使用，并将关键数据
+            <span class="blue-keyword">备份到本地</span>。
+          </p>
+        </div>
+        <el-table :data="mappedNodeInfos" stripe size="small">
+          <el-table-column prop="node_id" label="节点编号" width="120" />
+          <el-table-column prop="local_username" label="节点账号" width="150" />
+          <el-table-column label="GPU 单价(积分/卡分钟)" min-width="210">
+            <template #default="{ row }">
+              <div>{{ formatPrice(row.effective_gpu_price_per_minute) }}</div>
+              <div class="mini">来源：{{ formatPriceSource(row.gpu_price_source, "gpu") }}</div>
+            </template>
+          </el-table-column>
+          <el-table-column label="CPU 单价(积分/核分钟)" min-width="210">
+            <template #default="{ row }">
+              <div>{{ formatPrice(row.effective_cpu_price_per_core_minute) }}</div>
+              <div class="mini">来源：{{ formatPriceSource(row.cpu_price_source, "cpu") }}</div>
+            </template>
+          </el-table-column>
+          <el-table-column label="/home 已用" min-width="130">
+            <template #default="{ row }">{{ formatMBToGB(row.home_quota_used_mb) }}</template>
+          </el-table-column>
+          <el-table-column label="/home 软配额" min-width="130">
+            <template #default="{ row }">{{ formatMBToGB(row.home_quota_soft_mb) }}</template>
+          </el-table-column>
+          <el-table-column label="/home 硬配额" min-width="130">
+            <template #default="{ row }">{{ formatMBToGB(row.home_quota_hard_mb) }}</template>
+          </el-table-column>
+          <el-table-column label="写入状态" width="120">
+            <template #default="{ row }">
+              <el-tag :type="homeQuotaTagType(row)" effect="plain">{{ homeQuotaTagText(row) }}</el-tag>
+            </template>
+          </el-table-column>
+        </el-table>
+      </el-card>
+
+      <div class="section-inline-title">
+        <span class="title">④ 新生节点账号开通申请（仅无现有节点账号时）</span>
+        <span v-if="showFirstGuideRedDots" class="menu-red-dot inline-dot" />
+      </div>
+      <el-divider />
+      <el-card v-if="rows.length === 0 && !activeChallenge" class="mb open-request-card">
+        <template #header>
+          <div class="head">
+            <div>
+              <strong>④ 新生节点账号申请（无已有节点账号时使用）</strong>
               <div class="mini">此申请用于“还没有任何节点账号”的新生；同一时刻最多 1 条待审核申请。</div>
             </div>
           </div>
@@ -152,7 +275,7 @@
         />
         <el-alert
           v-if="pendingOpenRequest"
-          :title="`你已有待审核申请（ID ${pendingOpenRequest.request_id}，提交时间 ${pendingOpenRequest.created_at}），请勿重复提交。`"
+          :title="`你已有待审核申请（ID ${pendingOpenRequest.request_id}，提交时间 ${formatServerDateTime(pendingOpenRequest.created_at)}），请勿重复提交。`"
           type="info"
           :closable="false"
           show-icon
@@ -185,9 +308,17 @@
           </el-table-column>
           <el-table-column prop="status" label="状态" width="110" />
           <el-table-column prop="message" label="开通理由" min-width="260" />
-          <el-table-column prop="created_at" label="提交时间" min-width="170" />
+          <el-table-column prop="created_at" label="提交时间" min-width="170" :formatter="tableTimeFormatter" />
         </el-table>
       </el-card>
+      <el-alert
+        v-else
+        title="你已有映射或正在进行 challenge，当前无需提交“新生节点开通申请”。"
+        type="success"
+        :closable="false"
+        show-icon
+        class="mb"
+      />
     </el-card>
     <el-dialog v-model="decryptVisible" title="节点密钥解密" width="880px" @close="closeDecryptor">
       <p class="decrypt-note">输入邮件中的“加密密钥串”和“提取码”，解密后可下载 `ssh -i` 直接使用的私钥文件。</p>
@@ -200,10 +331,19 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { useRoute, useRouter } from "vue-router";
-import { ApiClient, type UserNodeAccount, type UserProvisionMessage, type UserRequest } from "../../lib/api";
+import {
+  ApiClient,
+  type UserNodeAccount,
+  type UserNodeBindChallengeInfo,
+  type UserNodeBindCooldown,
+  type UserMappedNodeInfo,
+  type UserProvisionMessage,
+  type UserRequest,
+} from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
 import KeyDecryptorPanel from "../../components/KeyDecryptorPanel.vue";
+import { formatServerDateTime, toServerEpochMs } from "../../lib/time";
 
 const router = useRouter();
 const route = useRoute();
@@ -212,18 +352,21 @@ const loading = ref(false);
 const error = ref("");
 const success = ref("");
 const rows = ref<UserNodeAccount[]>([]);
+const mappedNodeInfos = ref<UserMappedNodeInfo[]>([]);
+const activeChallenge = ref<UserNodeBindChallengeInfo | null>(null);
+const bindCooldown = ref<UserNodeBindCooldown | null>(null);
 const provisionMessages = ref<UserProvisionMessage[]>([]);
+const userRequests = ref<UserRequest[]>([]);
 const userOpenRequests = ref<UserRequest[]>([]);
 const nodeId = ref("");
 const localUsername = ref("");
-const editOldNode = ref("");
-const editOldUser = ref("");
-const isEditing = computed(() => !!(editOldNode.value && editOldUser.value));
 const decryptVisible = ref(false);
 const selectedPayload = ref("");
 const selectedCode = ref("");
 const openRequesting = ref(false);
 const openReason = ref("");
+const firstGuideRead = ref(false);
+const USER_ACCOUNTS_GUIDE_KEY_PREFIX = "gpuops.user_accounts.guide_seen";
 const openReasonPlaceholder = [
   "请详细填写（至少 20 字）：",
   "1) 研究方向：请直接写出“研究方向”这四个字，再写具体方向",
@@ -232,9 +375,115 @@ const openReasonPlaceholder = [
   "4) 主要使用场景（训练/推理/数据处理等）",
 ].join("\n");
 
+function userAccountsGuideStorageKey(): string {
+  const username = String(authState.username || "").trim().toLowerCase();
+  return `${USER_ACCOUNTS_GUIDE_KEY_PREFIX}:${username || "anonymous"}`;
+}
+
+function loadFirstGuideReadState(): boolean {
+  try {
+    return String(localStorage.getItem(userAccountsGuideStorageKey()) || "").trim() === "1";
+  } catch {
+    return false;
+  }
+}
+
+function dismissFirstGuide() {
+  firstGuideRead.value = true;
+  try {
+    localStorage.setItem(userAccountsGuideStorageKey(), "1");
+  } catch {
+    // ignore localStorage errors
+  }
+}
+
+function tableTimeFormatter(_: unknown, __: unknown, cellValue: unknown): string {
+  return formatServerDateTime(String(cellValue ?? ""));
+}
+
+function formatPrice(value: unknown): string {
+  const v = Number(value);
+  if (!Number.isFinite(v)) return "-";
+  return v.toFixed(4);
+}
+
+function formatMBToGB(value: unknown): string {
+  const v = Number(value);
+  if (!Number.isFinite(v)) return "-";
+  return `${(v / 1024).toFixed(2)} GB`;
+}
+
+function formatPriceSource(source: string, kind: "gpu" | "cpu"): string {
+  const s = String(source || "").trim();
+  if (!s) return "默认";
+  if (s === "node_model_override") return "节点型号价";
+  if (s === "node_price_policy") return "节点GPU单价";
+  if (s === "resource_prices_gpu_model") return "全局型号价";
+  if (s === "node_cpu_price_policy") return "节点CPU单价";
+  if (s === "resource_prices_cpu_core") return "全局CPU_CORE";
+  if (s === "config_default_cpu_price") return "默认CPU单价";
+  if (s === "config_default_gpu_price") return "默认GPU单价";
+  return kind === "gpu" ? "GPU默认" : "CPU默认";
+}
+
+function homeQuotaTagType(row: UserMappedNodeInfo): "success" | "warning" | "danger" | "info" {
+  const used = Number(row.home_quota_used_mb);
+  const soft = Number(row.home_quota_soft_mb);
+  const hard = Number(row.home_quota_hard_mb);
+  if (!Number.isFinite(used) || !Number.isFinite(soft) || !Number.isFinite(hard) || (!row.home_quota_enforced && soft <= 0 && hard <= 0)) {
+    return "info";
+  }
+  if (hard > 0 && used >= hard) return "danger";
+  if (soft > 0 && used >= soft) return "warning";
+  return "success";
+}
+
+function homeQuotaTagText(row: UserMappedNodeInfo): string {
+  const used = Number(row.home_quota_used_mb);
+  const soft = Number(row.home_quota_soft_mb);
+  const hard = Number(row.home_quota_hard_mb);
+  if (!Number.isFinite(used) || !Number.isFinite(soft) || !Number.isFinite(hard) || (!row.home_quota_enforced && soft <= 0 && hard <= 0)) {
+    return "未上报";
+  }
+  if (hard > 0 && used >= hard) return "已超硬限制";
+  if (soft > 0 && used >= soft) return "已超软限制";
+  return "正常";
+}
+
 const pendingOpenRequest = computed(() =>
   (userOpenRequests.value || []).find((x) => x.request_type === "open" && x.status === "pending"),
 );
+const unbindBlockedRequestByKey = computed(() => {
+  const map = new Map<string, UserRequest>();
+  for (const req of userRequests.value || []) {
+    if (String(req.request_type || "").trim() !== "unbind") continue;
+    const status = String(req.status || "").trim();
+    if (status !== "pending" && status !== "rejected") continue;
+    const key = mappingKey(req.node_id, req.local_username);
+    if (!key) continue;
+    const prev = map.get(key);
+    if (!prev) {
+      map.set(key, req);
+      continue;
+    }
+    const prevTs = toServerEpochMs(String(prev.created_at || ""));
+    const curTs = toServerEpochMs(String(req.created_at || ""));
+    if (curTs >= prevTs) {
+      map.set(key, req);
+    }
+  }
+  return map;
+});
+const bindCooldownUntil = computed(() => {
+  const t = String(bindCooldown.value?.cooldown_until || "").trim();
+  if (!t) return "";
+  return formatServerDateTime(t);
+});
+const hasNewProvisionMessage = computed(() =>
+  (provisionMessages.value || []).some((x) => !isMessageDestroyed(x) && !String(x.first_decrypted_at || "").trim()),
+);
+const showFirstGuideRedDots = computed(() => !firstGuideRead.value);
+const headerNeedAttention = computed(() => hasNewProvisionMessage.value || showFirstGuideRedDots.value);
 
 const decryptPayload = computed(() => {
   const fromQuery = String(route.query.payload || "");
@@ -248,6 +497,7 @@ const decryptCode = computed(() => {
 });
 
 onMounted(() => {
+  firstGuideRead.value = loadFirstGuideReadState();
   if (String(route.query.tool || "").trim() === "key-decryptor") {
     decryptVisible.value = true;
   }
@@ -268,23 +518,31 @@ function isMessageDestroyed(row: UserProvisionMessage): boolean {
   if (!String(row.encrypted_payload || "").trim()) return true;
   const destroyAfterText = String(row.destroy_after_at || "").trim();
   if (!destroyAfterText) return false;
-  const destroyAfter = new Date(destroyAfterText);
-  if (Number.isNaN(destroyAfter.getTime())) return false;
-  return Date.now() >= destroyAfter.getTime();
+  const destroyAfterMs = toServerEpochMs(destroyAfterText);
+  if (Number.isNaN(destroyAfterMs)) return false;
+  return Date.now() >= destroyAfterMs;
 }
 
-function formatDestroyAfter(row: UserProvisionMessage): string {
-  const t = String(row?.destroy_after_at || "").trim();
-  if (!t) return "";
-  const d = new Date(t);
-  if (Number.isNaN(d.getTime())) return t;
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mi = String(d.getMinutes()).padStart(2, "0");
-  const ss = String(d.getSeconds()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
+function mappingKey(nodeID: string, localUsername: string): string {
+  return `${String(nodeID || "").trim()}::${String(localUsername || "").trim()}`;
+}
+
+function findBlockedUnbindRequest(row: UserNodeAccount): UserRequest | null {
+  return unbindBlockedRequestByKey.value.get(mappingKey(row.node_id, row.local_username)) || null;
+}
+
+function isUnbindSubmitBlocked(row: UserNodeAccount): boolean {
+  return !!findBlockedUnbindRequest(row);
+}
+
+function unbindSubmitBlockedMessage(row: UserNodeAccount): string {
+  const req = findBlockedUnbindRequest(row);
+  if (!req) return "";
+  const status = String(req.status || "").trim();
+  if (status === "pending") {
+    return `已申请解绑（ID ${req.request_id}）待审核，不能重复提交`;
+  }
+  return `解绑申请（ID ${req.request_id}）已驳回，不能再次提交`;
 }
 
 async function openDecryptorWithPayload(row: UserProvisionMessage) {
@@ -310,8 +568,8 @@ async function openDecryptorWithPayload(row: UserProvisionMessage) {
   try {
     const r = await client().userProvisionMessageDecryptStart(Number(row.message_id || 0));
     const msg = r.message;
-    const destroyAt = formatDestroyAfter(msg);
-    if (destroyAt) {
+    const destroyAt = formatServerDateTime(msg.destroy_after_at || "");
+    if (destroyAt && destroyAt !== "-") {
       success.value = `该密文将在 ${destroyAt} 自动销毁，请尽快完成下载与保存`;
     } else {
       success.value = "已进入解密流程，请尽快完成下载与保存";
@@ -349,6 +607,17 @@ async function copyPayload(row: UserProvisionMessage) {
   }
 }
 
+async function copyText(text: string) {
+  const v = String(text || "").trim();
+  if (!v) return;
+  try {
+    await navigator.clipboard.writeText(v);
+    ElMessage.success("已复制");
+  } catch {
+    ElMessage.error("复制失败，请手动复制");
+  }
+}
+
 async function closeDecryptor() {
   selectedPayload.value = "";
   selectedCode.value = "";
@@ -371,15 +640,14 @@ async function reload() {
   try {
     const r = await client().userAccounts();
     rows.value = r.accounts ?? [];
+    mappedNodeInfos.value = r.mapped_node_infos ?? [];
+    activeChallenge.value = (r.active_challenge as UserNodeBindChallengeInfo) || null;
+    bindCooldown.value = (r.bind_cooldown as UserNodeBindCooldown) || null;
     const m = await client().userProvisionMessages(120);
     provisionMessages.value = m.messages ?? [];
-    const billing = String(authState.username || "").trim();
-    if (billing) {
-      const reqs = await client().userRequests(billing, 200);
-      userOpenRequests.value = (reqs.requests ?? []).filter((x) => String(x.request_type || "") === "open");
-    } else {
-      userOpenRequests.value = [];
-    }
+    const reqs = await client().userRequests(200);
+    userRequests.value = reqs.requests ?? [];
+    userOpenRequests.value = userRequests.value.filter((x) => String(x.request_type || "") === "open");
   } catch (e: any) {
     error.value = e?.message ?? String(e);
   } finally {
@@ -419,7 +687,7 @@ async function submitOpenRequest() {
   }
   openRequesting.value = true;
   try {
-    await client().createOpenRequest(billing, reason);
+    await client().createOpenRequest(reason);
     success.value = "节点开通申请已提交，等待管理员审核";
     openReason.value = "";
     await reload();
@@ -432,28 +700,38 @@ async function submitOpenRequest() {
   }
 }
 
-function prefill(row: UserNodeAccount) {
-  editOldNode.value = row.node_id;
-  editOldUser.value = row.local_username;
-  nodeId.value = row.node_id;
-  localUsername.value = row.local_username;
-}
-
-function parseMappingOwnershipConflict(e: any): { matched: boolean; node: string; local: string; mappedBilling: string } {
-  if (Number(e?.status || 0) !== 409) return { matched: false, node: "", local: "", mappedBilling: "" };
+function parseMappingOwnershipConflict(e: any): { matched: boolean; node: string; local: string } {
+  if (Number(e?.status || 0) !== 409) return { matched: false, node: "", local: "" };
   try {
     const body = JSON.parse(String(e?.body || "{}"));
     if (String(body?.reason || "").trim() !== "mapping_exists_other_user") {
-      return { matched: false, node: "", local: "", mappedBilling: "" };
+      return { matched: false, node: "", local: "" };
     }
     return {
       matched: true,
       node: String(body?.node_id || "").trim(),
       local: String(body?.local_username || "").trim(),
-      mappedBilling: String(body?.mapped_billing_username || "").trim(),
     };
   } catch {
-    return { matched: false, node: "", local: "", mappedBilling: "" };
+    return { matched: false, node: "", local: "" };
+  }
+}
+
+function parseActiveChallengeConflict(e: any): { matched: boolean; node: string; local: string; expiresAt: string } {
+  if (Number(e?.status || 0) !== 409) return { matched: false, node: "", local: "", expiresAt: "" };
+  try {
+    const body = JSON.parse(String(e?.body || "{}"));
+    if (String(body?.reason || "").trim() !== "bind_active_challenge_exists") {
+      return { matched: false, node: "", local: "", expiresAt: "" };
+    }
+    return {
+      matched: true,
+      node: String(body?.active_challenge_node || "").trim(),
+      local: String(body?.active_challenge_local || "").trim(),
+      expiresAt: String(body?.active_expires_at || "").trim(),
+    };
+  } catch {
+    return { matched: false, node: "", local: "", expiresAt: "" };
   }
 }
 
@@ -464,43 +742,33 @@ async function add() {
     const node = nodeId.value.trim();
     const local = localUsername.value.trim();
     if (!node || !local) {
-      error.value = "请先填写节点编号和节点账号，再保存映射";
+      error.value = "请先填写节点编号和节点账号，再发起 challenge";
       return;
     }
-    if (editOldNode.value && editOldUser.value) {
-      try {
-        await ElMessageBox.confirm(
-          `确认修改该映射吗？\n原映射：节点 ${editOldNode.value} / 账号 ${editOldUser.value}\n新映射：节点 ${node} / 账号 ${local}\n\n若填写错误，在已开启 SSH 拦截的节点上可能暂时无法登录该节点账号。`,
-          "二次确认",
-          { type: "warning", confirmButtonText: "确认修改", cancelButtonText: "取消" },
-        );
-      } catch {
-        return;
-      }
-      await client().userUpdateAccount({
-        old_node_id: editOldNode.value,
-        old_local_username: editOldUser.value,
-        new_node_id: node,
-        new_local_username: local,
-      });
-      editOldNode.value = "";
-      editOldUser.value = "";
-    } else {
-      await client().userUpsertAccount(node, local);
-    }
-    success.value = "保存成功（此映射无需管理员审核，立即生效）";
+    const r = await client().userUpsertAccount(node, local, "用户页面发起 challenge 绑定");
+    activeChallenge.value = r.challenge || null;
+    success.value = "challenge 已创建，请在节点上执行 gpuops-claim <token> 完成校验";
     nodeId.value = "";
     localUsername.value = "";
     await reload();
   } catch (e: any) {
+    const activeConflict = parseActiveChallengeConflict(e);
+    if (activeConflict.matched) {
+      error.value = "当前已有进行中的 challenge，同一时间只能存在一个绑定挑战";
+      await ElMessageBox.alert(
+        `你当前已有进行中的绑定挑战：\n${activeConflict.node || "-"} / ${activeConflict.local || "-"}\n到期时间：${activeConflict.expiresAt || "-"}\n\n同一时间只能存在一个 challenge，请先完成当前 challenge 或等待其过期后再申请。`,
+        "绑定失败",
+        { type: "warning", confirmButtonText: "我知道了" },
+      );
+      return;
+    }
     const conflict = parseMappingOwnershipConflict(e);
     if (conflict.matched) {
       const node = conflict.node || nodeId.value.trim();
       const local = conflict.local || localUsername.value.trim();
-      const mapped = conflict.mappedBilling || "未知平台账号";
-      error.value = `节点 ${node} 的账号 ${local} 已绑定到平台账号 ${mapped}，严禁冒充绑定，冒充行为将追责`;
+      error.value = `节点 ${node} 的账号 ${local} 已被其他平台账号绑定，禁止换绑`;
       await ElMessageBox.alert(
-        `节点 ${node} 的账号 ${local} 已绑定到平台账号 ${mapped}。\n\n严禁冒充绑定：冒充行为会被审计记录并追责，请联系管理员核验处理。`,
+        `节点 ${node} 的账号 ${local} 已被绑定。\n\n不允许换绑：请先提交解绑申请并等待管理员审批。`,
         "绑定失败",
         { type: "error", confirmButtonText: "我知道了" },
       );
@@ -513,24 +781,33 @@ async function add() {
 async function remove(row: UserNodeAccount) {
   error.value = "";
   success.value = "";
+  const blockedMsg = unbindSubmitBlockedMessage(row);
+  if (blockedMsg) {
+    error.value = blockedMsg;
+    await ElMessageBox.alert(blockedMsg, "不能重复提交解绑申请", { type: "warning", confirmButtonText: "我知道了" });
+    return;
+  }
+  let reason = "";
   try {
-    await ElMessageBox.confirm(
-      `确认删除该映射吗？\n节点 ${row.node_id} / 账号 ${row.local_username}\n\n删除后，在已开启 SSH 拦截的节点上该账号将无法通过平台规则登录。`,
-      "二次确认",
-      { type: "warning", confirmButtonText: "确认删除", cancelButtonText: "取消" },
+    const input: any = await ElMessageBox.prompt(
+      `请填写解绑理由（至少 10 个字）：\n节点 ${row.node_id} / 账号 ${row.local_username}`,
+      "提交解绑申请",
+      { type: "warning", confirmButtonText: "提交申请", cancelButtonText: "取消", inputPlaceholder: "例如：毕业离组、账号停用、误绑更正" },
     );
+    reason = String(input?.value || "").trim();
+    if (reason.length < 10) {
+      ElMessage.warning("解绑理由至少 10 个字");
+      return;
+    }
   } catch {
     return;
   }
   try {
-    await client().userDeleteAccount(row.node_id, row.local_username);
-    success.value = "删除成功";
+    await client().userDeleteAccount(row.node_id, row.local_username, reason);
+    success.value = "解绑申请已提交，等待管理员审核";
     await reload();
   } catch (e: any) {
     error.value = e?.message ?? String(e);
-    if (Number(e?.status || 0) === 409) {
-      await ElMessageBox.alert(error.value, "绑定冲突警告", { type: "warning", confirmButtonText: "我知道了" });
-    }
   }
 }
 
@@ -547,7 +824,52 @@ reload();
   align-items: center;
   gap: 12px;
 }
+.user-fun-head-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.menu-red-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: #ef4444;
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.2);
+  vertical-align: middle;
+}
+.inline-dot {
+  margin-left: 6px;
+}
+.first-guide-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border: 1px solid #fca5a5;
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(254, 226, 226, 0.9), rgba(254, 242, 242, 0.9));
+}
+.first-guide-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 800;
+  color: #991b1b;
+}
+.first-guide-body {
+  color: #374151;
+  line-height: 1.5;
+}
+.unbind-block-tip {
+  color: #b45309;
+  margin-top: 4px;
+}
 .section-inline-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   margin: 8px 0 10px;
   padding: 8px 10px;
   border-left: 4px solid #2563eb;
@@ -564,6 +886,10 @@ reload();
 .mb { margin-bottom: 12px; }
 .strong-tip {
   border: 2px dashed #f59e0b;
+}
+.challenge-blue-tip {
+  border: 1px solid #93c5fd;
+  background: linear-gradient(180deg, rgba(219, 234, 254, 0.9), rgba(239, 246, 255, 0.9));
 }
 .table {
   margin-top: 8px;
@@ -586,6 +912,29 @@ reload();
 .decrypt-note {
   margin: 0 0 10px;
   color: #334155;
+}
+.payload-actions {
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+}
+.quota-tip-box {
+  padding: 10px 12px;
+  border: 1px solid #bfdbfe;
+  border-radius: 10px;
+  background: #eff6ff;
+}
+.quota-tip-line {
+  margin: 0;
+  color: #1f2937;
+  line-height: 1.6;
+}
+.quota-tip-line + .quota-tip-line {
+  margin-top: 6px;
+}
+.blue-keyword {
+  color: #1d4ed8;
+  font-weight: 800;
 }
 
 @media (max-width: 900px) {

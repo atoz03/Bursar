@@ -56,57 +56,70 @@ function renderInline(md: string, restore: (s: string) => string): string {
 }
 
 export function renderMarkdown(md: string): string {
-  const prepared = buildMathPlaceholders(String(md || "").replace(/\r\n/g, "\n"));
-  const restore = (s: string): string =>
-    s.replace(/@@MATH_\d+@@/g, (token) => prepared.dict.get(token) ?? token);
-  const lines = prepared.text.split("\n");
-  const out: string[] = [];
-  let inList = false;
+  try {
+    const MAX_MD_LEN = 200000;
+    const source = String(md || "");
+    const clipped = source.length > MAX_MD_LEN ? source.slice(0, MAX_MD_LEN) : source;
+    const prepared = buildMathPlaceholders(clipped.replace(/\r\n/g, "\n"));
+    const restore = (s: string): string =>
+      s.replace(/@@MATH_\d+@@/g, (token) => prepared.dict.get(token) ?? token);
+    const lines = prepared.text.split("\n");
+    const out: string[] = [];
+    let inList = false;
 
-  const closeList = () => {
-    if (inList) {
-      out.push("</ul>");
-      inList = false;
-    }
-  };
-
-  for (const raw of lines) {
-    const line = raw.trimEnd();
-    const t = line.trim();
-    if (!t) {
-      closeList();
-      continue;
-    }
-    if (/^@@MATH_\d+@@$/.test(t)) {
-      closeList();
-      out.push(restore(t));
-      continue;
-    }
-    if (/^#{1,6}\s+/.test(t)) {
-      closeList();
-      const n = Math.min(6, t.match(/^#+/)?.[0].length || 1);
-      const body = t.replace(/^#{1,6}\s+/, "");
-      out.push(`<h${n}>${renderInline(body, restore)}</h${n}>`);
-      continue;
-    }
-    if (/^[-*]\s+/.test(t)) {
-      if (!inList) {
-        out.push("<ul>");
-        inList = true;
+    const closeList = () => {
+      if (inList) {
+        out.push("</ul>");
+        inList = false;
       }
-      out.push(`<li>${renderInline(t.replace(/^[-*]\s+/, ""), restore)}</li>`);
-      continue;
-    }
-    if (/^>\s*/.test(t)) {
+    };
+
+    for (const raw of lines) {
+      const line = raw.trimEnd();
+      const t = line.trim();
+      if (!t) {
+        closeList();
+        continue;
+      }
+      if (/^@@MATH_\d+@@$/.test(t)) {
+        closeList();
+        out.push(restore(t));
+        continue;
+      }
+      if (/^#{1,6}\s+/.test(t)) {
+        closeList();
+        const n = Math.min(6, t.match(/^#+/)?.[0].length || 1);
+        const body = t.replace(/^#{1,6}\s+/, "");
+        out.push(`<h${n}>${renderInline(body, restore)}</h${n}>`);
+        continue;
+      }
+      if (/^[-*]\s+/.test(t)) {
+        if (!inList) {
+          out.push("<ul>");
+          inList = true;
+        }
+        out.push(`<li>${renderInline(t.replace(/^[-*]\s+/, ""), restore)}</li>`);
+        continue;
+      }
+      if (/^>\s*/.test(t)) {
+        closeList();
+        out.push(`<blockquote>${renderInline(t.replace(/^>\s*/, ""), restore)}</blockquote>`);
+        continue;
+      }
       closeList();
-      out.push(`<blockquote>${renderInline(t.replace(/^>\s*/, ""), restore)}</blockquote>`);
-      continue;
+      out.push(`<p>${renderInline(t, restore)}</p>`);
     }
     closeList();
-    out.push(`<p>${renderInline(t, restore)}</p>`);
+    if (source.length > MAX_MD_LEN) {
+      out.push(`<p><em>内容较长，已截断显示前 ${MAX_MD_LEN} 个字符。</em></p>`);
+    }
+    const html = out.join("\n");
+    if (prepared.dict.size > 0) {
+      queueMathTypeset();
+    }
+    return html;
+  } catch {
+    const fallback = escapeHtml(String(md || ""));
+    return `<pre>${fallback}</pre>`;
   }
-  closeList();
-  const html = out.join("\n");
-  queueMathTypeset();
-  return html;
 }

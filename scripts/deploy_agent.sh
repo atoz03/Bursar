@@ -286,6 +286,35 @@ EOF2'"
     ssh ${SSH_OPTS} "${target}" "${REMOTE_SUDO} chmod +x /opt/gpu-cluster/ssh_login_check.sh"
     ssh ${SSH_OPTS} "${target}" "${REMOTE_SUDO} touch /var/log/gpu-ssh-guard.log || true"
     ssh ${SSH_OPTS} "${target}" "${REMOTE_SUDO} chmod 0644 /var/log/gpu-ssh-guard.log || true"
+    ssh ${SSH_OPTS} "${target}" "${REMOTE_SUDO} bash -lc 'cat > /usr/local/bin/gpuops-claim <<\"EOF2\"
+#!/bin/bash
+set -euo pipefail
+
+CONF=\"/etc/gpu-cluster/ssh_guard.conf\"
+if [[ -f \"${CONF}\" ]]; then
+  source \"${CONF}\"
+fi
+
+TOKEN=\"${1:-}\"
+if [[ -z \"${TOKEN}\" ]]; then
+  echo \"用法：gpuops-claim <challenge_token>\" >&2
+  exit 2
+fi
+
+CONTROLLER_URL=\"${CONTROLLER_URL:-}\"
+NODE_ID=\"${NODE_ID:-}\"
+LOCAL_USER=\"$(id -un 2>/dev/null || whoami)\"
+if [[ -z \"${CONTROLLER_URL}\" || -z \"${NODE_ID}\" || -z \"${LOCAL_USER}\" ]]; then
+  echo \"缺少 CONTROLLER_URL/NODE_ID/LOCAL_USER，无法提交 challenge\" >&2
+  exit 2
+fi
+
+api=\"${CONTROLLER_URL%/}/api/registry/bind-claim\"
+payload=\"$(printf '{\\\"token\\\":\\\"%s\\\",\\\"node_id\\\":\\\"%s\\\",\\\"local_username\\\":\\\"%s\\\"}' \"${TOKEN}\" \"${NODE_ID}\" \"${LOCAL_USER}\")\"
+curl -fsS -H \"Content-Type: application/json\" --data \"${payload}\" \"${api}\"
+echo
+EOF2'"
+    ssh ${SSH_OPTS} "${target}" "${REMOTE_SUDO} chmod 0755 /usr/local/bin/gpuops-claim"
 
     ssh ${SSH_OPTS} "${target}" "${REMOTE_SUDO} bash -lc 'cat > /opt/gpu-cluster/enforce_ssh_sessions.sh <<\"EOF2\"
 #!/bin/bash

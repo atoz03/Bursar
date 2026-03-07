@@ -14,7 +14,11 @@
       <template #header>
         <div class="row">
           <div>
-            <h2 class="user-fun-head-title">我的积分</h2>
+            <h2 class="user-fun-head-title">
+              <el-badge :is-dot="pointsUnreadCount > 0" type="danger">
+                <span>我的积分</span>
+              </el-badge>
+            </h2>
             <p class="user-fun-head-sub">登录态自动识别平台账号，积分与状态实时展示</p>
           </div>
           <el-space>
@@ -43,7 +47,7 @@
       />
       <el-alert
         v-if="resp && resp.status === 'limited'"
-        :title="`已触发限速：当前积分 ${fmt2(resp.general_balance ?? resp.balance)}，限速阈值 ${fmt2(resp.limited_threshold_points ?? 0)}。当前仅可进行轻量操作。`"
+        :title="`已触发限速：当前积分 ${fmt2(resp.general_balance ?? resp.balance)}。当前仅可进行轻量操作。`"
         type="error"
         show-icon
         :closable="false"
@@ -72,9 +76,48 @@
       <el-card v-if="announcements.length > 0" style="margin-bottom: 12px">
         <template #header><b>公告</b></template>
         <div v-for="a in announcements" :key="a.announcement_id" style="padding: 6px 0; border-bottom: 1px solid #eef2f7">
-          <div style="font-weight: 600">{{ a.pinned ? "📌 " : "" }}{{ a.title }}</div>
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:8px">
+            <div style="font-weight: 600">{{ a.pinned ? "📌 " : "" }}{{ a.title }}</div>
+            <div style="font-size:12px; color:#64748b">发布时间：{{ fmtTime(a.created_at) }}</div>
+          </div>
           <div class="md-body" v-html="renderMarkdown(a.content)" />
         </div>
+      </el-card>
+
+      <el-card style="margin-bottom: 12px">
+        <template #header>
+          <div class="row">
+            <div>
+              <b>积分新增记录</b>
+              <el-tag v-if="pointsUnreadCount > 0" type="danger" style="margin-left: 8px">
+                新增 {{ pointsUnreadCount }} 条
+              </el-tag>
+              <el-tag v-if="pointsUnreadAmount > 0" type="success" style="margin-left: 8px">
+                新增 {{ fmt2(pointsUnreadAmount) }} 分
+              </el-tag>
+            </div>
+            <el-button size="small" :disabled="pointsUnreadCount <= 0" @click="markPointsSeen">标记已读</el-button>
+          </div>
+        </template>
+        <div v-if="pointsRecords.length === 0" class="empty-tip">暂无积分新增记录</div>
+        <el-table v-else :data="pointsRecords" stripe size="small" max-height="280">
+          <el-table-column label="时间" width="180">
+            <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
+          </el-table-column>
+          <el-table-column label="类型" width="180">
+            <template #default="{ row }">{{ pointsMethodLabel(row.method) }}</template>
+          </el-table-column>
+          <el-table-column label="积分变动" width="140">
+            <template #default="{ row }">
+              <span :class="Number(row.amount || 0) >= 0 ? 'delta-plus' : 'delta-minus'">
+                {{ Number(row.amount || 0) >= 0 ? "+" : "" }}{{ fmt2(row.amount || 0) }}
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column label="管理员备注" min-width="280">
+            <template #default="{ row }">{{ row.reason || "-" }}</template>
+          </el-table-column>
+        </el-table>
       </el-card>
 
       <el-descriptions v-if="resp" :column="2" border>
@@ -87,7 +130,6 @@
           <el-tag :type="tagType(resp.status)">{{ statusLabel(resp.status) }}</el-tag>
         </el-descriptions-item>
         <el-descriptions-item label="预警阈值">{{ fmt2(resp.warning_threshold_points ?? 0) }}</el-descriptions-item>
-        <el-descriptions-item label="限速阈值">{{ fmt2(resp.limited_threshold_points ?? 0) }}</el-descriptions-item>
         <el-descriptions-item label="每月最大欠费上限">{{ fmt2(resp.monthly_max_overdraft_limit ?? 0) }}</el-descriptions-item>
         <el-descriptions-item label="当前欠费">{{ fmt2(resp.current_overdraft_points ?? 0) }}</el-descriptions-item>
         <el-descriptions-item label="节点账号映射数">{{ accountCount }}</el-descriptions-item>
@@ -115,17 +157,22 @@
 
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { ApiClient, type Announcement, type BalanceResp } from "../../lib/api";
+import { ApiClient, type Announcement, type BalanceResp, type PointsOperationRecord } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { useRouter } from "vue-router";
+import { authState } from "../../lib/authStore";
 import { renderMarkdown } from "../../lib/markdown";
-import { formatServerHMS } from "../../lib/time";
+import { formatServerDateTime } from "../../lib/time";
 
 const loading = ref(false);
 const error = ref("");
 const resp = ref<BalanceResp | null>(null);
 const announcements = ref<Announcement[]>([]);
 const accountCount = ref(0);
+const pointsRecords = ref<PointsOperationRecord[]>([]);
+const pointsUnreadCount = ref(0);
+const pointsUnreadAmount = ref(0);
+const pointsLatestRechargeID = ref(0);
 const router = useRouter();
 
 function fmt2(v: number): string {
@@ -133,7 +180,60 @@ function fmt2(v: number): string {
 }
 
 function fmtTime(v: string): string {
-  return formatServerHMS(v);
+  return formatServerDateTime(v);
+}
+
+function pointsMethodLabel(method: string): string {
+  const m = String(method || "").trim();
+  if (m === "monthly_reset") return "月初通用积分重置";
+  if (m === "monthly_carryover_reset") return "月初结转积分重置";
+  if (m === "points_adjust_plus") return "管理员单用户加分";
+  if (m === "points_adjust_carry_plus") return "管理员单用户结转加分";
+  if (m === "points_adjust_node_plus") return "管理员单用户节点专属加分";
+  if (m === "points_batch_plus" || m === "points_batch_grant") return "管理员全体加分";
+  if (m === "points_batch_carry_plus") return "管理员全体结转加分";
+  if (m === "points_batch_node_plus") return "管理员全体节点专属加分";
+  if (m === "points_batch_filtered_plus") return "管理员筛选批量加分";
+  if (m === "points_batch_filtered_carry_plus") return "管理员筛选批量结转加分";
+  if (m === "points_batch_filtered_node_plus") return "管理员筛选批量节点专属加分";
+  if (m === "points_batch_filtered_set") return "管理员筛选批量设定通用积分";
+  if (m === "points_batch_filtered_set_carry") return "管理员筛选批量设定结转积分";
+  if (m === "points_batch_filtered_set_node") return "管理员筛选批量设定节点专属积分";
+  return m || "-";
+}
+
+function pointsSeenKey(): string {
+  const u = String(authState.username || "").trim() || "anonymous";
+  return `gpuops_seen_points_recharge_id_${u}`;
+}
+
+function loadSeenRechargeID(): number {
+  try {
+    const raw = String(localStorage.getItem(pointsSeenKey()) || "").trim();
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) return 0;
+    return Math.floor(n);
+  } catch {
+    return 0;
+  }
+}
+
+function saveSeenRechargeID(v: number) {
+  const n = Number(v || 0);
+  if (!Number.isFinite(n) || n <= 0) return;
+  try {
+    localStorage.setItem(pointsSeenKey(), String(Math.floor(n)));
+    window.dispatchEvent(new CustomEvent("gpuops-points-seen", { detail: { latest_recharge_id: Math.floor(n) } }));
+  } catch {
+    // ignore
+  }
+}
+
+function markPointsSeen() {
+  if (pointsLatestRechargeID.value <= 0) return;
+  saveSeenRechargeID(pointsLatestRechargeID.value);
+  pointsUnreadCount.value = 0;
+  pointsUnreadAmount.value = 0;
 }
 
 function tagType(status: string) {
@@ -164,7 +264,7 @@ const statusReason = computed(() => {
   if (!s) return "";
   if (s === "normal") return "账号状态正常，可正常使用";
   if (s === "warning") {
-    return "积分余额接近限速阈值，请及时充值";
+    return "积分余额偏低，请及时充值";
   }
   if (s === "limited") return "已触发限速，仍可登录但性能受限";
   if (s === "blocked") {
@@ -182,11 +282,20 @@ async function query() {
   error.value = "";
   try {
     const client = new ApiClient(settingsState.baseUrl);
-    resp.value = await client.userMyBalance();
-    const ac = await client.userAccounts();
+    const seenID = loadSeenRechargeID();
+    const [balanceResp, ac, ar, pointResp] = await Promise.all([
+      client.userMyBalance(),
+      client.userAccounts(),
+      client.announcements(10),
+      client.userMyPointsIncrements({ sinceId: seenID, limit: 200 }),
+    ]);
+    resp.value = balanceResp;
     accountCount.value = (ac.accounts ?? []).length;
-    const ar = await client.announcements(10);
     announcements.value = ar.announcements ?? [];
+    pointsRecords.value = pointResp.records ?? [];
+    pointsUnreadCount.value = Number(pointResp.unread_count || 0);
+    pointsUnreadAmount.value = Number(pointResp.unread_amount || 0);
+    pointsLatestRechargeID.value = Number(pointResp.latest_recharge_id || 0);
   } catch (e: any) {
     error.value = e?.body ? `${e.message}\n${e.body}` : (e?.message ?? String(e));
   } finally {
@@ -206,6 +315,9 @@ query();
   min-height: 420px;
 }
 .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.empty-tip { color: #64748b; font-size: 13px; }
+.delta-plus { color: #15803d; font-weight: 700; }
+.delta-minus { color: #b91c1c; font-weight: 700; }
 .md-body :deep(p) { margin: 6px 0; color:#475569; }
 .md-body :deep(h1), .md-body :deep(h2), .md-body :deep(h3), .md-body :deep(h4) { margin: 8px 0; color: #0f172a; }
 .md-body :deep(ul) { padding-left: 18px; margin: 6px 0; color:#475569; }
