@@ -57,7 +57,7 @@
             :placeholder="keywordPlaceholder"
             clearable
             @select="onKeywordSelect"
-            @change="loadUsers"
+            @change="onKeywordInputChange"
           />
         </el-form-item>
         <el-form-item>
@@ -218,7 +218,7 @@
             placeholder="输入平台账号"
             clearable
             @select="onRecordKeywordSelect"
-            @change="loadRecords"
+            @change="onRecordKeywordInputChange"
           />
         </el-form-item>
         <el-form-item>
@@ -407,7 +407,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { ElMessageBox } from "element-plus";
 import { ApiClient, type PointsUser, type PointsOperationRecord, type SpecialMonthlyPointsRule, type MonthlyPointsResetRun } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
@@ -493,6 +493,14 @@ const adjustCurrentTotalBalance = ref(0);
 const adjustNodeBalances = ref<Array<{ node_id: string; balance: number }>>([]);
 const detailVisible = ref(false);
 const detailUsername = ref("");
+let usersQueryTimer: ReturnType<typeof setTimeout> | null = null;
+let recordsQueryTimer: ReturnType<typeof setTimeout> | null = null;
+const USERS_QUERY_DEBOUNCE_MS = 350;
+const RECORDS_QUERY_DEBOUNCE_MS = 350;
+const USERS_QUERY_LIMIT_EMPTY = 200;
+const USERS_QUERY_LIMIT_FILTERED = 1000;
+const ALL_USERS_LIMIT = 2000;
+const RECORDS_QUERY_LIMIT = 300;
 const adjustNodeExclusiveCurrent = computed<number | null>(() => {
   if (adjustScope.value !== "node_exclusive") return null;
   const nodeID = String(adjustNodeId.value || "").trim();
@@ -850,18 +858,34 @@ async function loadAdjustCurrentBalances(username: string) {
   }
 }
 
+function clearUsersQueryTimer() {
+  if (usersQueryTimer) {
+    clearTimeout(usersQueryTimer);
+    usersQueryTimer = null;
+  }
+}
+
+function clearRecordsQueryTimer() {
+  if (recordsQueryTimer) {
+    clearTimeout(recordsQueryTimer);
+    recordsQueryTimer = null;
+  }
+}
+
 async function loadUsers() {
-  const r = await client().adminPointsUsers({ keyword: keyword.value, keywordField: keywordField.value, limit: 5000 });
+  const kw = String(keyword.value || "").trim();
+  const limit = kw ? USERS_QUERY_LIMIT_FILTERED : USERS_QUERY_LIMIT_EMPTY;
+  const r = await client().adminPointsUsers({ keyword: kw, keywordField: keywordField.value, limit });
   users.value = r.users ?? [];
 }
 
 async function loadAllUsers() {
-  const r = await client().adminPointsUsers({ limit: 5000 });
+  const r = await client().adminPointsUsers({ limit: ALL_USERS_LIMIT });
   allUsers.value = dedupUsers(r.users ?? []);
 }
 
 async function loadRecords() {
-  const r = await client().adminPointsRecords({ username: recordKeyword.value, limit: 1000 });
+  const r = await client().adminPointsRecords({ username: String(recordKeyword.value || "").trim(), limit: RECORDS_QUERY_LIMIT });
   records.value = r.records ?? [];
 }
 
@@ -1221,7 +1245,8 @@ function autoFillRuleForUsername(rawUsername: string) {
 }
 
 function onKeywordSelect(item: any) {
-  keyword.value = String(item?.value || "").trim();
+  keyword.value = extractSuggestionUsername(item);
+  clearUsersQueryTimer();
   void loadUsers();
 }
 
@@ -1237,6 +1262,7 @@ function onPointsUserSortChange({ prop, order }: { prop: string; order: SortOrde
 
 function onRecordKeywordSelect(item: any) {
   recordKeyword.value = extractSuggestionUsername(item);
+  clearRecordsQueryTimer();
   void loadRecords();
 }
 
@@ -1247,6 +1273,26 @@ function onRuleUsernameSelect(item: any) {
 
 function onRuleUsernameChange() {
   autoFillRuleForUsername(ruleUsername.value);
+}
+
+function onKeywordInputChange() {
+  const kw = String(keyword.value || "").trim();
+  clearUsersQueryTimer();
+  usersQueryTimer = setTimeout(() => {
+    if (kw.length === 0 || kw.length >= 2) {
+      void loadUsers();
+    }
+  }, USERS_QUERY_DEBOUNCE_MS);
+}
+
+function onRecordKeywordInputChange() {
+  const kw = String(recordKeyword.value || "").trim();
+  clearRecordsQueryTimer();
+  recordsQueryTimer = setTimeout(() => {
+    if (kw.length === 0 || kw.length >= 2) {
+      void loadRecords();
+    }
+  }, RECORDS_QUERY_DEBOUNCE_MS);
 }
 
 async function removeRule(username: string) {
@@ -1272,6 +1318,31 @@ async function removeRule(username: string) {
 
 onMounted(async () => {
   await reloadAll();
+});
+
+watch(
+  () => keyword.value,
+  (v) => {
+    if (!String(v || "").trim()) {
+      clearUsersQueryTimer();
+      void loadUsers();
+    }
+  },
+);
+
+watch(
+  () => recordKeyword.value,
+  (v) => {
+    if (!String(v || "").trim()) {
+      clearRecordsQueryTimer();
+      void loadRecords();
+    }
+  },
+);
+
+onBeforeUnmount(() => {
+  clearUsersQueryTimer();
+  clearRecordsQueryTimer();
 });
 </script>
 

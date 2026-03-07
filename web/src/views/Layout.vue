@@ -307,6 +307,11 @@ function canLoadUserAccountProvision(): boolean {
   return !!authState.authenticated && (authState.role === "user" || authState.role === "power_user");
 }
 
+function isDocumentVisible(): boolean {
+  if (typeof document === "undefined") return true;
+  return !document.hidden;
+}
+
 function userAnnouncementSeenKey(): string {
   const u = String(authState.username || "").trim() || "anonymous";
   return `gpuops_seen_announcement_ts_${u}`;
@@ -385,9 +390,11 @@ async function loadReviewTodoCount() {
 
 function resetReviewTodoPolling() {
   clearReviewTodoTimer();
+  if (!isDocumentVisible()) return;
   loadReviewTodoCount();
   if (!canLoadReviewTodo()) return;
   reviewTodoTimer = setInterval(() => {
+    if (!isDocumentVisible()) return;
     loadReviewTodoCount();
   }, 30000);
 }
@@ -424,9 +431,11 @@ async function loadUserNoticeState() {
 
 function resetUserNoticePolling() {
   clearUserNoticeTimer();
+  if (!isDocumentVisible()) return;
   loadUserNoticeState();
   if (!canLoadUserNotice()) return;
   userNoticeTimer = setInterval(() => {
+    if (!isDocumentVisible()) return;
     loadUserNoticeState();
   }, 30000);
 }
@@ -455,9 +464,11 @@ async function loadUserPointsState() {
 
 function resetUserPointsPolling() {
   clearUserPointsTimer();
+  if (!isDocumentVisible()) return;
   loadUserPointsState();
   if (!canLoadUserPoints()) return;
   userPointsTimer = setInterval(() => {
+    if (!isDocumentVisible()) return;
     loadUserPointsState();
   }, 30000);
 }
@@ -497,11 +508,27 @@ async function loadUserAccountProvisionState() {
 
 function resetUserAccountProvisionPolling() {
   clearUserAccountProvisionTimer();
+  if (!isDocumentVisible()) return;
   loadUserAccountProvisionState();
   if (!canLoadUserAccountProvision()) return;
   userAccountProvisionTimer = setInterval(() => {
+    if (!isDocumentVisible()) return;
     loadUserAccountProvisionState();
   }, 30000);
+}
+
+function onVisibilityChange() {
+  if (!isDocumentVisible()) {
+    clearReviewTodoTimer();
+    clearUserNoticeTimer();
+    clearUserPointsTimer();
+    clearUserAccountProvisionTimer();
+    return;
+  }
+  resetReviewTodoPolling();
+  resetUserNoticePolling();
+  resetUserPointsPolling();
+  resetUserAccountProvisionPolling();
 }
 
 watch(
@@ -533,6 +560,7 @@ onMounted(() => {
   window.addEventListener("resize", syncMobileState);
   window.addEventListener("gpuops-announcement-seen", loadUserNoticeState);
   window.addEventListener("gpuops-points-seen", loadUserPointsState);
+  document.addEventListener("visibilitychange", onVisibilityChange);
 });
 
 onBeforeUnmount(() => {
@@ -543,6 +571,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("resize", syncMobileState);
   window.removeEventListener("gpuops-announcement-seen", loadUserNoticeState);
   window.removeEventListener("gpuops-points-seen", loadUserPointsState);
+  document.removeEventListener("visibilitychange", onVisibilityChange);
 });
 </script>
 
