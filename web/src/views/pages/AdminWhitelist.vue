@@ -131,7 +131,9 @@
     </el-form>
 
     <el-table :data="currentRows" stripe>
-      <el-table-column prop="node_id" label="节点编号" width="120" />
+      <el-table-column label="节点编号" width="120">
+        <template #default="{ row }">{{ displayNodeID(row) }}</template>
+      </el-table-column>
       <el-table-column prop="local_username" label="节点账号" width="180" />
       <el-table-column label="对应平台账号" min-width="180">
         <template #default="{ row }">
@@ -148,7 +150,9 @@
       </el-table-column>
       <el-table-column prop="reason" label="理由" min-width="220" />
       <el-table-column prop="created_by" label="创建人" width="160" />
-      <el-table-column prop="updated_at" label="更新时间" min-width="180" />
+      <el-table-column label="更新时间" min-width="180">
+        <template #default="{ row }">{{ fmtTime(row.updated_at) }}</template>
+      </el-table-column>
       <el-table-column label="操作" width="120">
         <template #default="{ row }">
           <el-button size="small" type="danger" @click="remove(row)">删除</el-button>
@@ -167,6 +171,7 @@ import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
 import PlatformUserDetailDialog from "../../components/PlatformUserDetailDialog.vue";
 import { List } from "@element-plus/icons-vue";
+import { formatServerDateTime } from "../../lib/time";
 
 const loading = ref(false);
 const error = ref("");
@@ -190,11 +195,15 @@ const profileVisible = ref(false);
 const selectedProfileUsername = ref("");
 const ALL_PLATFORM_KEY = "__ALL__";
 const SSH_LIST_MODE_KEY = "ssh_list_mode";
+type SSHListRow = SSHWhitelistEntry | SSHBlacklistEntry | SSHExemptionEntry;
 
 const currentRows = computed(() => {
-  if (mode.value === "whitelist") return whitelistRows.value;
-  if (mode.value === "blacklist") return blacklistRows.value;
-  return exemptionRows.value;
+  const rows = mode.value === "whitelist"
+    ? whitelistRows.value
+    : mode.value === "blacklist"
+      ? blacklistRows.value
+      : exemptionRows.value;
+  return pruneRedundantGlobalPlatformRows(rows);
 });
 const saveButtonText = computed(() => {
   if (mode.value === "whitelist") return "新增白名单";
@@ -276,6 +285,40 @@ function uniqSorted(items: string[]): string[] {
     s.add(v);
   }
   return Array.from(s).sort((a, b) => a.localeCompare(b));
+}
+
+function fmtTime(v: string): string {
+  return formatServerDateTime(v);
+}
+
+function pruneRedundantGlobalPlatformRows<T extends SSHListRow>(rows: T[]): T[] {
+  const hasOtherGlobalLocalByPlatform = new Set<string>();
+  for (const row of rows ?? []) {
+    const sourceType = String(row?.source_type || "").trim();
+    const sourcePlatform = String(row?.source_platform_username || "").trim();
+    const node = String(row?.node_id || "").trim();
+    const local = String(row?.local_username || "").trim();
+    if (sourceType !== "platform" || !sourcePlatform || node !== "*" || !local) continue;
+    if (local !== sourcePlatform) {
+      hasOtherGlobalLocalByPlatform.add(sourcePlatform);
+    }
+  }
+  return (rows ?? []).filter((row) => {
+    const sourceType = String(row?.source_type || "").trim();
+    const sourcePlatform = String(row?.source_platform_username || "").trim();
+    const node = String(row?.node_id || "").trim();
+    const local = String(row?.local_username || "").trim();
+    if (sourceType !== "platform" || !sourcePlatform || node !== "*" || !local) return true;
+    if (local !== sourcePlatform) return true;
+    return !hasOtherGlobalLocalByPlatform.has(sourcePlatform);
+  });
+}
+
+function displayNodeID(row: SSHWhitelistEntry | SSHBlacklistEntry | SSHExemptionEntry): string {
+  const sourceType = String(row.source_type || "").trim();
+  const sourcePlatform = String(row.source_platform_username || "").trim();
+  if (sourceType === "platform" && sourcePlatform) return "all";
+  return String(row.node_id || "").trim() || "-";
 }
 
 async function loadSuggestions() {

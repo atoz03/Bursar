@@ -7,7 +7,7 @@
             <span class="section-icon tone-points"><el-icon><Coin /></el-icon></span>
             <div class="section-title-content">
               <div class="title">积分管理</div>
-              <div class="sub">支持单用户调整、全体加减、月初重置、特殊月度规则和完整操作记录</div>
+              <div class="sub">支持单用户调整、按筛选结果批量调整、全体加减、月初重置、特殊月度规则和完整操作记录</div>
             </div>
           </div>
           <el-button :loading="loading" type="primary" @click="reloadAll">刷新</el-button>
@@ -23,13 +23,31 @@
       />
       <el-alert v-if="error" :title="error" type="error" show-icon style="margin-bottom: 12px" />
       <el-alert v-if="success" :title="success" type="success" show-icon style="margin-bottom: 12px" />
+      <el-alert
+        title="支持按个人信息筛选：先选择匹配字段（或全字段），再输入关键词。筛选出的用户可直接批量加减积分。"
+        type="info"
+        :closable="false"
+        show-icon
+        style="margin-bottom: 12px"
+      />
 
       <el-form inline>
+        <el-form-item label="匹配字段">
+          <el-select v-model="keywordField" style="width: 160px" @change="loadUsers">
+            <el-option label="全字段" value="all" />
+            <el-option label="用户名" value="username" />
+            <el-option label="姓名" value="real_name" />
+            <el-option label="学号" value="student_id" />
+            <el-option label="导师" value="advisor" />
+            <el-option label="邮箱" value="email" />
+            <el-option label="手机号" value="phone" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="用户查询">
           <el-autocomplete
             v-model="keyword"
-            :fetch-suggestions="fetchUserSuggestions"
-            placeholder="用户名/学号"
+            :fetch-suggestions="fetchPointsQuerySuggestions"
+            :placeholder="keywordPlaceholder"
             clearable
             @select="onKeywordSelect"
             @change="onKeywordInputChange"
@@ -41,16 +59,13 @@
       </el-form>
 
       <el-table :data="users" stripe height="420">
-        <el-table-column label="用户名" width="180">
+        <el-table-column label="调整" width="94" fixed="left">
           <template #default="{ row }">
-            <el-button link type="primary" @click="openUserDetail(row.username)">{{ row.username }}</el-button>
+            <el-button size="small" type="primary" @click="openAdjust(row)">调整</el-button>
           </template>
         </el-table-column>
-        <el-table-column prop="student_id" label="学号" width="180" />
-        <el-table-column label="用户级别" width="120">
-          <template #default="{ row }">
-            <el-tag :type="roleTagType(row.role)">{{ roleText(row.role) }}</el-tag>
-          </template>
+        <el-table-column label="总积分" width="120">
+          <template #default="{ row }">{{ fmt2(row.total_balance ?? ((row.general_balance ?? row.balance) + (row.carryover_balance ?? 0) + (row.exclusive_balance ?? 0))) }}</template>
         </el-table-column>
         <el-table-column label="通用积分" width="120">
           <template #default="{ row }">{{ fmt2(row.general_balance ?? row.balance) }}</template>
@@ -61,16 +76,62 @@
         <el-table-column label="专属积分" width="120">
           <template #default="{ row }">{{ fmt2(row.exclusive_balance ?? 0) }}</template>
         </el-table-column>
-        <el-table-column label="总积分" width="120">
-          <template #default="{ row }">{{ fmt2(row.total_balance ?? ((row.general_balance ?? row.balance) + (row.carryover_balance ?? 0) + (row.exclusive_balance ?? 0))) }}</template>
-        </el-table-column>
-        <el-table-column prop="status" label="状态" width="120" />
-        <el-table-column label="操作" width="120">
+        <el-table-column label="用户名" width="180" show-overflow-tooltip>
           <template #default="{ row }">
-            <el-button size="small" type="primary" @click="openAdjust(row)">调整</el-button>
+            <el-button link type="primary" @click="openUserDetail(row.username)">{{ row.username }}</el-button>
           </template>
         </el-table-column>
+        <el-table-column label="用户级别" width="120">
+          <template #default="{ row }">
+            <el-tag :type="roleTagType(row.role)">{{ roleText(row.role) }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="status" label="状态" width="120" />
+        <el-table-column prop="real_name" label="姓名" width="120" show-overflow-tooltip />
+        <el-table-column prop="student_id" label="学号" width="180" show-overflow-tooltip />
+        <el-table-column prop="advisor" label="导师" width="160" show-overflow-tooltip />
+        <el-table-column prop="email" label="邮箱" min-width="220" show-overflow-tooltip />
+        <el-table-column prop="phone" label="手机号" width="140" show-overflow-tooltip />
       </el-table>
+    </el-card>
+
+    <el-card class="section-card">
+      <template #header>
+        <div class="section-head">
+          <div class="section-title-wrap">
+            <span class="section-icon tone-filter-batch"><el-icon><UserFilled /></el-icon></span>
+            <div class="section-title-content">
+              <div class="title">按筛选结果批量加减</div>
+              <div class="sub">对“当前查询结果”批量加减积分，可按个人信息先筛选，再统一执行</div>
+            </div>
+          </div>
+          <el-tag type="info">当前命中 {{ filteredBatchTargetUsernames.length }} 人</el-tag>
+        </div>
+      </template>
+      <el-form inline>
+        <el-form-item>
+          <el-checkbox v-model="filteredBatchOnlyRegular">仅普通用户</el-checkbox>
+        </el-form-item>
+        <el-form-item label="调整积分">
+          <el-input-number v-model="filteredBatchAmount" :min="-1000000" :max="1000000" :step="10" />
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="filteredBatchReason" placeholder="可选" />
+        </el-form-item>
+        <el-form-item>
+          <el-button
+            :loading="filteredBatchLoading"
+            :disabled="filteredBatchTargetUsernames.length === 0"
+            type="primary"
+            @click="runFilteredBatchAdjust"
+          >
+            对当前筛选用户批量调整
+          </el-button>
+        </el-form-item>
+      </el-form>
+      <div class="sub">
+        说明：按上方“用户查询”的筛选结果执行。可先按姓名/导师/学号等筛选，再批量加分或扣分。
+      </div>
     </el-card>
 
     <el-card class="section-card">
@@ -158,7 +219,7 @@
             <span class="section-icon tone-monthly"><el-icon><Clock /></el-icon></span>
             <div class="section-title-content">
               <div class="title">月初重置</div>
-              <div class="sub">规则：学号含 B 按博士发放、含 S 按硕士发放、其余按“其他”发放；特殊用户规则优先；上月未用完通用积分按上限结转（上限为累计上限）</div>
+              <div class="sub">规则：学号含 B 按博士发放、含 S 按硕士发放、其余按“其他”发放；特殊用户规则优先；上月未用完通用积分按上限结转（上限为累计上限）；欠费超过“每月最大欠费上限”会强制清理全部进程</div>
             </div>
           </div>
           <div class="row">
@@ -181,6 +242,9 @@
         </el-form-item>
         <el-form-item label="结转上限">
           <el-input-number v-model="carryoverLimit" :min="0" :step="10" />
+        </el-form-item>
+        <el-form-item label="每月最大欠费上限">
+          <el-input-number v-model="maxOverdraftLimit" :min="0" :step="10" />
         </el-form-item>
         <el-form-item>
           <el-button :loading="configSaving" type="primary" @click="saveMonthlyConfig">保存发放规则</el-button>
@@ -310,8 +374,11 @@ import { ElMessageBox } from "element-plus";
 import { ApiClient, type PointsUser, type PointsOperationRecord, type SpecialMonthlyPointsRule, type MonthlyPointsResetRun } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
+import { formatServerHMS } from "../../lib/time";
 import PlatformUserDetailDialog from "../../components/PlatformUserDetailDialog.vue";
 import { Clock, Coin, DataBoard, Document, UserFilled } from "@element-plus/icons-vue";
+
+type PointsKeywordField = "all" | "username" | "real_name" | "student_id" | "advisor" | "email" | "phone";
 
 const loading = ref(false);
 const batchLoading = ref(false);
@@ -322,6 +389,7 @@ const adjustLoading = ref(false);
 const error = ref("");
 const success = ref("");
 const keyword = ref("");
+const keywordField = ref<PointsKeywordField>("all");
 const users = ref<PointsUser[]>([]);
 const allUsers = ref<PointsUser[]>([]);
 const records = ref<PointsOperationRecord[]>([]);
@@ -335,12 +403,17 @@ const monthlyStatus = reactive<{ month_key: string; has_run: boolean; run: Month
 
 const batchAmount = ref(50);
 const batchReason = ref("");
+const filteredBatchAmount = ref(30);
+const filteredBatchReason = ref("");
+const filteredBatchLoading = ref(false);
+const filteredBatchOnlyRegular = ref(true);
 const recordKeyword = ref("");
 const forceReset = ref(false);
 const doctorPoints = ref(200);
 const masterPoints = ref(100);
 const otherPoints = ref(50);
 const carryoverLimit = ref(500);
+const maxOverdraftLimit = ref(500);
 
 const ruleUsername = ref("");
 const rulePoints = ref(100);
@@ -376,6 +449,32 @@ const adjustNodeExclusiveCurrent = computed<number | null>(() => {
   const row = adjustNodeBalances.value.find((x) => String(x.node_id || "").trim() === nodeID);
   return Number(row?.balance ?? 0);
 });
+const keywordPlaceholder = computed(() => {
+  if (keywordField.value === "username") return "输入用户名关键词";
+  if (keywordField.value === "real_name") return "输入姓名关键词";
+  if (keywordField.value === "student_id") return "输入学号关键词";
+  if (keywordField.value === "advisor") return "输入导师关键词";
+  if (keywordField.value === "email") return "输入邮箱关键词";
+  if (keywordField.value === "phone") return "输入手机号关键词";
+  return "用户名/姓名/学号/导师/邮箱/手机号";
+});
+
+const filteredBatchTargetUsernames = computed<string[]>(() => {
+  const base = users.value || [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const row of base) {
+    const role = String(row.role || "").trim();
+    if (filteredBatchOnlyRegular.value && role !== "user") continue;
+    const username = String(row.username || "").trim();
+    if (!username) continue;
+    const key = username.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(username);
+  }
+  return out;
+});
 
 function client() {
   return new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
@@ -403,7 +502,18 @@ function fetchUserSuggestions(queryString: string, cb: (items: Array<{ value: st
       if (!q) return true;
       const username = normalizeUserKey(u.username);
       const studentID = normalizeUserKey(u.student_id);
-      return username.includes(q) || studentID.includes(q);
+      const realName = normalizeUserKey(String(u.real_name || ""));
+      const advisor = normalizeUserKey(String(u.advisor || ""));
+      const email = normalizeUserKey(String(u.email || ""));
+      const phone = normalizeUserKey(String(u.phone || ""));
+      return (
+        username.includes(q) ||
+        studentID.includes(q) ||
+        realName.includes(q) ||
+        advisor.includes(q) ||
+        email.includes(q) ||
+        phone.includes(q)
+      );
     })
     .slice(0, 30)
     .map((u) => ({
@@ -411,6 +521,72 @@ function fetchUserSuggestions(queryString: string, cb: (items: Array<{ value: st
       username: String(u.username || "").trim(),
       student_id: String(u.student_id || "").trim(),
     }));
+  cb(items);
+}
+
+function pointsKeywordFieldLabel(field: PointsKeywordField): string {
+  if (field === "username") return "用户名";
+  if (field === "real_name") return "姓名";
+  if (field === "student_id") return "学号";
+  if (field === "advisor") return "导师";
+  if (field === "email") return "邮箱";
+  if (field === "phone") return "手机号";
+  return "全字段";
+}
+
+function pointsKeywordFieldValue(user: PointsUser, field: PointsKeywordField): string {
+  if (field === "username") return String(user.username || "").trim();
+  if (field === "real_name") return String(user.real_name || "").trim();
+  if (field === "student_id") return String(user.student_id || "").trim();
+  if (field === "advisor") return String(user.advisor || "").trim();
+  if (field === "email") return String(user.email || "").trim();
+  if (field === "phone") return String(user.phone || "").trim();
+  return String(user.username || "").trim();
+}
+
+function matchesPointsKeyword(user: PointsUser, q: string, field: PointsKeywordField): boolean {
+  const username = normalizeUserKey(user.username);
+  const studentID = normalizeUserKey(user.student_id);
+  const realName = normalizeUserKey(String(user.real_name || ""));
+  const advisor = normalizeUserKey(String(user.advisor || ""));
+  const email = normalizeUserKey(String(user.email || ""));
+  const phone = normalizeUserKey(String(user.phone || ""));
+  if (field === "username") return username.includes(q);
+  if (field === "real_name") return realName.includes(q);
+  if (field === "student_id") return studentID.includes(q);
+  if (field === "advisor") return advisor.includes(q);
+  if (field === "email") return email.includes(q);
+  if (field === "phone") return phone.includes(q);
+  return (
+    username.includes(q) ||
+    studentID.includes(q) ||
+    realName.includes(q) ||
+    advisor.includes(q) ||
+    email.includes(q) ||
+    phone.includes(q)
+  );
+}
+
+function fetchPointsQuerySuggestions(queryString: string, cb: (items: Array<{ value: string }>) => void) {
+  const q = normalizeUserKey(queryString);
+  const field = keywordField.value;
+  const base = (allUsers.value.length ? allUsers.value : users.value) || [];
+  const seen = new Set<string>();
+  const items = base
+    .filter((u) => {
+      if (!q) return true;
+      return matchesPointsKeyword(u, q, field);
+    })
+    .map((u) => {
+      const keyValue = pointsKeywordFieldValue(u, field);
+      const value = keyValue || String(u.username || "").trim();
+      const k = normalizeUserKey(value);
+      if (!k || seen.has(k)) return null;
+      seen.add(k);
+      return { value };
+    })
+    .filter((x): x is { value: string } => !!x)
+    .slice(0, 30);
   cb(items);
 }
 
@@ -428,10 +604,7 @@ function fmtSigned(v: number): string {
 }
 
 function fmtTime(v: string): string {
-  if (!v) return "-";
-  const d = new Date(v);
-  if (Number.isNaN(d.getTime())) return v;
-  return d.toLocaleString();
+  return formatServerHMS(v);
 }
 
 function roleText(role: string): string {
@@ -458,6 +631,8 @@ function opLabel(method: string): string {
   if (m === "points_adjust_node_minus") return "单用户节点专属扣分";
   if (m === "points_batch_plus" || m === "points_batch_grant") return "全体加分";
   if (m === "points_batch_minus") return "全体扣分";
+  if (m === "points_batch_filtered_plus") return "筛选批量加分";
+  if (m === "points_batch_filtered_minus") return "筛选批量扣分";
   if (m === "monthly_reset") return "月初重置";
   if (m === "monthly_carryover_reset") return "月初结转重置";
   return m || "-";
@@ -476,6 +651,9 @@ function targetAccountLabel(row: PointsOperationRecord): string {
   const method = String(row.method || "").trim();
   if (method === "points_batch_plus" || method === "points_batch_minus" || method === "points_batch_grant") {
     return "全部用户";
+  }
+  if (method === "points_batch_filtered_plus" || method === "points_batch_filtered_minus") {
+    return "筛选用户组";
   }
   return String(row.username || "").trim() || "-";
 }
@@ -540,7 +718,7 @@ function clearRecordsQueryTimer() {
 async function loadUsers() {
   const kw = String(keyword.value || "").trim();
   const limit = kw ? USERS_QUERY_LIMIT_FILTERED : USERS_QUERY_LIMIT_EMPTY;
-  const r = await client().adminPointsUsers({ keyword: kw, limit });
+  const r = await client().adminPointsUsers({ keyword: kw, keywordField: keywordField.value, limit });
   users.value = r.users ?? [];
 }
 
@@ -573,6 +751,7 @@ async function loadMonthlyConfig() {
   masterPoints.value = Number(r.config?.master_points ?? 100);
   otherPoints.value = Number(r.config?.other_points ?? 50);
   carryoverLimit.value = Number(r.config?.carryover_limit ?? 500);
+  maxOverdraftLimit.value = Number(r.config?.max_overdraft_limit ?? 500);
 }
 
 async function reloadAll() {
@@ -598,6 +777,7 @@ async function saveMonthlyConfig() {
       master_points: Number(masterPoints.value || 0),
       other_points: Number(otherPoints.value || 0),
       carryover_limit: Number(carryoverLimit.value || 0),
+      max_overdraft_limit: Number(maxOverdraftLimit.value || 0),
     });
     success.value = "月初发放/结转规则已保存，将在每月 1 号自动执行";
     await loadMonthlyConfig();
@@ -667,6 +847,51 @@ async function submitAdjust() {
     error.value = e?.message ?? String(e);
   } finally {
     adjustLoading.value = false;
+  }
+}
+
+async function runFilteredBatchAdjust() {
+  const amount = Number(filteredBatchAmount.value || 0);
+  if (amount === 0) {
+    error.value = "筛选批量调整值不能为 0";
+    return;
+  }
+  const targets = filteredBatchTargetUsernames.value;
+  if (targets.length === 0) {
+    error.value = "当前筛选结果为空，无法批量调整";
+    return;
+  }
+  const actionLabel = amount > 0 ? "筛选批量加分" : "筛选批量扣分";
+  try {
+    await ElMessageBox.confirm(
+      `确认执行${actionLabel}吗？\n筛选字段：${pointsKeywordFieldLabel(keywordField.value)}\n筛选关键词：${keyword.value.trim() || "（空）"}\n目标人数：${targets.length}\n调整值：${amount > 0 ? "+" : ""}${amount}\n备注：${filteredBatchReason.value.trim() || "（空）"}`,
+      "二次确认",
+      { type: "warning", confirmButtonText: "确认执行", cancelButtonText: "取消" },
+    );
+  } catch {
+    return;
+  }
+  filteredBatchLoading.value = true;
+  error.value = "";
+  success.value = "";
+  try {
+    const r = await client().adminPointsBatchAdjustUsers({
+      amount,
+      reason: filteredBatchReason.value.trim(),
+      usernames: targets,
+    });
+    success.value = `${actionLabel}完成：命中 ${r.matched_users} 人，实际调整 ${r.adjusted_users} 人，总变动 ${fmt2(r.total_adjusted)} 积分`;
+    if ((r.skipped_users || 0) > 0) {
+      success.value += `；跳过 ${r.skipped_users} 人`;
+    }
+    if ((r.interrupted_users || 0) > 0) {
+      success.value += `；强制中断 ${r.interrupted_users} 人（${r.interrupted_nodes} 节点账号）`;
+    }
+    await reloadAll();
+  } catch (e: any) {
+    error.value = e?.message ?? String(e);
+  } finally {
+    filteredBatchLoading.value = false;
   }
 }
 
@@ -938,6 +1163,10 @@ onBeforeUnmount(() => {
 .tone-batch {
   background: linear-gradient(135deg, #2563eb, #1d4ed8);
   color: #dbeafe;
+}
+.tone-filter-batch {
+  background: linear-gradient(135deg, #0f766e, #115e59);
+  color: #ccfbf1;
 }
 .tone-record {
   background: linear-gradient(135deg, #0f766e, #0d9488);

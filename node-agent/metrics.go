@@ -72,7 +72,41 @@ func (a *NodeAgent) CollectMetrics(ctx context.Context) (*MetricsData, error) {
 		metrics.NetTxBytes = ioStats[0].BytesSent
 	}
 	metrics.SSHUsers = a.getSSHUsers(ctx)
-	metrics.LocalUsers = a.collectNodeLocalUsersCached(ctx)
+	localUsers := a.collectNodeLocalUsersCached(ctx)
+	quotaInstalled, quotaMounts, userQuotas := a.collectDiskQuotaSnapshotCached(ctx, localUsers)
+	metrics.DiskQuotaInstalled = quotaInstalled
+	metrics.DiskQuotaMounts = quotaMounts
+	metrics.UserDiskQuotas = userQuotas
+	preferredQuotaMount := selectPreferredQuotaMount(quotaMounts)
+	if preferredQuotaMount != "" && len(localUsers) > 0 && len(userQuotas) > 0 {
+		quotaByUser := make(map[string]NodeUserDiskQuota, len(userQuotas))
+		for _, q := range userQuotas {
+			if strings.TrimSpace(q.Mountpoint) != preferredQuotaMount {
+				continue
+			}
+			name := strings.TrimSpace(q.LocalUsername)
+			if name == "" {
+				continue
+			}
+			quotaByUser[name] = q
+		}
+		for i := range localUsers {
+			name := strings.TrimSpace(localUsers[i].LocalUsername)
+			if name == "" {
+				continue
+			}
+			if q, ok := quotaByUser[name]; ok {
+				localUsers[i].QuotaMountpoint = preferredQuotaMount
+				vUsed := q.UsedMB
+				vSoft := q.SoftMB
+				vHard := q.HardMB
+				localUsers[i].QuotaUsedMB = &vUsed
+				localUsers[i].QuotaSoftMB = &vSoft
+				localUsers[i].QuotaHardMB = &vHard
+			}
+		}
+	}
+	metrics.LocalUsers = localUsers
 
 	// CPU 计费需要观察 CPU-only 进程，因此进行一次全量扫描；
 	// 为控制开销，只上报「占用 CPU 超过阈值」或「使用 GPU」的进程。

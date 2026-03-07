@@ -19,6 +19,7 @@ type controllerMetrics struct {
 	actionsUnblockUserTotal atomic.Int64
 	actionsKillTotal        atomic.Int64
 	actionsCPUQuotaTotal    atomic.Int64
+	actionsMemoryLimitTotal atomic.Int64
 
 	lastReportUnix atomic.Int64
 }
@@ -44,6 +45,8 @@ func (m *controllerMetrics) observeReport(receivedAt time.Time, duplicate bool, 
 			m.actionsKillTotal.Add(1)
 		case "set_cpu_quota":
 			m.actionsCPUQuotaTotal.Add(1)
+		case "set_memory_limit":
+			m.actionsMemoryLimitTotal.Add(1)
 		}
 	}
 }
@@ -62,6 +65,7 @@ func (m *controllerMetrics) render(queueLen int) string {
 	write("gpuops_controller_actions_unblock_user_total", m.actionsUnblockUserTotal.Load())
 	write("gpuops_controller_actions_kill_process_total", m.actionsKillTotal.Load())
 	write("gpuops_controller_actions_set_cpu_quota_total", m.actionsCPUQuotaTotal.Load())
+	write("gpuops_controller_actions_set_memory_limit_total", m.actionsMemoryLimitTotal.Load())
 
 	write("gpuops_controller_queue_length", int64(queueLen))
 	write("gpuops_controller_last_report_unix", m.lastReportUnix.Load())

@@ -1,9 +1,6 @@
 package main
 
-import (
-	"testing"
-	"time"
-)
+import "testing"
 
 func TestCalculateProcessCost_MatchAndDefault(t *testing.T) {
 	pi := NewPriceIndex([]PriceRow{
@@ -26,22 +23,30 @@ func TestCalculateProcessCost_MatchAndDefault(t *testing.T) {
 	}
 }
 
-func TestStatusAndActions_GraceKill(t *testing.T) {
-	now := time.Date(2026, 2, 5, 16, 0, 0, 0, time.UTC)
-	blockedAt := now.Add(-11 * time.Minute)
-	u := User{Username: "alice", Balance: -1, Status: "blocked", BlockedAt: &blockedAt}
-	acts := DecideActions(now, "blocked", u, 100, 10, 10*time.Minute, []int32{123})
-	if len(acts) == 0 {
-		t.Fatalf("expected actions")
-	}
-	foundKill := false
+func TestStatusAndActions_EnterBlockedOnlyNotify(t *testing.T) {
+	u := User{Username: "alice", Balance: -600, Status: "blocked"}
+	acts := DecideActions("limited", u, 100, 10, 500)
+	foundNotify := false
 	for _, a := range acts {
-		if a.Type == "kill_process" {
-			foundKill = true
+		if a.Type == "notify" {
+			foundNotify = true
+		}
+		if a.Type == "kill_all_processes" || a.Type == "block_user" || a.Type == "unblock_user" {
+			t.Fatalf("unexpected control action type=%s", a.Type)
 		}
 	}
-	if !foundKill {
-		t.Fatalf("expected kill_process action")
+	if !foundNotify {
+		t.Fatalf("expected notify action when overdraft exceeded")
+	}
+}
+
+func TestStatusAndActions_NoControlActionWhenWithinOverdraftLimit(t *testing.T) {
+	u := User{Username: "bob", Balance: -20, Status: "blocked"}
+	acts := DecideActions("blocked", u, 100, 10, 500)
+	for _, a := range acts {
+		if a.Type == "kill_all_processes" || a.Type == "block_user" || a.Type == "unblock_user" {
+			t.Fatalf("unexpected control action type=%s when overdraft within limit", a.Type)
+		}
 	}
 }
 

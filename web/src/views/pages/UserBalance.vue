@@ -34,6 +34,34 @@
         style="margin-bottom: 12px"
       />
       <el-alert
+        v-if="resp && resp.status === 'warning'"
+        :title="`积分已进入预警区：当前积分 ${fmt2(resp.general_balance ?? resp.balance)}，预警阈值 ${fmt2(resp.warning_threshold_points ?? 0)}。请尽快充值，避免触发限速。`"
+        type="warning"
+        show-icon
+        :closable="false"
+        style="margin-bottom: 12px"
+      />
+      <el-alert
+        v-if="resp && resp.status === 'limited'"
+        :title="`已触发限速：当前积分 ${fmt2(resp.general_balance ?? resp.balance)}，限速阈值 ${fmt2(resp.limited_threshold_points ?? 0)}。当前仅可进行轻量操作。`"
+        type="error"
+        show-icon
+        :closable="false"
+        style="margin-bottom: 12px"
+      />
+      <el-alert
+        v-if="resp && resp.status === 'blocked'"
+        :title="`已欠费：当前欠费 ${fmt2(resp.current_overdraft_points ?? 0)}，每月最大欠费上限 ${fmt2(resp.monthly_max_overdraft_limit ?? 0)}。${
+          resp.overdraft_exceeded
+            ? '已超过欠费上限：GPU 已禁用，CPU 已限速，且首次越线会强制清理全部进程。'
+            : '未超过欠费上限：当前以限速为主，GPU 暂不禁用。'
+        }`"
+        type="error"
+        show-icon
+        :closable="false"
+        style="margin-bottom: 12px"
+      />
+      <el-alert
         v-if="resp && accountCount === 0"
         title="请尽快填写你已有的计算节点账号映射！当前未填写会导致系统无法准确识别你的节点使用。"
         type="error"
@@ -58,6 +86,10 @@
         <el-descriptions-item label="状态">
           <el-tag :type="tagType(resp.status)">{{ statusLabel(resp.status) }}</el-tag>
         </el-descriptions-item>
+        <el-descriptions-item label="预警阈值">{{ fmt2(resp.warning_threshold_points ?? 0) }}</el-descriptions-item>
+        <el-descriptions-item label="限速阈值">{{ fmt2(resp.limited_threshold_points ?? 0) }}</el-descriptions-item>
+        <el-descriptions-item label="每月最大欠费上限">{{ fmt2(resp.monthly_max_overdraft_limit ?? 0) }}</el-descriptions-item>
+        <el-descriptions-item label="当前欠费">{{ fmt2(resp.current_overdraft_points ?? 0) }}</el-descriptions-item>
         <el-descriptions-item label="节点账号映射数">{{ accountCount }}</el-descriptions-item>
         <el-descriptions-item label="平台账号创建时间">{{ fmtTime(resp.account_created_at || "") }}</el-descriptions-item>
         <el-descriptions-item label="当月剩余积分">{{ fmt2(resp.month_remaining_points ?? resp.balance) }}</el-descriptions-item>
@@ -87,6 +119,7 @@ import { ApiClient, type Announcement, type BalanceResp } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { useRouter } from "vue-router";
 import { renderMarkdown } from "../../lib/markdown";
+import { formatServerHMS } from "../../lib/time";
 
 const loading = ref(false);
 const error = ref("");
@@ -100,10 +133,7 @@ function fmt2(v: number): string {
 }
 
 function fmtTime(v: string): string {
-  if (!v) return "-";
-  const d = new Date(v);
-  if (Number.isNaN(d.getTime())) return v;
-  return d.toLocaleString();
+  return formatServerHMS(v);
 }
 
 function tagType(status: string) {
@@ -118,7 +148,7 @@ function statusLabel(status: string): string {
   if (status === "normal") return "正常";
   if (status === "warning") return "预警";
   if (status === "limited") return "受限";
-  if (status === "blocked") return "已封禁";
+  if (status === "blocked") return "欠费受限";
   return status || "未知";
 }
 
@@ -134,11 +164,14 @@ const statusReason = computed(() => {
   if (!s) return "";
   if (s === "normal") return "账号状态正常，可正常使用";
   if (s === "warning") {
-    if (accountCount.value === 0) return "还没有绑定相应节点账号，系统识别能力较弱，建议尽快填写";
-    return "积分余额接近阈值，请及时充值";
+    return "积分余额接近限速阈值，请及时充值";
   }
-  if (s === "limited") return "积分偏低，部分能力已受限，请尽快充值";
-  if (s === "blocked") return "账号被限制使用，请联系管理员处理";
+  if (s === "limited") return "已触发限速，仍可登录但性能受限";
+  if (s === "blocked") {
+    return resp.value?.overdraft_exceeded
+      ? "已超过欠费上限：GPU 已禁用，CPU 已限速，并触发一次性清进程"
+      : "已欠费但未超过欠费上限：当前主要执行限速"
+  }
   return "";
 });
 

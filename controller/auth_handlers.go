@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/mail"
 	"net/url"
 	"strings"
 	"time"
@@ -29,6 +28,8 @@ type registerReq struct {
 	Email                   string `json:"email"`
 	Username                string `json:"username"`
 	Password                string `json:"password"`
+	CaptchaID               string `json:"captcha_id"`
+	CaptchaOption           int    `json:"captcha_option"`
 	RealName                string `json:"real_name"`
 	StudentID               string `json:"student_id"`
 	Advisor                 string `json:"advisor"`
@@ -64,31 +65,44 @@ type mailSettingsReq struct {
 }
 
 func (s *Server) handleAuthMe(c *gin.Context) {
+	writeWithServerTime := func(status int, body gin.H) {
+		// 前端统一按北京时间展示，避免跨机房/跨时区部署造成页面时间错乱。
+		beijing := time.FixedZone("CST", 8*60*60)
+		if loc, err := time.LoadLocation("Asia/Shanghai"); err == nil {
+			beijing = loc
+		}
+		now := time.Now().In(beijing)
+		body["server_now"] = now.Format(time.RFC3339)
+		body["server_tz_name"] = "Asia/Shanghai"
+		body["server_tz_offset_minutes"] = 8 * 60
+		c.JSON(status, body)
+	}
+
 	if s.cfg.SessionHours == 0 {
-		c.JSON(http.StatusOK, gin.H{"authenticated": false, "session_disabled": true})
+		writeWithServerTime(http.StatusOK, gin.H{"authenticated": false, "session_disabled": true})
 		return
 	}
 	secret := strings.TrimSpace(s.cfg.AuthSecret)
 	cookie, err := c.Cookie(sessionCookieName)
 	if err != nil || strings.TrimSpace(cookie) == "" {
-		c.JSON(http.StatusOK, gin.H{"authenticated": false})
+		writeWithServerTime(http.StatusOK, gin.H{"authenticated": false})
 		return
 	}
 	p, err := verifySession(secret, cookie, time.Now())
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"authenticated": false})
+		writeWithServerTime(http.StatusOK, gin.H{"authenticated": false})
 		return
 	}
 	role, perms, ok, err := s.store.ResolveSessionRolePerms(c.Request.Context(), p.Username)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeWithServerTime(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	if !ok {
-		c.JSON(http.StatusOK, gin.H{"authenticated": false})
+		writeWithServerTime(http.StatusOK, gin.H{"authenticated": false})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
+	writeWithServerTime(http.StatusOK, gin.H{
 		"authenticated":       true,
 		"username":            p.Username,
 		"role":                role,
@@ -200,35 +214,120 @@ func (s *Server) handleAuthRegister(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
+	req.Email = strings.TrimSpace(req.Email)
 	req.Username = strings.TrimSpace(req.Username)
+	req.StudentID = normalizeStudentID(req.StudentID)
+	clientIP := trimmedClientIP(c.ClientIP())
+	userAgent := trimmedUserAgent(c.GetHeader("User-Agent"))
+	recordEvent := func(decision string, reason string) {
+		_ = s.store.InsertRegistrationSecurityEvent(c.Request.Context(), RegistrationSecurityEvent{
+			Action:    "register_submit",
+			Decision:  decision,
+			Reason:    reason,
+			ClientIP:  clientIP,
+			Username:  req.Username,
+			Email:     req.Email,
+			StudentID: req.StudentID,
+			UserAgent: userAgent,
+		})
+	}
+
 	if req.Email == "" || req.Username == "" || req.Password == "" || strings.TrimSpace(req.RealName) == "" ||
-		strings.TrimSpace(req.StudentID) == "" || strings.TrimSpace(req.Advisor) == "" || strings.TrimSpace(req.Phone) == "" {
+		req.StudentID == "" || strings.TrimSpace(req.Advisor) == "" || strings.TrimSpace(req.Phone) == "" {
+		recordEvent("deny", "missing_required_fields")
 		c.JSON(http.StatusBadRequest, gin.H{"error": "请完整填写注册信息"})
 		return
 	}
 	if !req.AcceptGuideline {
+		recordEvent("deny", "guideline_not_accepted")
 		c.JSON(http.StatusBadRequest, gin.H{"error": "请先阅读并勾选同意《用户准则》后再提交"})
 		return
 	}
-	if _, err := mail.ParseAddress(req.Email); err != nil || strings.ContainsAny(req.Email, " \t\r\n") {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "邮箱格式不合法"})
+	normalizedEmail, emailDomain, err := normalizeRegisterEmail(req.Email, req.StudentID)
+	if err != nil {
+		recordEvent("deny", "invalid_register_email_or_student")
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	req.Email = normalizedEmail
 	if utf8.RuneCountInString(req.Username) > 18 {
+		recordEvent("deny", "username_too_long")
 		c.JSON(http.StatusBadRequest, gin.H{"error": "用户名不得超过 18 个字符"})
 		return
 	}
-	if len(req.Password) < 8 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "密码至少 8 位"})
+	if err := validateStrongPassword(req.Password); err != nil {
+		recordEvent("deny", "weak_password")
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	now := time.Now()
+	stats, err := s.store.LoadRegistrationRateStats(
+		c.Request.Context(),
+		clientIP,
+		req.Email,
+		now.Add(-registerIPWindow),
+		now.Add(-registerEmailWindow),
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if stats.IPCount >= registerIPLimit {
+		recordEvent("deny", "rate_limited_by_ip_window")
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "请求过于频繁，请稍后再试"})
+		return
+	}
+	if stats.EmailCount >= registerEmailLimit {
+		recordEvent("deny", "rate_limited_by_email_window")
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "该邮箱请求过于频繁，请稍后再试"})
+		return
+	}
+	if stats.LastIPAt != nil && now.Sub(*stats.LastIPAt) < registerIPCooldown {
+		recordEvent("deny", "cooldown_by_ip")
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "请求过于频繁，请稍后再试"})
+		return
+	}
+	if stats.LastEmailAt != nil && now.Sub(*stats.LastEmailAt) < registerEmailCooldown {
+		recordEvent("deny", "cooldown_by_email")
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "该邮箱请求过于频繁，请稍后再试"})
+		return
+	}
+	blocked, err := s.store.IsDisposableEmailDomainBlocked(c.Request.Context(), emailDomain)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if blocked {
+		recordEvent("deny", "blocked_disposable_domain")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "该邮箱域名不允许注册，请使用学校正式邮箱"})
+		return
+	}
+	if strings.TrimSpace(req.CaptchaID) == "" {
+		recordEvent("deny", "captcha_missing")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "验证码已失效，请刷新后重试"})
+		return
+	}
+	if err := s.store.VerifyAndConsumeRegisterCaptcha(c.Request.Context(), req.CaptchaID, clientIP, req.CaptchaOption, now); err != nil {
+		switch {
+		case errors.Is(err, errRegisterCaptchaExpired):
+			recordEvent("deny", "captcha_expired")
+			c.JSON(http.StatusBadRequest, gin.H{"error": "验证码已过期，请刷新后重试"})
+		case errors.Is(err, errRegisterCaptchaUsed):
+			recordEvent("deny", "captcha_used")
+			c.JSON(http.StatusBadRequest, gin.H{"error": "验证码已失效，请刷新后重试"})
+		default:
+			recordEvent("deny", "captcha_invalid")
+			c.JSON(http.StatusBadRequest, gin.H{"error": "验证码错误，请重试"})
+		}
+		return
+	}
+
 	rawToken, tokenHash, err := newResetToken()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	expireAt := time.Now().Add(30 * time.Minute)
+	expireAt := now.Add(30 * time.Minute)
 
 	ctx := c.Request.Context()
 	err = s.store.WithTx(ctx, func(tx *sql.Tx) error {
@@ -244,6 +343,7 @@ func (s *Server) handleAuthRegister(c *gin.Context) {
 		}, req.Password, tokenHash, expireAt)
 	})
 	if err != nil {
+		recordEvent("deny", "create_registration_verification_failed")
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -251,6 +351,7 @@ func (s *Server) handleAuthRegister(c *gin.Context) {
 	settings, err := s.store.GetMailSettings(ctx, s.cfg)
 	if err != nil {
 		_ = s.store.DeleteRegistrationEmailVerificationByTokenHash(ctx, tokenHash)
+		recordEvent("deny", "load_mail_settings_failed")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -262,24 +363,42 @@ func (s *Server) handleAuthRegister(c *gin.Context) {
 	)
 	if err := sendPlainTextMail(settings, req.Email, subject, body); err != nil {
 		_ = s.store.DeleteRegistrationEmailVerificationByTokenHash(ctx, tokenHash)
+		recordEvent("deny", "send_verification_mail_failed")
 		c.JSON(http.StatusBadRequest, gin.H{"error": "验证邮件发送失败，请检查邮箱地址或联系管理员检查 SMTP 配置: " + err.Error()})
 		return
 	}
+	recordEvent("allow", "verification_mail_sent")
 
 	c.JSON(http.StatusOK, gin.H{"ok": true, "message": "验证邮件已发送，请前往邮箱点击链接完成提交。验证成功后将进入管理员审核，请勿重复提交。"})
 }
 
 func (s *Server) handleAuthRegisterCheck(c *gin.Context) {
 	username := strings.TrimSpace(c.Query("username"))
-	email := strings.TrimSpace(strings.ToLower(c.Query("email")))
-	studentID := strings.TrimSpace(c.Query("student_id"))
+	email := strings.TrimSpace(c.Query("email"))
+	studentID := normalizeStudentID(c.Query("student_id"))
 	localErrs := map[string]string{}
 	if utf8.RuneCountInString(username) > 18 {
 		localErrs["username"] = "用户名不得超过 18 个字符"
 	}
 	if email != "" {
-		if _, err := mail.ParseAddress(email); err != nil || strings.ContainsAny(email, " \t\r\n") {
-			localErrs["email"] = "邮箱格式不合法"
+		if studentID == "" {
+			localErrs["student_id"] = "请先填写学号"
+		}
+		if studentID != "" {
+			normalizedEmail, domain, err := normalizeRegisterEmail(email, studentID)
+			if err != nil {
+				localErrs["email"] = err.Error()
+			} else {
+				email = normalizedEmail
+				blocked, blockErr := s.store.IsDisposableEmailDomainBlocked(c.Request.Context(), domain)
+				if blockErr != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": blockErr.Error()})
+					return
+				}
+				if blocked {
+					localErrs["email"] = "该邮箱域名不允许注册，请使用学校正式邮箱"
+				}
+			}
 		}
 	}
 	errs, err := s.store.RegistrationAvailability(c.Request.Context(), username, email, studentID)
@@ -386,6 +505,10 @@ func (s *Server) handleAuthResetPassword(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数不完整"})
 		return
 	}
+	if err := validateStrongPassword(req.NewPassword); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	tokenHash := sha256Hex(strings.TrimSpace(req.Token))
 	if err := s.store.ResetPasswordByToken(c.Request.Context(), req.Username, tokenHash, req.NewPassword, time.Now()); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -406,6 +529,10 @@ func (s *Server) handleAuthChangePassword(c *gin.Context) {
 	roleStr := strings.TrimSpace(fmt.Sprintf("%v", role))
 	if userStr == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	if err := validateStrongPassword(req.NewPassword); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -495,6 +622,10 @@ func (s *Server) handleAdminBootstrap(c *gin.Context) {
 	req.Username = strings.TrimSpace(req.Username)
 	if req.Username == "" || req.Password == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "username/password 不能为空"})
+		return
+	}
+	if err := validateStrongPassword(req.Password); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
