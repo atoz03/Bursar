@@ -5,13 +5,13 @@
         <div class="section-title-wrap">
           <span class="section-icon"><el-icon><DataBoard /></el-icon></span>
           <div>
-          <div class="title">使用记录</div>
+          <div class="title">进程记录</div>
           <div class="sub">需要管理员登录：GET /api/admin/usage，GET /api/admin/usage/export.csv</div>
           </div>
         </div>
         <div class="row">
           <el-button :loading="loading" type="primary" @click="reload">刷新</el-button>
-          <el-button :loading="exporting" @click="exportCSV">导出 CSV</el-button>
+          <el-button :loading="exporting" :disabled="!canRunRangeAction" @click="exportCSV">导出区间 CSV</el-button>
         </div>
       </div>
     </template>
@@ -32,42 +32,104 @@
         <el-form-item label="条数">
           <el-input-number v-model="limit" :min="1" :max="5000" />
         </el-form-item>
-        <el-form-item label="导出From">
-          <el-input v-model="from" placeholder="YYYY-MM-DD 或 RFC3339" />
+        <el-form-item label="日期区间">
+          <el-date-picker
+            v-model="rangeDays"
+            type="daterange"
+            value-format="YYYY-MM-DD"
+            range-separator="至"
+            start-placeholder="开始日期"
+            end-placeholder="结束日期"
+            :disabled-date="usageRangeDisabledDate"
+            @change="onRangeChange"
+          />
         </el-form-item>
-        <el-form-item label="导出To">
-          <el-input v-model="to" placeholder="YYYY-MM-DD 或 RFC3339" />
+        <el-form-item>
+          <el-button :loading="estimatingRange" :disabled="!canRunRangeAction" @click="estimateRange">估算大小</el-button>
+        </el-form-item>
+        <el-form-item>
+          <el-button :loading="deletingRange" type="danger" plain :disabled="!canRunRangeAction" @click="deleteRangeRecords">删除区间记录</el-button>
         </el-form-item>
       </el-form>
+      <el-alert
+        v-if="availableDaysLoaded"
+        type="info"
+        :closable="false"
+        show-icon
+        :title="`已加载 ${availableDays.length} 个有记录日期；无记录日期已灰显不可选`"
+      />
+      <el-alert
+        v-if="rangeEstimate"
+        type="warning"
+        :closable="false"
+        show-icon
+        :title="`区间估算：${rangeEstimate.records} 条记录，CSV约 ${bytesText(rangeEstimate.estimated_csv_bytes)}，数据库约 ${bytesText(rangeEstimate.estimated_db_bytes)}`"
+      />
 
-      <el-table :data="records" stripe height="520" :row-class-name="rowClassName">
-        <el-table-column prop="timestamp" label="时间" width="190" sortable />
-        <el-table-column prop="node_id" label="节点" width="120" sortable />
-        <el-table-column prop="local_username" label="节点账号" width="150" sortable />
-        <el-table-column prop="billing_username" label="平台账号" width="170" sortable>
-          <template #default="{ row }">
-            <el-button
-              v-if="row.registered !== false && (row.billing_username || row.username)"
-              link
-              type="primary"
-              @click="openPlatformProfile(row.billing_username || row.username)"
-            >
-              {{ row.billing_username || row.username }}
-            </el-button>
-            <span v-else class="unregistered">未注册</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="CPU%" width="90" prop="cpu_percent" sortable>
-          <template #default="{ row }">{{ fmt2(row.cpu_percent) }}</template>
-        </el-table-column>
-        <el-table-column label="内存MB" width="110" prop="memory_mb" sortable>
-          <template #default="{ row }">{{ fmt2(row.memory_mb) }}</template>
-        </el-table-column>
-        <el-table-column label="积分消耗" width="100" prop="cost" sortable>
-          <template #default="{ row }">{{ fmt2(row.cost) }}</template>
-        </el-table-column>
-        <el-table-column prop="gpu_usage" label="GPU明细(JSON)" />
-      </el-table>
+      <el-card>
+        <template #header>
+          <div class="section-inline-title">进程使用记录</div>
+        </template>
+        <el-table :data="records" stripe max-height="520" :row-class-name="rowClassName">
+          <el-table-column prop="timestamp" label="时间" width="190" sortable :formatter="tableTimeFormatter" />
+          <el-table-column prop="node_id" label="节点" width="120" sortable />
+          <el-table-column prop="local_username" label="节点账号" width="150" sortable />
+          <el-table-column prop="billing_username" label="平台账号" width="170" sortable>
+            <template #default="{ row }">
+              <el-button
+                v-if="row.registered !== false && (row.billing_username || row.username)"
+                link
+                type="primary"
+                @click="openPlatformProfile(row.billing_username || row.username)"
+              >
+                {{ row.billing_username || row.username }}
+              </el-button>
+              <span v-else class="unregistered">未注册</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="CPU%" width="90" prop="cpu_percent" sortable>
+            <template #default="{ row }">{{ fmt2(row.cpu_percent) }}</template>
+          </el-table-column>
+          <el-table-column label="内存MB" width="110" prop="memory_mb" sortable>
+            <template #default="{ row }">{{ fmt2(row.memory_mb) }}</template>
+          </el-table-column>
+          <el-table-column label="积分消耗" width="100" prop="cost" sortable>
+            <template #default="{ row }">{{ fmt2(row.cost) }}</template>
+          </el-table-column>
+          <el-table-column prop="gpu_usage" label="GPU明细(JSON)" />
+        </el-table>
+      </el-card>
+
+      <el-card>
+        <template #header>
+          <div class="section-inline-title">强制终止记录</div>
+        </template>
+        <el-table :data="killRecords" stripe max-height="420">
+          <el-table-column prop="timestamp" label="时间" width="190" sortable :formatter="tableTimeFormatter" />
+          <el-table-column prop="node_id" label="节点" width="120" sortable />
+          <el-table-column prop="local_username" label="节点账号" width="150" sortable />
+          <el-table-column prop="billing_username" label="平台账号" width="170" sortable>
+            <template #default="{ row }">
+              <el-button
+                v-if="row.registered !== false && row.billing_username"
+                link
+                type="primary"
+                @click="openPlatformProfile(row.billing_username)"
+              >
+                {{ row.billing_username }}
+              </el-button>
+              <span v-else class="unregistered">{{ row.billing_username || "未注册/未知" }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="action_type" label="动作" width="140" sortable>
+            <template #default="{ row }">{{ killActionLabel(row.action_type) }}</template>
+          </el-table-column>
+          <el-table-column prop="reason" label="原因" min-width="320" />
+          <el-table-column prop="pids" label="PID" min-width="160">
+            <template #default="{ row }">{{ killPidsText(row.pids) }}</template>
+          </el-table-column>
+        </el-table>
+      </el-card>
 
       <el-card v-if="unregisteredSummary.length > 0">
         <template #header>
@@ -112,17 +174,24 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { ApiClient, type UsageRecord } from "../../lib/api";
+import { ApiClient, type ProcessKillRecord, type UsageRecord } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
 import PlatformUserDetailDialog from "../../components/PlatformUserDetailDialog.vue";
 import { DataBoard, WarningFilled } from "@element-plus/icons-vue";
+import { formatServerDate, formatServerDateTime, getServerTodayDateText } from "../../lib/time";
 
 const loading = ref(false);
 const exporting = ref(false);
 const blacklistingKey = ref("");
 const error = ref("");
 const records = ref<UsageRecord[]>([]);
+const killRecords = ref<ProcessKillRecord[]>([]);
+const availableDays = ref<Array<{ date: string; record_count: number; estimated_csv_bytes: number }>>([]);
+const availableDaysLoaded = ref(false);
+const estimatingRange = ref(false);
+const deletingRange = ref(false);
+const rangeEstimate = ref<{ records: number; estimated_csv_bytes: number; estimated_db_bytes: number } | null>(null);
 const userActionsVisible = ref(false);
 const selectedPlatformUsername = ref("");
 const profileVisible = ref(false);
@@ -132,30 +201,91 @@ const billingUsername = ref("");
 const localUsername = ref("");
 const unregisteredOnly = ref(false);
 const limit = ref(200);
-const from = ref("");
-const to = ref("");
+const rangeDays = ref<string[]>([]);
 
 function fmt2(v: number): string {
   return Number(v ?? 0).toFixed(2);
+}
+
+function tableTimeFormatter(_: unknown, __: unknown, cellValue: unknown): string {
+  return formatServerDateTime(String(cellValue ?? ""));
+}
+
+function bytesText(n: number): string {
+  const x = Number(n || 0);
+  if (x < 1024) return `${x} B`;
+  if (x < 1024 * 1024) return `${(x / 1024).toFixed(2)} KB`;
+  if (x < 1024 * 1024 * 1024) return `${(x / 1024 / 1024).toFixed(2)} MB`;
+  return `${(x / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function dateKey(date: Date): string {
+  return formatServerDate(date);
+}
+
+const availableDaySet = computed(() => {
+  const s = new Set<string>();
+  for (const d of availableDays.value) {
+    const k = String(d.date || "").trim();
+    if (k) s.add(k);
+  }
+  return s;
+});
+
+const canRunRangeAction = computed(() => Array.isArray(rangeDays.value) && rangeDays.value.length === 2 && !!rangeDays.value[0] && !!rangeDays.value[1]);
+
+function usageRangeDisabledDate(d: Date): boolean {
+  if (dateKey(d) > getServerTodayDateText()) return true;
+  if (!availableDaysLoaded.value) return false;
+  return !availableDaySet.value.has(dateKey(d));
+}
+
+function onRangeChange() {
+  rangeEstimate.value = null;
 }
 
 async function reload() {
   loading.value = true;
   error.value = "";
   records.value = [];
+  killRecords.value = [];
+  availableDaysLoaded.value = false;
   try {
     const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
-    const r = await client.adminUsage({
-      billingUsername: billingUsername.value,
-      localUsername: localUsername.value,
-      unregisteredOnly: unregisteredOnly.value,
-      limit: limit.value,
-    });
+    const [r, d] = await Promise.all([
+      client.adminUsage({
+        billingUsername: billingUsername.value,
+        localUsername: localUsername.value,
+        unregisteredOnly: unregisteredOnly.value,
+        limit: limit.value,
+      }),
+      client.adminUsageDays({
+        billingUsername: billingUsername.value,
+        localUsername: localUsername.value,
+        unregisteredOnly: unregisteredOnly.value,
+      }),
+    ]);
     records.value = (r.records ?? []).map((x) => ({
       ...x,
       local_username: x.local_username || "-",
       billing_username: x.registered === false ? "" : (x.billing_username || x.username || ""),
     }));
+    killRecords.value = (r.kill_records ?? []).map((x) => ({
+      ...x,
+      local_username: x.local_username || "-",
+      billing_username: x.billing_username || "",
+      pids: Array.isArray(x.pids) ? x.pids : [],
+    }));
+    availableDays.value = d.days ?? [];
+    availableDaysLoaded.value = true;
+    if (rangeDays.value.length === 2) {
+      const a = String(rangeDays.value[0] || "");
+      const b = String(rangeDays.value[1] || "");
+      if (!availableDaySet.value.has(a) || !availableDaySet.value.has(b)) {
+        rangeDays.value = [];
+        rangeEstimate.value = null;
+      }
+    }
   } catch (e: any) {
     error.value = e?.message ?? String(e);
   } finally {
@@ -163,15 +293,34 @@ async function reload() {
   }
 }
 
+function killActionLabel(actionType: string): string {
+  const t = String(actionType || "").trim();
+  if (t === "kill_all_processes") return "终止用户全部进程";
+  if (t === "kill_all_user_processes") return "终止全部用户进程";
+  if (t === "kill_process") return "终止指定进程";
+  return t || "-";
+}
+
+function killPidsText(pids: number[] | undefined): string {
+  if (!Array.isArray(pids) || pids.length === 0) return "-";
+  return pids.join(", ");
+}
+
 async function exportCSV() {
+  if (!canRunRangeAction.value) {
+    ElMessage.warning("请先选择有效日期区间");
+    return;
+  }
   exporting.value = true;
   error.value = "";
   try {
     const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
     const blob = await client.adminExportUsageCSV({
-      username: billingUsername.value,
-      from: from.value,
-      to: to.value,
+      billingUsername: billingUsername.value,
+      localUsername: localUsername.value,
+      unregisteredOnly: unregisteredOnly.value,
+      from: rangeDays.value[0],
+      to: rangeDays.value[1],
       limit: 20000,
     });
     const url = URL.createObjectURL(blob);
@@ -187,6 +336,78 @@ async function exportCSV() {
     error.value = e?.message ?? String(e);
   } finally {
     exporting.value = false;
+  }
+}
+
+async function estimateRange() {
+  if (!canRunRangeAction.value) {
+    ElMessage.warning("请先选择有效日期区间");
+    return;
+  }
+  estimatingRange.value = true;
+  error.value = "";
+  try {
+    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+    const r = await client.adminUsageRangeEstimate({
+      from: rangeDays.value[0],
+      to: rangeDays.value[1],
+      billingUsername: billingUsername.value,
+      localUsername: localUsername.value,
+      unregisteredOnly: unregisteredOnly.value,
+    });
+    rangeEstimate.value = {
+      records: Number(r.records ?? 0),
+      estimated_csv_bytes: Number(r.estimated_csv_bytes ?? 0),
+      estimated_db_bytes: Number(r.estimated_db_bytes ?? 0),
+    };
+  } catch (e: any) {
+    error.value = e?.message ?? String(e);
+  } finally {
+    estimatingRange.value = false;
+  }
+}
+
+async function deleteRangeRecords() {
+  if (!canRunRangeAction.value) {
+    ElMessage.warning("请先选择有效日期区间");
+    return;
+  }
+  if (!rangeEstimate.value) {
+    await estimateRange();
+    if (!rangeEstimate.value) return;
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确认删除 ${rangeDays.value[0]} 至 ${rangeDays.value[1]} 的使用记录吗？\n预计 ${rangeEstimate.value.records} 条，CSV约 ${bytesText(rangeEstimate.value.estimated_csv_bytes)}。`,
+      "二次确认",
+      {
+        type: "warning",
+        confirmButtonText: "确认删除",
+        cancelButtonText: "取消",
+      },
+    );
+  } catch {
+    return;
+  }
+  deletingRange.value = true;
+  error.value = "";
+  try {
+    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+    const res = await client.adminUsageDeleteRange({
+      from: rangeDays.value[0],
+      to: rangeDays.value[1],
+      billing_username: billingUsername.value,
+      local_username: localUsername.value,
+      unregistered_only: unregisteredOnly.value,
+      confirm: true,
+    });
+    ElMessage.success(`删除完成：${Number(res.deleted_records ?? 0)} 条`);
+    rangeEstimate.value = null;
+    await reload();
+  } catch (e: any) {
+    error.value = e?.message ?? String(e);
+  } finally {
+    deletingRange.value = false;
   }
 }
 

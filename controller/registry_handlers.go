@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/mail"
 	"sort"
 	"strconv"
 	"strings"
@@ -43,7 +44,7 @@ func (s *Server) handleRegistryResolve(c *gin.Context) {
 		return
 	}
 
-	exclusiveEnabled, err := s.store.GetNodeSSHExclusivePolicy(ctx, nodeID)
+	exclusiveEnabled, exclusiveBlockOtherSSH, err := s.store.GetNodeSSHExclusiveConfig(ctx, nodeID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusNotFound, gin.H{"error": "node_not_found"})
@@ -52,7 +53,7 @@ func (s *Server) handleRegistryResolve(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	if exclusiveEnabled {
+	if exclusiveEnabled && exclusiveBlockOtherSSH {
 		exclusiveUser, err := s.store.IsNodeExclusiveUser(ctx, nodeID, localUsername)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -102,6 +103,23 @@ func (s *Server) handleRegistryResolve(c *gin.Context) {
 	}
 
 	if !found {
+		tempBilling, tempFound, tempExpiresAt, err := s.store.ResolveTemporaryBindAccess(ctx, nodeID, localUsername, time.Now())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if tempFound {
+			payload := gin.H{
+				"registered":       true,
+				"temporary_bind":   true,
+				"billing_username": tempBilling,
+			}
+			if tempExpiresAt != nil {
+				payload["temporary_expires_at"] = *tempExpiresAt
+			}
+			c.JSON(http.StatusOK, payload)
+			return
+		}
 		whitelisted, err := s.store.IsWhitelisted(ctx, nodeID, localUsername)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -115,6 +133,114 @@ func (s *Server) handleRegistryResolve(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"registered": true, "billing_username": billing})
+}
+
+type registryBindClaimReq struct {
+	Token         string `json:"token"`
+	NodeID        string `json:"node_id"`
+	LocalUsername string `json:"local_username"`
+}
+
+func (s *Server) handleRegistryBindClaim(c *gin.Context) {
+	var req registryBindClaimReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	req.Token = strings.TrimSpace(req.Token)
+	req.NodeID = strings.TrimSpace(req.NodeID)
+	req.LocalUsername = strings.TrimSpace(req.LocalUsername)
+	if req.Token == "" || req.NodeID == "" || req.LocalUsername == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "token/node_id/local_username 不能为空"})
+		return
+	}
+
+	policy, err := s.store.GetNodeBindSecurityPolicy(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	now := time.Now()
+	var challenge UserNodeBindChallenge
+	if err := s.store.WithTx(c.Request.Context(), func(tx *sql.Tx) error {
+		var txErr error
+		challenge, txErr = s.store.ClaimUserBindChallengeTx(
+			c.Request.Context(),
+			tx,
+			req.Token,
+			req.NodeID,
+			req.LocalUsername,
+			now,
+		)
+		return txErr
+	}); err != nil {
+		switch {
+		case errors.Is(err, errNodeBindChallengeNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": "challenge 不存在或已失效", "reason": "challenge_not_found"})
+			return
+		case errors.Is(err, errNodeBindChallengeMismatch):
+			c.JSON(http.StatusForbidden, gin.H{"error": "challenge 与当前节点账号不匹配", "reason": "challenge_mismatch"})
+			return
+		case errors.Is(err, errNodeBindChallengeExpired):
+			s.sweepNodeBindFailures(c.Request.Context(), req.NodeID)
+			c.JSON(http.StatusGone, gin.H{"error": "challenge 已过期，请在网页重新申请", "reason": "challenge_expired"})
+			return
+		case errors.Is(err, errNodeBindAlreadyBound):
+			c.JSON(http.StatusConflict, gin.H{"error": "该节点账号已绑定到当前平台账号", "reason": "mapping_exists_same_user"})
+			return
+		}
+		var frozenErr *NodeBindTargetFrozenError
+		if errors.As(err, &frozenErr) {
+			c.JSON(http.StatusLocked, gin.H{
+				"error":          fmt.Sprintf("目标映射处于争抢冻结期，结束时间 %s", formatRFC3339InBeijing(frozenErr.FreezeUntil)),
+				"reason":         "mapping_target_frozen",
+				"freeze_until":   frozenErr.FreezeUntil,
+				"node_id":        frozenErr.NodeID,
+				"local_username": frozenErr.LocalUsername,
+			})
+			return
+		}
+		var conflictErr *NodeAccountOwnershipConflictError
+		if errors.As(err, &conflictErr) {
+			c.JSON(http.StatusConflict, gin.H{
+				"error":          "节点账号已被其他平台账号绑定，禁止换绑。请先走解绑审批流程。",
+				"reason":         "mapping_exists_other_user",
+				"node_id":        conflictErr.NodeID,
+				"local_username": conflictErr.LocalUsername,
+			})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	successReason := fmt.Sprintf("绑定 challenge 校验成功：billing=%s node=%s local=%s", challenge.BillingUsername, challenge.NodeID, challenge.LocalUsername)
+	s.enqueueCPUQuotaAction(challenge.NodeID, challenge.LocalUsername, 0, successReason+"；解除临时 CPU 限速", true)
+	if memoryAction, ok := s.nextMemoryLimitAction(challenge.NodeID, challenge.LocalUsername, 0, successReason+"；解除临时内存限额", true); ok {
+		s.enqueueNodeAction(challenge.NodeID, memoryAction)
+	}
+	if policy.TrialGPUBlocked {
+		s.enqueueNodeAction(challenge.NodeID, Action{
+			Type:     "unblock_user",
+			Username: challenge.LocalUsername,
+			Reason:   successReason + "；解除临时 GPU 隐藏",
+		})
+	}
+	s.enqueueNodeAction(challenge.NodeID, Action{
+		Type:   "force_sync",
+		Reason: successReason + "；刷新 SSH 校验缓存",
+	})
+
+	c.JSON(http.StatusOK, gin.H{
+		"ok":               true,
+		"request_id":       challenge.RequestID,
+		"challenge_id":     challenge.ChallengeID,
+		"billing_username": challenge.BillingUsername,
+		"node_id":          challenge.NodeID,
+		"local_username":   challenge.LocalUsername,
+		"status":           challenge.Status,
+		"message":          "绑定校验成功，映射已生效",
+	})
 }
 
 // handleRegistryNodeGuardState 返回节点当前拦截策略开关，供节点端缓存策略参考。
@@ -133,7 +259,7 @@ func (s *Server) handleRegistryNodeGuardState(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	exclusiveEnabled, err := s.store.GetNodeSSHExclusivePolicy(c.Request.Context(), nodeID)
+	exclusiveEnabled, exclusiveBlockOtherSSH, err := s.store.GetNodeSSHExclusiveConfig(c.Request.Context(), nodeID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusNotFound, gin.H{"error": "node_not_found"})
@@ -143,9 +269,11 @@ func (s *Server) handleRegistryNodeGuardState(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"node_id":           nodeID,
-		"guard_enabled":     guardEnabled,
-		"exclusive_enabled": exclusiveEnabled,
+		"node_id":                   nodeID,
+		"guard_enabled":             guardEnabled,
+		"exclusive_enabled":         (exclusiveEnabled && exclusiveBlockOtherSSH),
+		"exclusive_config_enabled":  exclusiveEnabled,
+		"exclusive_block_other_ssh": exclusiveBlockOtherSSH,
 	})
 }
 
@@ -219,12 +347,13 @@ type bindRequestsCreateReq struct {
 }
 
 func (s *Server) handleUserBindRequestsCreate(c *gin.Context) {
+	authBilling := strings.TrimSpace(fmt.Sprintf("%v", c.MustGet("auth_user")))
 	var req bindRequestsCreateReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	req.BillingUsername = strings.TrimSpace(req.BillingUsername)
+	req.BillingUsername = authBilling
 	req.Message = strings.TrimSpace(req.Message)
 	if req.BillingUsername == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "billing_username 不能为空"})
@@ -288,12 +417,13 @@ func validateOpenRequestReason(message string) error {
 }
 
 func (s *Server) handleUserOpenRequestCreate(c *gin.Context) {
+	authBilling := strings.TrimSpace(fmt.Sprintf("%v", c.MustGet("auth_user")))
 	var req openRequestCreateReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	req.BillingUsername = strings.TrimSpace(req.BillingUsername)
+	req.BillingUsername = authBilling
 	req.NodeID = strings.TrimSpace(req.NodeID)
 	req.LocalUsername = strings.TrimSpace(req.LocalUsername)
 	req.Message = strings.TrimSpace(req.Message)
@@ -327,7 +457,7 @@ func (s *Server) handleUserOpenRequestCreate(c *gin.Context) {
 }
 
 func (s *Server) handleUserRequestsList(c *gin.Context) {
-	billing := strings.TrimSpace(c.Query("billing_username"))
+	billing := strings.TrimSpace(fmt.Sprintf("%v", c.MustGet("auth_user")))
 	limit := 200
 	if v := strings.TrimSpace(c.Query("limit")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -412,6 +542,10 @@ func (s *Server) handleAdminRequestReject(c *gin.Context) {
 	s.handleAdminRequestReview(c, "rejected")
 }
 
+type adminRequestReviewReq struct {
+	Reason string `json:"reason"`
+}
+
 func (s *Server) handleAdminRequestReopen(c *gin.Context) {
 	idStr := strings.TrimSpace(c.Param("id"))
 	id, err := strconv.Atoi(idStr)
@@ -460,17 +594,46 @@ func (s *Server) handleAdminRequestReview(c *gin.Context, newStatus string) {
 			reviewedBy = "admin_token"
 		}
 	}
+	rejectReason := ""
+	if newStatus == "rejected" && c.Request.ContentLength > 0 {
+		var req adminRequestReviewReq
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		rejectReason = strings.TrimSpace(req.Reason)
+	}
 
 	ctx := c.Request.Context()
 	now := time.Now()
 	var updated UserRequest
 	if err := s.store.WithTx(ctx, func(tx *sql.Tx) error {
 		var err error
-		updated, err = s.store.ReviewUserRequestTx(ctx, tx, id, newStatus, reviewedBy, now)
+		updated, err = s.store.ReviewUserRequestTx(ctx, tx, id, newStatus, reviewedBy, now, rejectReason)
 		return err
 	}); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+	if newStatus == "approved" && strings.TrimSpace(updated.RequestType) == "unbind" {
+		nodeID := strings.TrimSpace(updated.NodeID)
+		localUsername := strings.TrimSpace(updated.LocalUsername)
+		if nodeID != "" && localUsername != "" {
+			s.enqueueNodeAction(nodeID, Action{
+				Type:     "kill_all_processes",
+				Username: localUsername,
+				Reason:   fmt.Sprintf("管理员 %s 审批通过解绑申请：强制终止该账号全部进程", reviewedBy),
+			})
+			s.enqueueNodeAction(nodeID, Action{
+				Type:     "kick_ssh_user",
+				Username: localUsername,
+				Reason:   fmt.Sprintf("管理员 %s 审批通过解绑申请：强制断开 SSH 会话", reviewedBy),
+			})
+			s.enqueueNodeAction(nodeID, Action{
+				Type:   "force_sync",
+				Reason: fmt.Sprintf("管理员 %s 审批通过解绑申请：刷新节点 SSH 策略缓存", reviewedBy),
+			})
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true, "request": updated})
 }
@@ -488,6 +651,20 @@ type registrationRequestView struct {
 
 type registrationRequestRejectReq struct {
 	Reason string `json:"reason"`
+}
+
+func isLegalEmailAddress(raw string) bool {
+	email := strings.TrimSpace(raw)
+	if email == "" {
+		return false
+	}
+	if strings.ContainsAny(email, " \t\r\n") || strings.Count(email, "@") != 1 {
+		return false
+	}
+	if _, err := mail.ParseAddress(email); err != nil {
+		return false
+	}
+	return true
 }
 
 func registrationRequestMatchFilter(r RegistrationRequest, field string, keyword string) bool {
@@ -707,6 +884,10 @@ func (s *Server) handleAdminRegistrationRequestReject(c *gin.Context) {
 	var req registrationRequestRejectReq
 	_ = c.ShouldBindJSON(&req)
 	reason := strings.TrimSpace(req.Reason)
+	if reason == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "退回理由不能为空"})
+		return
+	}
 	reviewedBy := "admin"
 	if v, ok := c.Get("auth_user"); ok {
 		if x, ok2 := v.(string); ok2 && strings.TrimSpace(x) != "" {
@@ -730,6 +911,8 @@ func (s *Server) handleAdminRegistrationRequestReject(c *gin.Context) {
 	toEmail := strings.TrimSpace(updated.Email)
 	if toEmail == "" {
 		mailErr = "该申请未填写邮箱，未发送通知"
+	} else if !isLegalEmailAddress(toEmail) {
+		mailErr = "邮箱格式不合法，已跳过发送通知邮件"
 	} else {
 		settings, err := s.store.GetMailSettings(c.Request.Context(), s.cfg)
 		if err != nil {
@@ -752,6 +935,18 @@ func (s *Server) handleAdminRegistrationRequestReject(c *gin.Context) {
 			}
 		}
 	}
+	mailRecorded := true
+	if err := s.store.SetRegistrationRejectNotifyMailResult(c.Request.Context(), updated.RequestID, mailSent, mailErr); err != nil {
+		mailRecorded = false
+		if strings.TrimSpace(mailErr) == "" {
+			mailErr = "记录邮件通知状态失败: " + err.Error()
+		} else {
+			mailErr = strings.TrimSpace(mailErr) + "；记录邮件通知状态失败: " + err.Error()
+		}
+	}
+	updated.RejectNotifyMailChecked = mailRecorded
+	updated.RejectNotifyMailSent = mailSent
+	updated.RejectNotifyMailError = strings.TrimSpace(mailErr)
 
 	resp := gin.H{
 		"ok":        true,
@@ -789,6 +984,7 @@ func (s *Server) handleAdminRequestsBatchReview(c *gin.Context) {
 	okCount := 0
 	failCount := 0
 	failItems := make([]gin.H, 0)
+	defaultRejectReason := "管理员批量拒绝"
 	for _, id := range req.RequestIDs {
 		if id <= 0 {
 			failCount++
@@ -796,7 +992,34 @@ func (s *Server) handleAdminRequestsBatchReview(c *gin.Context) {
 			continue
 		}
 		err := s.store.WithTx(c.Request.Context(), func(tx *sql.Tx) error {
-			_, err := s.store.ReviewUserRequestTx(c.Request.Context(), tx, id, req.NewStatus, reviewedBy, now)
+			rejectReason := ""
+			if req.NewStatus == "rejected" {
+				rejectReason = defaultRejectReason
+			}
+			updated, err := s.store.ReviewUserRequestTx(c.Request.Context(), tx, id, req.NewStatus, reviewedBy, now, rejectReason)
+			if err != nil {
+				return err
+			}
+			if req.NewStatus == "approved" && strings.TrimSpace(updated.RequestType) == "unbind" {
+				nodeID := strings.TrimSpace(updated.NodeID)
+				localUsername := strings.TrimSpace(updated.LocalUsername)
+				if nodeID != "" && localUsername != "" {
+					s.enqueueNodeAction(nodeID, Action{
+						Type:     "kill_all_processes",
+						Username: localUsername,
+						Reason:   fmt.Sprintf("管理员 %s 批量审批解绑通过：强制终止该账号全部进程", reviewedBy),
+					})
+					s.enqueueNodeAction(nodeID, Action{
+						Type:     "kick_ssh_user",
+						Username: localUsername,
+						Reason:   fmt.Sprintf("管理员 %s 批量审批解绑通过：强制断开 SSH 会话", reviewedBy),
+					})
+					s.enqueueNodeAction(nodeID, Action{
+						Type:   "force_sync",
+						Reason: fmt.Sprintf("管理员 %s 批量审批解绑通过：刷新节点 SSH 策略缓存", reviewedBy),
+					})
+				}
+			}
 			return err
 		})
 		if err != nil {

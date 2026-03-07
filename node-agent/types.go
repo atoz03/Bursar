@@ -19,6 +19,7 @@ type MetricsData struct {
 	MntUsedGB          float64             `json:"mnt_used_gb,omitempty"`
 	OSVersion          string              `json:"os_version,omitempty"`
 	KernelVersion      string              `json:"kernel_version,omitempty"`
+	AgentVersion       string              `json:"agent_version,omitempty"`
 	NodeIP             string              `json:"node_ip,omitempty"`
 	NodeMAC            string              `json:"node_mac,omitempty"`
 	NetRxBytes         uint64              `json:"net_rx_bytes,omitempty"`
@@ -63,18 +64,26 @@ type ControllerResponse struct {
 	Actions []Action `json:"actions"`
 }
 
+type GPUExclusiveAssignment struct {
+	Username   string `json:"username"`
+	GPUIndices []int  `json:"gpu_indices"`
+}
+
 type Action struct {
-	Type                string  `json:"type"`
-	Username            string  `json:"username"`
-	PIDs                []int32 `json:"pids,omitempty"`
-	Reason              string  `json:"reason,omitempty"`
-	Message             string  `json:"message,omitempty"`
-	PublicKey           string  `json:"public_key,omitempty"`
-	CPUQuotaPercent     float64 `json:"cpu_quota_percent,omitempty"`
-	MemoryLimitGB       float64 `json:"memory_limit_gb,omitempty"`
-	DiskQuotaMountpoint string  `json:"disk_quota_mountpoint,omitempty"`
-	DiskQuotaSoftMB     float64 `json:"disk_quota_soft_mb,omitempty"`
-	DiskQuotaHardMB     float64 `json:"disk_quota_hard_mb,omitempty"`
+	Type                    string                   `json:"type"`
+	Username                string                   `json:"username"`
+	PIDs                    []int32                  `json:"pids,omitempty"`
+	Reason                  string                   `json:"reason,omitempty"`
+	Message                 string                   `json:"message,omitempty"`
+	PublicKey               string                   `json:"public_key,omitempty"`
+	CPUQuotaPercent         float64                  `json:"cpu_quota_percent,omitempty"`
+	MemoryLimitGB           float64                  `json:"memory_limit_gb,omitempty"`
+	DiskQuotaMountpoint     string                   `json:"disk_quota_mountpoint,omitempty"`
+	DiskQuotaSoftMB         float64                  `json:"disk_quota_soft_mb,omitempty"`
+	DiskQuotaHardMB         float64                  `json:"disk_quota_hard_mb,omitempty"`
+	GPUExclusiveEnabled     bool                     `json:"gpu_exclusive_enabled,omitempty"`
+	GPUExclusiveAssignments []GPUExclusiveAssignment `json:"gpu_exclusive_assignments,omitempty"`
+	GPUIndices              []int                    `json:"gpu_indices,omitempty"`
 }
 
 type NodeLocalUser struct {

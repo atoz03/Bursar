@@ -18,6 +18,8 @@ CONTROLLER_URL="${CONTROLLER_URL:-}"
 AGENT_TOKEN="${AGENT_TOKEN:-}"
 SSH_GUARD_EXCLUDE_USERS="${SSH_GUARD_EXCLUDE_USERS:-root}"
 SKIP_CONTROLLER_HEALTHCHECK="${SKIP_CONTROLLER_HEALTHCHECK:-0}"
+ENABLE_USER_SLICE_CPU_RESERVE="${ENABLE_USER_SLICE_CPU_RESERVE:-1}"
+USER_SLICE_CPU_RESERVE_PERCENT="${USER_SLICE_CPU_RESERVE_PERCENT:-95}"
 ENABLE_USER_SLICE_MEMORY_RESERVE="${ENABLE_USER_SLICE_MEMORY_RESERVE:-1}"
 USER_SLICE_MEMORY_RESERVE_GB="${USER_SLICE_MEMORY_RESERVE_GB:-8}"
 HOME_RESERVE_GB="${HOME_RESERVE_GB:-8}"
@@ -43,6 +45,7 @@ echo "MAP_FILE=${MAP_FILE}"
 echo "TARGET=<${TARGET_BASE}>/<用户名>/${PROJECT_DIR_NAME}"
 echo "PARALLEL=${PARALLEL}"
 echo "REPORT_FILE=${REPORT_FILE}"
+echo "USER_SLICE_CPU_RESERVE_PERCENT=${USER_SLICE_CPU_RESERVE_PERCENT} (enable=${ENABLE_USER_SLICE_CPU_RESERVE})"
 echo "USER_SLICE_MEMORY_RESERVE_GB=${USER_SLICE_MEMORY_RESERVE_GB} (enable=${ENABLE_USER_SLICE_MEMORY_RESERVE})"
 echo "HOME_RESERVE_GB=${HOME_RESERVE_GB} (path=${HOME_RESERVE_CHECK_PATH})"
 
@@ -125,6 +128,10 @@ run_install_agent() {
   esc_exclude="$(printf "%s" "${SSH_GUARD_EXCLUDE_USERS}" | sed "s/'/'\"'\"'/g")"
   local esc_skip_health
   esc_skip_health="$(printf "%s" "${SKIP_CONTROLLER_HEALTHCHECK}" | sed "s/'/'\"'\"'/g")"
+  local esc_enable_cpu_reserve
+  esc_enable_cpu_reserve="$(printf "%s" "${ENABLE_USER_SLICE_CPU_RESERVE}" | sed "s/'/'\"'\"'/g")"
+  local esc_cpu_reserve_pct
+  esc_cpu_reserve_pct="$(printf "%s" "${USER_SLICE_CPU_RESERVE_PERCENT}" | sed "s/'/'\"'\"'/g")"
   local esc_enable_mem_reserve
   esc_enable_mem_reserve="$(printf "%s" "${ENABLE_USER_SLICE_MEMORY_RESERVE}" | sed "s/'/'\"'\"'/g")"
   local esc_mem_reserve_gb
@@ -138,7 +145,7 @@ run_install_agent() {
   local esc_home_reserve_interval
   esc_home_reserve_interval="$(printf "%s" "${HOME_RESERVE_ENFORCE_INTERVAL}" | sed "s/'/'\"'\"'/g")"
   ssh -n -i "${key_use_path}" -p "${port}" -o StrictHostKeyChecking=no -o ConnectTimeout="${SSH_TIMEOUT}" "${user}@${ip}" \
-    "cd '${target_dir}' && SSH_GUARD_EXCLUDE_USERS='${esc_exclude}' SKIP_CONTROLLER_HEALTHCHECK='${esc_skip_health}' ENABLE_USER_SLICE_MEMORY_RESERVE='${esc_enable_mem_reserve}' USER_SLICE_MEMORY_RESERVE_GB='${esc_mem_reserve_gb}' HOME_RESERVE_GB='${esc_home_reserve_gb}' HOME_RESERVE_CHECK_PATH='${esc_home_reserve_path}' HOME_RESERVE_EXEMPT_USERS='${esc_home_reserve_exempt}' HOME_RESERVE_ENFORCE_INTERVAL='${esc_home_reserve_interval}' sudo -n /bin/bash '${target_dir}/scripts/install_agent_local.sh'"
+    "cd '${target_dir}' && SSH_GUARD_EXCLUDE_USERS='${esc_exclude}' SKIP_CONTROLLER_HEALTHCHECK='${esc_skip_health}' ENABLE_USER_SLICE_CPU_RESERVE='${esc_enable_cpu_reserve}' USER_SLICE_CPU_RESERVE_PERCENT='${esc_cpu_reserve_pct}' ENABLE_USER_SLICE_MEMORY_RESERVE='${esc_enable_mem_reserve}' USER_SLICE_MEMORY_RESERVE_GB='${esc_mem_reserve_gb}' HOME_RESERVE_GB='${esc_home_reserve_gb}' HOME_RESERVE_CHECK_PATH='${esc_home_reserve_path}' HOME_RESERVE_EXEMPT_USERS='${esc_home_reserve_exempt}' HOME_RESERVE_ENFORCE_INTERVAL='${esc_home_reserve_interval}' sudo -n /bin/bash '${target_dir}/scripts/install_agent_local.sh'"
 }
 
 can_run_sudo_nopass() {

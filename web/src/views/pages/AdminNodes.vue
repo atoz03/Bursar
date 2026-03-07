@@ -224,7 +224,7 @@
                   class="node-visibility-btn"
                   @click="openNodePriceDialog(row)"
                 >
-                  单卡积分
+                  计费参数
                 </el-button>
                 <el-button
                   v-if="canManageNodes"
@@ -318,6 +318,17 @@
         <el-table-column label="内核版本" min-width="160">
           <template #default="{ row }">
             <el-text>{{ row.kernel_version || "-" }}</el-text>
+          </template>
+        </el-table-column>
+
+        <el-table-column label="Agent版本" min-width="210">
+          <template #default="{ row }">
+            <div class="agent-version-cell">
+              <el-text>{{ displayAgentVersion(row.agent_version) }}</el-text>
+              <el-tooltip v-if="isAgentVersionOutdated(row)" :content="agentVersionOutdatedTip(row)" placement="top">
+                <el-icon class="agent-version-outdated-icon"><WarningFilled /></el-icon>
+              </el-tooltip>
+            </div>
           </template>
         </el-table-column>
 
@@ -432,6 +443,14 @@
           <el-descriptions-item label="GPU活跃度(估算)">{{ gpuUtilNow.toFixed(2) }}%</el-descriptions-item>
           <el-descriptions-item label="系统版本">{{ detailData.node.os_version || "-" }}</el-descriptions-item>
           <el-descriptions-item label="内核版本">{{ detailData.node.kernel_version || "-" }}</el-descriptions-item>
+          <el-descriptions-item label="Agent版本">
+            <div class="agent-version-cell">
+              <span>{{ displayAgentVersion(detailData.node.agent_version) }}</span>
+              <el-tooltip v-if="isAgentVersionOutdated(detailData.node)" :content="agentVersionOutdatedTip(detailData.node)" placement="top">
+                <el-icon class="agent-version-outdated-icon"><WarningFilled /></el-icon>
+              </el-tooltip>
+            </div>
+          </el-descriptions-item>
           <el-descriptions-item label="节点本地用户数">{{ (detailData.local_users || []).length }}</el-descriptions-item>
           <el-descriptions-item label="根分区 / 总容量">{{ fmtGB(detailData.node.disk_total_gb) }}</el-descriptions-item>
           <el-descriptions-item label="根分区 / 已用容量">{{ fmtGB(detailData.node.disk_used_gb) }}</el-descriptions-item>
@@ -445,7 +464,7 @@
           <el-descriptions-item label="内存占用总和(MB)">{{ (detailData.latest.memory_mb_sum || 0).toFixed(2) }}</el-descriptions-item>
           <el-descriptions-item label="SSH在线数">{{ detailData.latest.ssh_user_count || 0 }}</el-descriptions-item>
           <el-descriptions-item label="当次积分">{{ (detailData.latest.cost_total || 0).toFixed(4) }}</el-descriptions-item>
-          <el-descriptions-item label="节点积分单价">
+          <el-descriptions-item label="节点计费单价">
             <div class="node-price-inline">
               <el-tag v-if="detailData.node.node_price_per_minute != null" type="warning" effect="plain">
                 自定义 {{ Number(detailData.node.node_price_per_minute || 0).toFixed(4) }} / GPU·分钟
@@ -503,6 +522,9 @@
                 <el-tag v-if="row.loading" type="info" effect="plain">解析中</el-tag>
                 <el-tag v-else-if="row.mapping_exists" type="success" effect="plain">已映射</el-tag>
                 <el-tag v-else type="warning" effect="plain">未映射</el-tag>
+                <el-tooltip v-if="!row.loading && row.admin_mapping" content="管理员映射" placement="top">
+                  <span class="admin-map-icon" aria-label="管理员映射">管</span>
+                </el-tooltip>
               </template>
             </el-table-column>
             <el-table-column prop="message" label="说明" min-width="220" />
@@ -513,7 +535,7 @@
                   size="small"
                   plain
                   :loading="disconnectingUserKey === `${detailNodeId}::${row.local_username}`"
-                  :disabled="row.loading || !canManageNodes"
+                  :disabled="row.loading || !canManageNodes || (authState.role === 'power_user' && !!row.admin_mapping)"
                   @click="disconnectSSHUser(row.local_username)"
                 >
                   强制下线
@@ -538,7 +560,7 @@
               size="small"
               plain
               :loading="killingProcNodeId === detailNodeId"
-              :disabled="!canManageNodes || !detailNodeId || (detailData.local_users || []).length === 0"
+              :disabled="!canManageNodes || !detailNodeId || (detailData.local_users || []).length === 0 || detailHasProtectedAdminMappings"
               @click="killAllDetailUsersProcesses"
             >
               强制清除全部用户进程
@@ -557,6 +579,9 @@
               <template #default="{ row }">
                 <el-tag v-if="row.mapping_exists" type="success" effect="plain">已映射</el-tag>
                 <el-tag v-else type="warning" effect="plain">未映射</el-tag>
+                <el-tooltip v-if="row.admin_mapping" content="管理员映射" placement="top">
+                  <span class="admin-map-icon" aria-label="管理员映射">管</span>
+                </el-tooltip>
               </template>
             </el-table-column>
             <el-table-column label="平台账号" min-width="180">
@@ -597,6 +622,68 @@
                 <span class="home-used-cell" :class="{ 'home-used-danger': Number(row.home_used_gb || 0) > 50 }">
                   {{ fmtGB(row.home_used_gb) }}
                 </span>
+              </template>
+            </el-table-column>
+            <el-table-column label="当前限制" min-width="220">
+              <template #default="{ row }">
+                <div class="cpu-limit-cell">
+                  <div class="cpu-limit-tag-row">
+                    <el-tag v-if="typeof row.cpu_quota_percent === 'number' && Number(row.cpu_quota_percent) > 0" type="warning" effect="dark">
+                      CPU {{ Number(row.cpu_quota_percent).toFixed(1) }}%
+                    </el-tag>
+                    <el-tag v-if="typeof row.memory_limit_gb === 'number' && Number(row.memory_limit_gb) > 0" type="danger" effect="dark">
+                      内存 {{ Number(row.memory_limit_gb).toFixed(1) }} GB
+                    </el-tag>
+                    <el-tag v-if="Array.isArray(row.gpu_visible_indices) && row.gpu_visible_indices.length > 0" type="primary" effect="dark">
+                      GPU 可见 {{ formatGPUIndices(row.gpu_visible_indices) }}
+                    </el-tag>
+                    <el-tag v-if="!(typeof row.cpu_quota_percent === 'number' && Number(row.cpu_quota_percent) > 0) && !(typeof row.memory_limit_gb === 'number' && Number(row.memory_limit_gb) > 0) && !(Array.isArray(row.gpu_visible_indices) && row.gpu_visible_indices.length > 0)" type="info" effect="plain">
+                      未限制
+                    </el-tag>
+                  </div>
+                  <div v-if="row.cpu_quota_reason" class="cpu-limit-reason">CPU：{{ row.cpu_quota_reason }}</div>
+                  <div v-if="row.memory_limit_reason" class="cpu-limit-reason">内存：{{ row.memory_limit_reason }}</div>
+                  <div v-if="row.gpu_visibility_reason" class="cpu-limit-reason">GPU：{{ row.gpu_visibility_reason }}</div>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column label="限制操作" min-width="220">
+              <template #default="{ row }">
+                <div class="cpu-limit-editor">
+                  <el-button
+                    type="warning"
+                    size="small"
+                    :loading="userLimitSaving && userLimitDialogVisible && userLimitLocalUsername === row.local_username"
+                    :disabled="!canManageNodes || !detailNodeId || !row.local_username || isProtectedAdminMapping(row)"
+                    @click="openDetailUserLimitDialog(row)"
+                  >
+                    限制
+                  </el-button>
+                  <el-button
+                    type="info"
+                    plain
+                    size="small"
+                    :loading="userLimitRemovingKey === `${detailNodeId}::${row.local_username}`"
+                    :disabled="!canManageNodes || !detailNodeId || !row.local_username || !hasManualRestriction(row) || isProtectedAdminMapping(row)"
+                    @click="clearDetailUserLimits(row.local_username)"
+                  >
+                    解除
+                  </el-button>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="120" fixed="right">
+              <template #default="{ row }">
+                <el-button
+                  type="danger"
+                  size="small"
+                  plain
+                  :loading="killingUserProcKey === `${detailNodeId}::${row.local_username}`"
+                  :disabled="!canManageNodes || !detailNodeId || !row.local_username || isProtectedAdminMapping(row)"
+                  @click="killDetailUserProcesses(row.local_username)"
+                >
+                  清进程
+                </el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -740,6 +827,11 @@
             </el-table-column>
             <el-table-column label="最近时间" min-width="170">
               <template #default="{ row }">{{ formatTime(row.last_seen_at) }}</template>
+            </el-table-column>
+            <el-table-column label="详情" width="130" fixed="right">
+              <template #default="{ row }">
+                <el-button size="small" @click="showSecuritySummaryDetail(row)">查看</el-button>
+              </template>
             </el-table-column>
           </el-table>
           <el-table
@@ -894,7 +986,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="nodeExclusiveVisible" title="节点 SSH 独享设置" width="620px">
+    <el-dialog v-model="nodeExclusiveVisible" title="节点独享设置（SSH/GPU）" width="760px">
       <el-form label-width="110px">
         <el-form-item label="节点编号">
           <el-text>{{ nodeExclusiveNodeId || "-" }}</el-text>
@@ -902,7 +994,13 @@
         <el-form-item label="独享开关">
           <el-switch v-model="nodeExclusiveEnabled" inline-prompt active-text="开启" inactive-text="关闭" />
           <el-text type="info" size="small" style="margin-left: 8px">
-            开启后，仅“独享用户 + 白名单 + 豁免”可登录 SSH；黑名单仍最高优先级
+            开启后可按用户分配可见 GPU 卡；可选“是否封锁其他用户 SSH”
+          </el-text>
+        </el-form-item>
+        <el-form-item label="封锁其他用户SSH" v-if="nodeExclusiveEnabled">
+          <el-switch v-model="nodeExclusiveBlockOtherSSH" inline-prompt active-text="封锁" inactive-text="不封锁" />
+          <el-text type="info" size="small" style="margin-left: 8px">
+            开启后，仅“独享用户 + 白名单 + 豁免”可登录 SSH；关闭时仅做 GPU 卡可见性隔离
           </el-text>
         </el-form-item>
         <el-form-item label="独享用户" v-if="nodeExclusiveEnabled">
@@ -925,12 +1023,39 @@
             title="暂无可选节点内部用户。可先等待节点上报本地用户，或先创建节点账号映射后再设置。"
           />
         </el-form-item>
+        <el-form-item label="独享卡分配" v-if="nodeExclusiveEnabled && nodeExclusiveUsers.length > 0">
+          <div style="width: 100%">
+            <el-alert
+              v-if="nodeExclusiveGPUCount <= 0"
+              type="warning"
+              show-icon
+              :closable="false"
+              title="该节点暂未检测到 GPU 数量，当前无法配置按卡独享。"
+            />
+            <div v-else class="exclusive-gpu-assign-wrap">
+              <div v-for="u in nodeExclusiveUsers" :key="`exclusive-gpu-${u}`" class="exclusive-gpu-user-row">
+                <div class="exclusive-gpu-user">{{ u }}</div>
+                <el-checkbox-group
+                  :model-value="nodeExclusiveGPUAssignments[u] || []"
+                  @update:model-value="(v: any) => { nodeExclusiveGPUAssignments[u] = normalizeGPUIndexList((v || []) as number[]); }"
+                >
+                  <el-checkbox v-for="idx in nodeExclusiveGPUOptions" :key="`gpu-${u}-${idx}`" :label="idx">
+                    GPU{{ idx }}
+                  </el-checkbox>
+                </el-checkbox-group>
+              </div>
+              <el-text type="info" size="small">
+                规则：选中的 GPU 仅该用户可见；其他非豁免用户只能看到“未分配”的 GPU。
+              </el-text>
+            </div>
+          </div>
+        </el-form-item>
         <el-form-item label="规则说明">
           <el-alert
             type="warning"
             show-icon
             :closable="false"
-            title="判定顺序：豁免放行 → 黑名单拒绝 →（若独享开启）仅独享用户放行；白名单可绕过独享；其余拒绝。"
+            title="豁免用户始终可见全部 GPU，且不受独享规则影响（无视封锁 SSH 与卡分配）。"
           />
         </el-form-item>
       </el-form>
@@ -981,7 +1106,7 @@
             :precision="1"
             style="width: 220px"
           />
-          <el-text type="info" size="small" style="margin-left: 8px">当余额 ≤ 0 时使用，更严格</el-text>
+          <el-text type="info" size="small" style="margin-left: 8px">当余额超过“每月欠费上限”时使用，更严格</el-text>
         </el-form-item>
         <el-form-item label="欠费内存上限(GB)">
           <el-input-number
@@ -1138,12 +1263,12 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="nodePriceVisible" title="节点单卡积分设置" width="700px">
+    <el-dialog v-model="nodePriceVisible" title="节点计费参数设置" width="760px">
       <el-form label-width="130px">
         <el-form-item label="节点ID">
           <el-text>{{ nodePriceNodeId || "-" }}</el-text>
         </el-form-item>
-        <el-form-item label="节点单价">
+        <el-form-item label="GPU 单价">
           <el-input-number
             v-model="nodePricePerMinute"
             :min="0"
@@ -1153,13 +1278,42 @@
           />
           <el-text type="info" size="small" style="margin-left: 8px">单位：积分 / GPU·分钟</el-text>
         </el-form-item>
+        <el-form-item label="CPU 单价">
+          <el-input-number
+            v-model="nodeCPUPricePerCoreMinute"
+            :min="0"
+            :step="0.0001"
+            :precision="4"
+            style="width: 220px"
+          />
+          <el-text type="info" size="small" style="margin-left: 8px">单位：积分 / 核·分钟</el-text>
+        </el-form-item>
+        <el-form-item label="默认值">
+          <el-text type="info">
+            GPU 默认 {{ nodePriceDefaultPerMinute.toFixed(4) }} / GPU·分钟，
+            CPU 默认 {{ nodeCPUPriceDefaultPerCoreMinute.toFixed(4) }} / 核·分钟
+          </el-text>
+        </el-form-item>
         <el-form-item label="说明">
           <el-alert
             type="info"
             show-icon
             :closable="false"
-            title="节点单价仅对当前节点生效，不再按卡型或全局价格模式切换。"
+            title="节点计费参数仅对当前节点生效；可分别配置 GPU 与 CPU 单价。"
           />
+        </el-form-item>
+        <el-form-item label="计费规则">
+          <el-alert
+            type="info"
+            show-icon
+            :closable="false"
+            :title="nodePriceRuleFormula"
+          />
+          <div style="margin-top: 8px; width: 100%">
+            <el-text type="info" size="small">GPU 单价优先级：{{ nodePriceRuleGPUPriority.join(" > ") }}</el-text>
+            <br />
+            <el-text type="info" size="small">CPU 单价优先级：{{ nodePriceRuleCPUPriority.join(" > ") }}</el-text>
+          </div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -1167,11 +1321,82 @@
         <el-button type="primary" :loading="nodePriceSaving" @click="saveNodePrice">保存</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog
+      v-model="userLimitDialogVisible"
+      title="用户限制设置"
+      width="620px"
+      destroy-on-close
+    >
+      <el-form label-width="120px">
+        <el-form-item label="节点">
+          <el-text>{{ userLimitNodeId || "-" }}</el-text>
+        </el-form-item>
+        <el-form-item label="节点账号">
+          <el-text>{{ userLimitLocalUsername || "-" }}</el-text>
+        </el-form-item>
+        <el-form-item label="平台账号">
+          <el-text>{{ userLimitPlatformUsername || "-" }}</el-text>
+        </el-form-item>
+        <el-form-item label="限制 CPU">
+          <el-switch v-model="userLimitCPUEnabled" inline-prompt active-text="是" inactive-text="否" />
+          <el-input-number
+            v-model="userLimitCPUPercent"
+            :disabled="!userLimitCPUEnabled"
+            :min="1"
+            :max="100"
+            :step="1"
+            :precision="1"
+            style="margin-left: 10px; width: 140px"
+          />
+          <el-text type="info" size="small" style="margin-left: 8px">单位：%</el-text>
+        </el-form-item>
+        <el-form-item label="限制内存">
+          <el-switch v-model="userLimitMemoryEnabled" inline-prompt active-text="是" inactive-text="否" />
+          <el-input-number
+            v-model="userLimitMemoryGB"
+            :disabled="!userLimitMemoryEnabled"
+            :min="0.5"
+            :max="4096"
+            :step="0.5"
+            :precision="1"
+            style="margin-left: 10px; width: 140px"
+          />
+          <el-text type="info" size="small" style="margin-left: 8px">单位：GB</el-text>
+        </el-form-item>
+        <el-form-item label="限制 GPU 可见">
+          <el-switch v-model="userLimitGPUEnabled" inline-prompt active-text="是" inactive-text="否" />
+          <div style="margin-left: 10px; width: calc(100% - 140px)">
+            <el-checkbox-group v-model="userLimitVisibleGPUIndices" :disabled="!userLimitGPUEnabled || userLimitGPUOptions.length === 0">
+              <el-checkbox v-for="idx in userLimitGPUOptions" :key="`limit-gpu-${idx}`" :label="idx">
+                GPU {{ idx }}
+              </el-checkbox>
+            </el-checkbox-group>
+            <el-text v-if="userLimitGPUOptions.length === 0" type="info" size="small">当前节点未检测到可配置的 GPU 编号</el-text>
+          </div>
+        </el-form-item>
+        <el-form-item label="限制原因">
+          <el-input
+            v-model="userLimitReason"
+            type="textarea"
+            :rows="3"
+            clearable
+            maxlength="160"
+            show-word-limit
+            placeholder="可选：例如手动管控/占用过高/违规任务"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="userLimitDialogVisible = false">取消</el-button>
+        <el-button type="warning" :loading="userLimitSaving" @click="saveDetailUserLimitsFromDialog">保存限制</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
   ApiClient,
@@ -1194,6 +1419,20 @@ const error = ref("");
 const rows = ref<NodeStatus[]>([]);
 const disconnectingNodeId = ref("");
 const killingProcNodeId = ref("");
+const killingUserProcKey = ref("");
+const userLimitSaving = ref(false);
+const userLimitRemovingKey = ref("");
+const userLimitDialogVisible = ref(false);
+const userLimitNodeId = ref("");
+const userLimitLocalUsername = ref("");
+const userLimitPlatformUsername = ref("");
+const userLimitCPUEnabled = ref(false);
+const userLimitCPUPercent = ref(50);
+const userLimitMemoryEnabled = ref(false);
+const userLimitMemoryGB = ref(8);
+const userLimitGPUEnabled = ref(false);
+const userLimitVisibleGPUIndices = ref<number[]>([]);
+const userLimitReason = ref("");
 const syncingNodeId = ref("");
 const guardUpdatingNodeId = ref("");
 const pointsUpdatingNodeId = ref("");
@@ -1208,8 +1447,11 @@ const nodeExclusiveVisible = ref(false);
 const nodeExclusiveSaving = ref(false);
 const nodeExclusiveNodeId = ref("");
 const nodeExclusiveEnabled = ref(false);
+const nodeExclusiveBlockOtherSSH = ref(true);
 const nodeExclusiveUsers = ref<string[]>([]);
 const nodeExclusiveCandidates = ref<string[]>([]);
+const nodeExclusiveGPUCount = ref(0);
+const nodeExclusiveGPUAssignments = ref<Record<string, number[]>>({});
 const nodePointsPolicyVisible = ref(false);
 const nodePointsPolicySaving = ref(false);
 const nodePointsPolicyNodeId = ref("");
@@ -1239,6 +1481,12 @@ const nodePriceVisible = ref(false);
 const nodePriceSaving = ref(false);
 const nodePriceNodeId = ref("");
 const nodePricePerMinute = ref(0.1);
+const nodeCPUPricePerCoreMinute = ref(0.02);
+const nodePriceDefaultPerMinute = ref(0.1);
+const nodeCPUPriceDefaultPerCoreMinute = ref(0.02);
+const nodePriceRuleFormula = ref("每个进程总费用 = GPU费用 + CPU费用；最终按上报周期折算。");
+const nodePriceRuleGPUPriority = ref<string[]>(["节点GPU单价", "全局GPU型号单价", "默认GPU单价"]);
+const nodePriceRuleCPUPriority = ref<string[]>(["节点CPU单价", "全局CPU单价(CPU_CORE)", "默认CPU单价"]);
 const detailVisible = ref(false);
 const detailLoading = ref(false);
 const detailError = ref("");
@@ -1247,12 +1495,12 @@ const detailData = ref<NodeDetailResp | null>(null);
 const securityEventsLoading = ref(false);
 const securityRange = ref<string[]>([]);
 const securityEventTypeFilter = ref("");
-const securityShowSummary = ref(false);
+const securityShowSummary = ref(true);
 const securityEventsRows = ref<NodeSecurityEvent[]>([]);
 const securityEventSummariesRows = ref<NodeSecurityEventSummary[]>([]);
 const securitySummaryNormalizer = ref("event_type + severity + reason(数字归一化)");
-const lastRefreshAt = ref("");
-const detailLastRefreshAt = ref("");
+const lastRefreshAt = ref<number | null>(null);
+const detailLastRefreshAt = ref<number | null>(null);
 const disconnectingUserKey = ref("");
 const blacklistingUserKey = ref("");
 const sshOnlineRows = ref<Array<{
@@ -1261,6 +1509,8 @@ const sshOnlineRows = ref<Array<{
   platform_username: string;
   real_name: string;
   mapping_exists: boolean;
+  admin_mapping: boolean;
+  admin_username: string;
   message: string;
   loading: boolean;
 }>>([]);
@@ -1290,6 +1540,7 @@ const totalCpuProcesses = computed(() => rows.value.reduce((sum, node) => sum + 
 const totalCost = computed(() => rows.value.reduce((sum, node) => sum + node.cost_total, 0));
 const onlineNodeCount = computed(() => rows.value.filter((node) => getNodeStatus(node) === "online").length);
 const sortedRows = computed(() => [...rows.value].sort((a, b) => nodeIdSortValue(b.node_id) - nodeIdSortValue(a.node_id)));
+const latestAgentVersion = computed(() => detectLatestAgentVersion(rows.value));
 const riskyNodes = computed(() => {
   return [...rows.value]
     .filter((node) => hasNodeSecurityRisk(node))
@@ -1316,6 +1567,36 @@ const gpuUtilNow = computed(() => calcGPUUtil(detailData.value?.latest));
 const lastRefreshTimeText = computed(() => (lastRefreshAt.value ? formatTime(lastRefreshAt.value) : "尚未刷新"));
 const detailRefreshTimeText = computed(() => (detailLastRefreshAt.value ? formatTime(detailLastRefreshAt.value) : "-"));
 const isSuperAdmin = computed(() => authState.role === "admin");
+const nodeExclusiveGPUOptions = computed(() => {
+  const n = Math.max(0, Number(nodeExclusiveGPUCount.value || 0));
+  return Array.from({ length: n }, (_, idx) => idx);
+});
+
+function normalizeGPUIndexList(v: number[]): number[] {
+  const set = new Set<number>();
+  for (const idx of v || []) {
+    const n = Number(idx);
+    if (!Number.isInteger(n) || n < 0) continue;
+    if (nodeExclusiveGPUCount.value > 0 && n >= nodeExclusiveGPUCount.value) continue;
+    set.add(n);
+  }
+  return [...set].sort((a, b) => a - b);
+}
+
+function syncNodeExclusiveGPUAssignments() {
+  const next: Record<string, number[]> = {};
+  for (const u of nodeExclusiveUsers.value) {
+    const name = String(u || "").trim();
+    if (!name) continue;
+    const current = nodeExclusiveGPUAssignments.value[name] || [];
+    next[name] = normalizeGPUIndexList(current);
+  }
+  nodeExclusiveGPUAssignments.value = next;
+}
+
+watch(nodeExclusiveUsers, () => {
+  syncNodeExclusiveGPUAssignments();
+});
 
 function calcCPUUtil(s?: NodeRuntimeSnapshot): number {
   if (!s || !detailData.value) return 0;
@@ -1358,8 +1639,17 @@ const memoryLinePoints = computed(() => toLinePoints(history.value.map((x) => Nu
 const sshLinePoints = computed(() => toLinePoints(history.value.map((x) => Number(x.ssh_user_count || 0))));
 const gpuProcLinePoints = computed(() => toLinePoints(history.value.map((x) => Number(x.gpu_process_count || 0))));
 const canManageNodes = computed(() => authState.role === "admin" || (authState.role === "power_user" && authState.canManageNodes));
+const detailHasProtectedAdminMappings = computed(() => {
+  if (authState.role !== "power_user") return false;
+  return (detailData.value?.local_users || []).some((u) => !!u.admin_mapping);
+});
+const userLimitGPUOptions = computed(() => {
+  const gpuCount = Number(detailData.value?.node?.gpu_count || 0);
+  if (!Number.isFinite(gpuCount) || gpuCount <= 0) return [] as number[];
+  return Array.from({ length: gpuCount }, (_, i) => i);
+});
 
-function formatTime(time: string): string {
+function formatTime(time: string | number | Date | null | undefined): string {
   if (!time) return "-";
   return formatServerDateTime(time);
 }
@@ -1432,6 +1722,77 @@ function fmtGB(v?: number): string {
   return `${n.toFixed(2)} GB`;
 }
 
+function formatGPUIndices(indices?: number[]): string {
+  const arr = normalizeGPUIndexList((indices || []).map((x) => Number(x)));
+  if (arr.length === 0) return "-";
+  return arr.join(",");
+}
+
+function isProtectedAdminMapping(row: NodeLocalUser): boolean {
+  return authState.role === "power_user" && !!row.admin_mapping;
+}
+
+function hasManualRestriction(row: NodeLocalUser): boolean {
+  const cpu = typeof row.cpu_quota_percent === "number" ? Number(row.cpu_quota_percent) : 0;
+  const memory = typeof row.memory_limit_gb === "number" ? Number(row.memory_limit_gb) : 0;
+  const gpu = Array.isArray(row.gpu_visible_indices) ? row.gpu_visible_indices.length : 0;
+  return cpu > 0 || memory > 0 || gpu > 0;
+}
+
+function openDetailUserLimitDialog(row: NodeLocalUser) {
+  if (isProtectedAdminMapping(row)) {
+    ElMessage.warning("高级用户不能操作管理员映射账号");
+    return;
+  }
+  const nodeId = String(detailNodeId.value || "").trim();
+  const local = String(row.local_username || "").trim();
+  if (!nodeId || !local) return;
+  userLimitNodeId.value = nodeId;
+  userLimitLocalUsername.value = local;
+  userLimitPlatformUsername.value = String(row.platform_username || "").trim();
+  const cpuCurrent = typeof row.cpu_quota_percent === "number" ? Number(row.cpu_quota_percent) : 0;
+  const memoryCurrent = typeof row.memory_limit_gb === "number" ? Number(row.memory_limit_gb) : 0;
+  userLimitCPUEnabled.value = cpuCurrent > 0;
+  userLimitCPUPercent.value = Number((cpuCurrent > 0 ? cpuCurrent : 50).toFixed(1));
+  userLimitMemoryEnabled.value = memoryCurrent > 0;
+  userLimitMemoryGB.value = Number((memoryCurrent > 0 ? memoryCurrent : 8).toFixed(1));
+  const gpuCurrent = normalizeGPUIndexList((row.gpu_visible_indices || []).map((x) => Number(x)));
+  userLimitGPUEnabled.value = gpuCurrent.length > 0;
+  userLimitVisibleGPUIndices.value = [...gpuCurrent];
+  userLimitReason.value = String(row.cpu_quota_reason || row.memory_limit_reason || row.gpu_visibility_reason || "").trim();
+  userLimitDialogVisible.value = true;
+}
+
+async function deleteCPUUserLimitSafe(nodeId: string, local: string) {
+  const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+  try {
+    await client.adminDeleteNodeUserCPULimit(nodeId, local);
+  } catch (e: any) {
+    const status = Number(e?.status || 0);
+    if (status !== 404) throw e;
+  }
+}
+
+async function deleteMemoryUserLimitSafe(nodeId: string, local: string) {
+  const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+  try {
+    await client.adminDeleteNodeUserMemoryLimit(nodeId, local);
+  } catch (e: any) {
+    const status = Number(e?.status || 0);
+    if (status !== 404) throw e;
+  }
+}
+
+async function deleteGPUVisibilitySafe(nodeId: string, local: string) {
+  const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+  try {
+    await client.adminDeleteNodeUserGPUVisibility(nodeId, local);
+  } catch (e: any) {
+    const status = Number(e?.status || 0);
+    if (status !== 404) throw e;
+  }
+}
+
 const DISK_QUOTA_MB_PER_GB = 1024;
 
 function mbToQuotaGB(v?: number): number {
@@ -1474,6 +1835,68 @@ function nodeIdSortValue(nodeID: string): number {
   const n = Number(m[m.length - 1]);
   if (!Number.isFinite(n)) return Number.NEGATIVE_INFINITY;
   return n;
+}
+
+function normalizeAgentVersion(v: unknown): string {
+  return String(v ?? "").trim();
+}
+
+const AGENT_VERSION_PATTERN = /^v(\d+)\.(\d+)$/;
+
+function parseAgentMajorMinor(v: unknown): [number, number] | null {
+  const m = normalizeAgentVersion(v).match(AGENT_VERSION_PATTERN);
+  if (!m) return null;
+  const major = Number(m[1]);
+  const minor = Number(m[2]);
+  if (!Number.isInteger(major) || major < 0) return null;
+  if (!Number.isInteger(minor) || minor < 0) return null;
+  return [major, minor];
+}
+
+function formatAgentMajorMinor(v: [number, number]): string {
+  return `v${v[0]}.${v[1]}`;
+}
+
+function displayAgentVersion(v: unknown): string {
+  const parsed = parseAgentMajorMinor(v);
+  if (!parsed) return "-";
+  return formatAgentMajorMinor(parsed);
+}
+
+function compareAgentMajorMinor(a: [number, number], b: [number, number]): number {
+  if (a[0] !== b[0]) return a[0] - b[0];
+  return a[1] - b[1];
+}
+
+function detectLatestAgentVersion(nodes: NodeStatus[]): string {
+  let latest: [number, number] | null = null;
+  for (const node of nodes || []) {
+    const parsed = parseAgentMajorMinor(node.agent_version);
+    if (!parsed) continue;
+    if (!latest || compareAgentMajorMinor(parsed, latest) > 0) {
+      latest = parsed;
+    }
+  }
+  return latest ? formatAgentMajorMinor(latest) : "";
+}
+
+function isAgentVersionOutdated(node: NodeStatus): boolean {
+  const latest = parseAgentMajorMinor(latestAgentVersion.value);
+  if (!latest) return false;
+  const current = parseAgentMajorMinor(node.agent_version);
+  if (!current) return true;
+  return compareAgentMajorMinor(current, latest) < 0;
+}
+
+function agentVersionOutdatedTip(node: NodeStatus): string {
+  const latest = parseAgentMajorMinor(latestAgentVersion.value);
+  const latestText = latest ? formatAgentMajorMinor(latest) : "-";
+  const current = parseAgentMajorMinor(node.agent_version);
+  if (!current) {
+    const raw = normalizeAgentVersion(node.agent_version);
+    return `该节点 Agent 版本为未知格式（${raw || "未上报"}），当前集群最新为 ${latestText}；判定依据为主次版本（vX.Y）。`;
+  }
+  return `该节点 Agent 版本为 ${formatAgentMajorMinor(current)}，当前集群最新为 ${latestText}；判定依据为主次版本（vX.Y）。`;
 }
 
 function getNodeStatus(node: NodeStatus): "online" | "offline" {
@@ -1532,7 +1955,7 @@ async function reload() {
     const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
     const r = await client.adminNodes(200);
     rows.value = r.nodes ?? [];
-    lastRefreshAt.value = new Date().toISOString();
+    lastRefreshAt.value = Date.now();
   } catch (e: any) {
     error.value = e?.message ?? String(e);
   } finally {
@@ -1925,14 +2348,27 @@ async function openNodeExclusiveDialog(row: NodeStatus) {
   nodeExclusiveVisible.value = true;
   nodeExclusiveSaving.value = false;
   nodeExclusiveEnabled.value = false;
+  nodeExclusiveBlockOtherSSH.value = true;
   nodeExclusiveUsers.value = [];
   nodeExclusiveCandidates.value = [];
+  nodeExclusiveGPUCount.value = Number(row.gpu_count || 0);
+  nodeExclusiveGPUAssignments.value = {};
   try {
     const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
     const r = await client.adminNodeSSHExclusive(nodeId);
     nodeExclusiveEnabled.value = !!r.enabled;
+    nodeExclusiveBlockOtherSSH.value = r.block_other_ssh !== false;
     nodeExclusiveUsers.value = Array.isArray(r.exclusive_users) ? [...r.exclusive_users] : [];
     nodeExclusiveCandidates.value = Array.isArray(r.candidate_local_users) ? [...r.candidate_local_users] : [];
+    nodeExclusiveGPUCount.value = Number(r.gpu_count || row.gpu_count || 0);
+    const m: Record<string, number[]> = {};
+    for (const item of r.gpu_assignments || []) {
+      const u = String(item.local_username || "").trim();
+      if (!u) continue;
+      m[u] = normalizeGPUIndexList((item.gpu_indices || []).map((x) => Number(x)));
+    }
+    nodeExclusiveGPUAssignments.value = m;
+    syncNodeExclusiveGPUAssignments();
   } catch (e: any) {
     ElMessage.error(e?.message ?? String(e));
     nodeExclusiveVisible.value = false;
@@ -1942,14 +2378,36 @@ async function openNodeExclusiveDialog(row: NodeStatus) {
 async function saveNodeExclusive() {
   const nodeId = String(nodeExclusiveNodeId.value || "").trim();
   if (!nodeId) return;
+  const users = [...new Set(nodeExclusiveUsers.value.map((x) => String(x || "").trim()).filter(Boolean))];
+  const assignments = users.map((u) => ({
+    local_username: u,
+    gpu_indices: normalizeGPUIndexList(nodeExclusiveGPUAssignments.value[u] || []),
+  }));
+  const ownerByGPU = new Map<number, string>();
+  for (const item of assignments) {
+    for (const idx of item.gpu_indices) {
+      const prev = ownerByGPU.get(idx);
+      if (prev && prev !== item.local_username) {
+        ElMessage.error(`GPU${idx} 被重复分配给 ${prev} 和 ${item.local_username}`);
+        return;
+      }
+      ownerByGPU.set(idx, item.local_username);
+    }
+  }
   nodeExclusiveSaving.value = true;
   try {
     const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
-    await client.adminSetNodeSSHExclusive(nodeId, {
+    const resp = await client.adminSetNodeSSHExclusive(nodeId, {
       enabled: !!nodeExclusiveEnabled.value,
-      exclusive_users: nodeExclusiveEnabled.value ? nodeExclusiveUsers.value : [],
+      block_other_ssh: !!nodeExclusiveBlockOtherSSH.value,
+      exclusive_users: nodeExclusiveEnabled.value ? users : [],
+      gpu_assignments: nodeExclusiveEnabled.value ? assignments : [],
     });
-    ElMessage.success("节点独享策略保存成功，SSH 策略将立即同步");
+    if ((resp.exempt_ignored_users || []).length > 0) {
+      ElMessage.warning(`节点独享策略已保存，但豁免用户无视规则：${(resp.exempt_ignored_users || []).join(", ")}`);
+    } else {
+      ElMessage.success("节点独享策略保存成功，SSH/GPU 策略将立即同步");
+    }
     nodeExclusiveVisible.value = false;
     await reload();
     if (detailVisible.value && detailNodeId.value === nodeId) {
@@ -2059,10 +2517,23 @@ async function openNodePriceDialog(row: NodeStatus) {
   nodePriceVisible.value = true;
   nodePriceSaving.value = false;
   nodePricePerMinute.value = Number(row.node_price_per_minute ?? 0.1);
+  nodeCPUPricePerCoreMinute.value = 0.02;
   try {
     const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
     const r = await client.adminNodePrice(nodeId);
+    nodePriceDefaultPerMinute.value = Number(r.default_price_per_minute ?? 0.1);
+    nodeCPUPriceDefaultPerCoreMinute.value = Number(r.default_cpu_price_per_core_minute ?? 0.02);
     nodePricePerMinute.value = Number(r.price_per_minute ?? r.default_price_per_minute ?? 0.1);
+    nodeCPUPricePerCoreMinute.value = Number(r.cpu_price_per_core_minute ?? r.default_cpu_price_per_core_minute ?? 0.02);
+    nodePriceRuleFormula.value = String(
+      r.billing_rules?.combined_formula || "每个进程总费用 = GPU费用 + CPU费用；最终按上报周期折算。",
+    );
+    nodePriceRuleGPUPriority.value = Array.isArray(r.billing_rules?.gpu_price_priority)
+      ? (r.billing_rules?.gpu_price_priority ?? [])
+      : ["节点GPU单价", "全局GPU型号单价", "默认GPU单价"];
+    nodePriceRuleCPUPriority.value = Array.isArray(r.billing_rules?.cpu_price_priority)
+      ? (r.billing_rules?.cpu_price_priority ?? [])
+      : ["节点CPU单价", "全局CPU单价(CPU_CORE)", "默认CPU单价"];
   } catch (e: any) {
     ElMessage.error(e?.message ?? String(e));
     nodePriceVisible.value = false;
@@ -2073,14 +2544,21 @@ async function saveNodePrice() {
   const nodeId = String(nodePriceNodeId.value || "").trim();
   if (!nodeId) return;
   if (!Number.isFinite(nodePricePerMinute.value) || Number(nodePricePerMinute.value) < 0) {
-    ElMessage.error("请填写合法的节点单卡积分（>= 0）");
+    ElMessage.error("请填写合法的节点 GPU 单价（>= 0）");
+    return;
+  }
+  if (!Number.isFinite(nodeCPUPricePerCoreMinute.value) || Number(nodeCPUPricePerCoreMinute.value) < 0) {
+    ElMessage.error("请填写合法的节点 CPU 单价（>= 0）");
     return;
   }
   nodePriceSaving.value = true;
   try {
     const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
-    await client.adminSetNodePrice(nodeId, { price_per_minute: Number(nodePricePerMinute.value) });
-    ElMessage.success("节点单卡积分已更新");
+    await client.adminSetNodePrice(nodeId, {
+      price_per_minute: Number(nodePricePerMinute.value),
+      cpu_price_per_core_minute: Number(nodeCPUPricePerCoreMinute.value),
+    });
+    ElMessage.success("节点计费参数已更新");
     nodePriceVisible.value = false;
     await reload();
     if (detailVisible.value && detailNodeId.value === nodeId) {
@@ -2106,6 +2584,8 @@ async function refreshSSHUserMappings(nodeId: string, users: string[]) {
     platform_username: "",
     real_name: "",
     mapping_exists: false,
+    admin_mapping: false,
+    admin_username: "",
     message: "解析中",
     loading: true,
   }));
@@ -2120,6 +2600,8 @@ async function refreshSSHUserMappings(nodeId: string, users: string[]) {
         row.platform_username = String(r.platform_username || "");
         row.real_name = String(r.real_name || "");
         row.mapping_exists = !!r.mapping_exists;
+        row.admin_mapping = !!r.admin_mapping;
+        row.admin_username = String(r.admin_username || "");
         row.message = String(r.message || "");
       } catch (e: any) {
         row.message = e?.message ?? "解析失败";
@@ -2162,10 +2644,51 @@ function formatSecurityDetails(raw: string): string {
   }
 }
 
+function escapeHTML(raw: string): string {
+  return String(raw || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+function normalizeSecurityReasonForSummary(reason: string): string {
+  return String(reason || "").replace(/\d+(\.\d+)?/g, "#").slice(0, 120);
+}
+
+function isSummaryMatchedEvent(event: NodeSecurityEvent, summary: NodeSecurityEventSummary): boolean {
+  return String(event.event_type || "").trim() === String(summary.event_type || "").trim() &&
+    String(event.severity || "").trim() === String(summary.severity || "").trim() &&
+    normalizeSecurityReasonForSummary(event.reason || "") === String(summary.normalized_reason || "");
+}
+
 async function showSecurityEventDetail(row: NodeSecurityEvent) {
   await ElMessageBox.alert(
     `<pre style="white-space: pre-wrap;word-break: break-all;margin:0">${formatSecurityDetails(row.details)}</pre>`,
     `事件详情：${row.event_type}`,
+    { dangerouslyUseHTMLString: true, confirmButtonText: "关闭" },
+  );
+}
+
+async function showSecuritySummaryDetail(row: NodeSecurityEventSummary) {
+  const matched = (securityEventsRows.value || [])
+    .filter((x) => isSummaryMatchedEvent(x, row))
+    .sort((a, b) => dayjs(a.created_at).valueOf() - dayjs(b.created_at).valueOf());
+  const lines = matched.map((x, idx) => {
+    const users = (x.related_usernames || []).join(", ") || "-";
+    return `${idx + 1}. ${formatTime(x.created_at)} | 账号: ${users} | 原因: ${x.reason}`;
+  });
+  const text = [
+    `事件类型：${String(row.event_type || "-")}`,
+    `事件等级：${String(row.severity || "-")}`,
+    `规约原因：${String(row.normalized_reason || "-")}`,
+    `归并数量：${Number(row.event_count || 0)} 次`,
+    "",
+    "出现时间与原始原因：",
+    ...(lines.length > 0 ? lines : ["未匹配到原始日志，请先点击“查询”刷新后再查看"]),
+  ].join("\n");
+  await ElMessageBox.alert(
+    `<pre style="white-space: pre-wrap;word-break: break-all;margin:0">${escapeHTML(text)}</pre>`,
+    "归并详情",
     { dangerouslyUseHTMLString: true, confirmButtonText: "关闭" },
   );
 }
@@ -2270,7 +2793,7 @@ async function loadNodeDetail(nodeID: string, withLoading = true) {
     detailData.value = await client.adminNodeDetail(nodeID, { minutes: 180, limit: 360 });
     securityEventsRows.value = detailData.value.security_events || [];
     securityEventSummariesRows.value = [];
-    detailLastRefreshAt.value = new Date().toISOString();
+    detailLastRefreshAt.value = Date.now();
     await refreshSSHUserMappings(nodeID, detailData.value.latest.ssh_users || []);
     await loadNodeSecurityEvents(nodeID, false);
   } catch (e: any) {
@@ -2304,7 +2827,7 @@ function startDetailAutoRefresh() {
 async function openNodeDetail(row: NodeStatus) {
   securityRange.value = buildDefaultSecurityRange();
   securityEventTypeFilter.value = "";
-  securityShowSummary.value = false;
+  securityShowSummary.value = true;
   detailVisible.value = true;
   await loadNodeDetail(row.node_id, true);
   startDetailAutoRefresh();
@@ -2315,7 +2838,7 @@ async function openNodeDetailById(nodeID: string) {
   if (!id) return;
   securityRange.value = buildDefaultSecurityRange();
   securityEventTypeFilter.value = "";
-  securityShowSummary.value = false;
+  securityShowSummary.value = true;
   const row = rows.value.find((x) => String(x.node_id || "").trim() === id);
   if (row) {
     await openNodeDetail(row);
@@ -2391,8 +2914,145 @@ async function killAllUserProcesses(row: NodeStatus) {
 async function killAllDetailUsersProcesses() {
   const nodeId = String(detailNodeId.value || "").trim();
   if (!nodeId) return;
+  if (detailHasProtectedAdminMappings.value) {
+    ElMessage.warning("存在管理员映射账号，高级用户不能执行全体清进程");
+    return;
+  }
   const localUserCount = (detailData.value?.local_users || []).length;
   await killAllUserProcessesByNode(nodeId, localUserCount);
+}
+
+async function saveDetailUserLimitsFromDialog() {
+  const nodeId = String(userLimitNodeId.value || "").trim();
+  const local = String(userLimitLocalUsername.value || "").trim();
+  if (!nodeId || !local) return;
+  const cpuEnabled = !!userLimitCPUEnabled.value;
+  const memoryEnabled = !!userLimitMemoryEnabled.value;
+  const gpuEnabled = !!userLimitGPUEnabled.value;
+  const cpuPercent = Number(userLimitCPUPercent.value || 0);
+  const memoryGB = Number(userLimitMemoryGB.value || 0);
+  const gpuIndices = normalizeGPUIndexList((userLimitVisibleGPUIndices.value || []).map((x) => Number(x)));
+  if (cpuEnabled && (!Number.isFinite(cpuPercent) || cpuPercent <= 0 || cpuPercent > 100)) {
+    ElMessage.error("CPU 限制比例必须在 1~100 之间");
+    return;
+  }
+  if (memoryEnabled && (!Number.isFinite(memoryGB) || memoryGB <= 0 || memoryGB > 4096)) {
+    ElMessage.error("内存限制必须在 0~4096 GB 之间");
+    return;
+  }
+  if (gpuEnabled && gpuIndices.length === 0) {
+    ElMessage.error("请至少选择一个可见 GPU");
+    return;
+  }
+  userLimitSaving.value = true;
+  error.value = "";
+  try {
+    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+    const reason = String(userLimitReason.value || "").trim();
+    if (cpuEnabled) {
+      await client.adminSetNodeUserCPULimit(nodeId, {
+        local_username: local,
+        cpu_quota_percent: Number(cpuPercent.toFixed(1)),
+        reason,
+      });
+    } else {
+      await deleteCPUUserLimitSafe(nodeId, local);
+    }
+    if (memoryEnabled) {
+      await client.adminSetNodeUserMemoryLimit(nodeId, {
+        local_username: local,
+        memory_limit_gb: Number(memoryGB.toFixed(1)),
+        reason,
+      });
+    } else {
+      await deleteMemoryUserLimitSafe(nodeId, local);
+    }
+    if (gpuEnabled) {
+      await client.adminSetNodeUserGPUVisibility(nodeId, {
+        local_username: local,
+        gpu_indices: gpuIndices,
+        reason,
+      });
+    } else {
+      await deleteGPUVisibilitySafe(nodeId, local);
+    }
+    userLimitDialogVisible.value = false;
+    ElMessage.success(`已更新 ${local} 的限制设置`);
+    await wait(1200);
+    await loadNodeDetail(nodeId, false);
+    await reload();
+  } catch (e: any) {
+    error.value = e?.message ?? String(e);
+  } finally {
+    userLimitSaving.value = false;
+  }
+}
+
+async function clearDetailUserLimits(localUsername: string) {
+  const nodeId = String(detailNodeId.value || "").trim();
+  const local = String(localUsername || "").trim();
+  if (!nodeId || !local) return;
+  try {
+    await ElMessageBox.confirm(
+      `确认解除节点 ${nodeId} 用户 ${local} 的手动限速吗？`,
+      "二次确认",
+      { type: "warning", confirmButtonText: "确认解除", cancelButtonText: "取消" },
+    );
+  } catch {
+    return;
+  }
+  userLimitRemovingKey.value = `${nodeId}::${local}`;
+  error.value = "";
+  try {
+    await deleteCPUUserLimitSafe(nodeId, local);
+    await deleteMemoryUserLimitSafe(nodeId, local);
+    await deleteGPUVisibilitySafe(nodeId, local);
+    ElMessage.success(`已解除 ${local} 的手动限制`);
+    await wait(1200);
+    await loadNodeDetail(nodeId, false);
+    await reload();
+  } catch (e: any) {
+    error.value = e?.message ?? String(e);
+  } finally {
+    userLimitRemovingKey.value = "";
+  }
+}
+
+async function killDetailUserProcesses(localUsername: string) {
+  const nodeId = String(detailNodeId.value || "").trim();
+  const user = String(localUsername || "").trim();
+  if (!nodeId || !user) return;
+  if (authState.role === "power_user") {
+    const localRows = detailData.value?.local_users || [];
+    const target = localRows.find((x) => String(x.local_username || "").trim() === user);
+    if (target?.admin_mapping) {
+      ElMessage.warning("高级用户不能操作管理员映射账号");
+      return;
+    }
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确认强制清理节点 ${nodeId} 的用户 ${user} 全部进程吗？\n该操作会立即发送 KILL 指令，请仅在必要时使用。`,
+      "二次确认",
+      { type: "warning", confirmButtonText: "确认执行", cancelButtonText: "取消" },
+    );
+  } catch {
+    return;
+  }
+  killingUserProcKey.value = `${nodeId}::${user}`;
+  error.value = "";
+  try {
+    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+    const r = await client.adminKillNodeUserProcesses(nodeId, user);
+    ElMessage.success(r.message || `已下发用户 ${user} 的清理进程指令`);
+    await wait(1200);
+    await loadNodeDetail(nodeId, false);
+    await reload();
+  } catch (e: any) {
+    error.value = e?.message ?? String(e);
+  } finally {
+    killingUserProcKey.value = "";
+  }
 }
 
 async function syncNodeNow(nodeId: string) {
@@ -2436,6 +3096,13 @@ async function disconnectSSHUser(localUsername: string) {
   const nodeId = String(detailNodeId.value || "").trim();
   const user = String(localUsername || "").trim();
   if (!nodeId || !user) return;
+  if (authState.role === "power_user") {
+    const online = sshOnlineRows.value.find((x) => String(x.local_username || "").trim() === user);
+    if (online?.admin_mapping) {
+      ElMessage.warning("高级用户不能操作管理员映射账号");
+      return;
+    }
+  }
   try {
     await ElMessageBox.confirm(
       `确认强制下线节点 ${nodeId} 的用户 ${user} 吗？\n执行后该用户当前 SSH 会话会被断开，需要重新登录。`,
@@ -2730,6 +3397,29 @@ onBeforeUnmount(() => {
   padding: 0 !important;
 }
 
+.exclusive-gpu-assign-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.exclusive-gpu-user-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fafafa;
+}
+
+.exclusive-gpu-user {
+  min-width: 120px;
+  font-weight: 600;
+  color: #1f2937;
+}
+
 .sync-status-btn {
   color: #fff !important;
 }
@@ -2772,6 +3462,17 @@ onBeforeUnmount(() => {
   gap: 6px;
   font-weight: 600;
   color: var(--warning-color);
+}
+
+.agent-version-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.agent-version-outdated-icon {
+  color: #f59e0b;
+  font-size: 14px;
 }
 
 .ssh-users-wrap {
@@ -2817,6 +3518,23 @@ onBeforeUnmount(() => {
   color: var(--text-tertiary);
 }
 
+.admin-map-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-left: 6px;
+  border-radius: 999px;
+  background: #dc2626;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: default;
+  user-select: none;
+}
+
 .home-used-cell {
   display: block;
   text-align: left;
@@ -2825,6 +3543,32 @@ onBeforeUnmount(() => {
 .home-used-danger {
   color: #ef4444 !important;
   font-weight: 700;
+}
+
+.cpu-limit-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cpu-limit-tag-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.cpu-limit-reason {
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1.25;
+  word-break: break-all;
+}
+
+.cpu-limit-editor {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .charts-grid {

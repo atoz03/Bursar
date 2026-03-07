@@ -46,7 +46,7 @@ func (s *Server) handleAuthRegisterCaptcha(c *gin.Context) {
 		"captcha_id": captchaID,
 		"question":   question,
 		"options":    options,
-		"expire_at":  expireAt.UTC().Format(time.RFC3339),
+		"expire_at":  formatRFC3339InBeijing(expireAt),
 	})
 }
 

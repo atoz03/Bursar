@@ -24,12 +24,24 @@ type adminPointsAdjustReq struct {
 type adminPointsBatchGrantReq struct {
 	Amount float64 `json:"amount"`
 	Reason string  `json:"reason"`
+	Scope  string  `json:"scope"`   // general | carryover | node_exclusive
+	NodeID string  `json:"node_id"` // scope=node_exclusive 时必填
 }
 
 type adminPointsBatchAdjustUsersReq struct {
 	Amount    float64  `json:"amount"`
 	Reason    string   `json:"reason"`
 	Usernames []string `json:"usernames"`
+	Scope     string   `json:"scope"`   // general | carryover | node_exclusive
+	NodeID    string   `json:"node_id"` // scope=node_exclusive 时必填
+}
+
+type adminPointsBatchSetUsersReq struct {
+	Value     float64  `json:"value"`
+	Reason    string   `json:"reason"`
+	Usernames []string `json:"usernames"`
+	Scope     string   `json:"scope"`   // general | carryover | node_exclusive
+	NodeID    string   `json:"node_id"` // scope=node_exclusive 时必填
 }
 
 type adminPointsSpecialRuleReq struct {
@@ -77,6 +89,17 @@ func monthlyBasePointsByStudentID(studentID string, cfg MonthlyPointsConfig) flo
 		return cfg.MasterPoints
 	}
 	return cfg.OtherPoints
+}
+
+func normalizePointsAdjustScope(scope string) (string, error) {
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		scope = "general"
+	}
+	if scope != "general" && scope != "carryover" && scope != "node_exclusive" {
+		return "", errors.New("scope 仅支持 general、carryover 或 node_exclusive")
+	}
+	return scope, nil
 }
 
 func killAllProcessBalanceThreshold(maxOverdraftLimit float64) float64 {
@@ -426,13 +449,11 @@ func (s *Server) handleAdminPointsAdjust(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "delta 不能为 0"})
 		return
 	}
-	req.Scope = strings.TrimSpace(req.Scope)
+	var scopeErr error
+	req.Scope, scopeErr = normalizePointsAdjustScope(req.Scope)
 	req.NodeID = strings.TrimSpace(req.NodeID)
-	if req.Scope == "" {
-		req.Scope = "general"
-	}
-	if req.Scope != "general" && req.Scope != "carryover" && req.Scope != "node_exclusive" {
-		c.JSON(400, gin.H{"error": "scope 仅支持 general、carryover 或 node_exclusive"})
+	if scopeErr != nil {
+		c.JSON(400, gin.H{"error": scopeErr.Error()})
 		return
 	}
 	if req.Scope == "node_exclusive" && req.NodeID == "" {
@@ -458,15 +479,16 @@ func (s *Server) handleAdminPointsAdjust(c *gin.Context) {
 		}
 	}
 	now := time.Now()
+	actionCtx := withRechargeReason(c.Request.Context(), req.Reason)
 	var res BalanceUpdateResult
 	carryoverBalance := 0.0
 	exclusiveBalance := 0.0
 	nodeExclusiveCurrent := 0.0
-	if err := s.store.WithTx(c.Request.Context(), func(tx *sql.Tx) error {
+	if err := s.store.WithTx(actionCtx, func(tx *sql.Tx) error {
 		var err error
 		if req.Scope == "node_exclusive" {
 			row, rowErr := s.store.AdjustNodeExclusiveBalanceTx(
-				c.Request.Context(),
+				actionCtx,
 				tx,
 				req.Username,
 				req.NodeID,
@@ -479,11 +501,11 @@ func (s *Server) handleAdminPointsAdjust(c *gin.Context) {
 				return rowErr
 			}
 			nodeExclusiveCurrent = row.Balance
-			u, getErr := s.store.EnsureUserTx(c.Request.Context(), tx, req.Username, s.cfg.DefaultBalance)
+			u, getErr := s.store.EnsureUserTx(actionCtx, tx, req.Username, s.cfg.DefaultBalance)
 			if getErr != nil {
 				return getErr
 			}
-			exclusiveBalance, err = s.store.GetUserExclusiveBalanceTotalTx(c.Request.Context(), tx, req.Username)
+			exclusiveBalance, err = s.store.GetUserExclusiveBalanceTotalTx(actionCtx, tx, req.Username)
 			if err != nil {
 				return err
 			}
@@ -495,15 +517,15 @@ func (s *Server) handleAdminPointsAdjust(c *gin.Context) {
 			return nil
 		}
 		if req.Scope == "carryover" {
-			res, err = s.store.AdjustCarryoverBalanceTx(c.Request.Context(), tx, req.Username, req.Delta, method, now, s.cfg)
+			res, err = s.store.AdjustCarryoverBalanceTx(actionCtx, tx, req.Username, req.Delta, method, now, s.cfg)
 		} else {
-			res, err = s.store.AdjustBalanceTx(c.Request.Context(), tx, req.Username, req.Delta, method, now, s.cfg)
+			res, err = s.store.AdjustBalanceTx(actionCtx, tx, req.Username, req.Delta, method, now, s.cfg)
 		}
 		if err != nil {
 			return err
 		}
 		carryoverBalance = res.User.CarryoverBalance
-		exclusiveBalance, err = s.store.GetUserExclusiveBalanceTotalTx(c.Request.Context(), tx, req.Username)
+		exclusiveBalance, err = s.store.GetUserExclusiveBalanceTotalTx(actionCtx, tx, req.Username)
 		return err
 	}); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
@@ -612,15 +634,29 @@ func (s *Server) handleAdminPointsBatchGrant(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "amount 不能为 0"})
 		return
 	}
+	var scopeErr error
+	req.Scope, scopeErr = normalizePointsAdjustScope(req.Scope)
+	req.NodeID = strings.TrimSpace(req.NodeID)
+	if scopeErr != nil {
+		c.JSON(400, gin.H{"error": scopeErr.Error()})
+		return
+	}
+	if req.Scope == "node_exclusive" && req.NodeID == "" {
+		c.JSON(400, gin.H{"error": "node_exclusive 模式下 node_id 不能为空"})
+		return
+	}
 	users, err := s.store.ListRegularUserProfilesForPoints(c.Request.Context(), 50000)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	maxOverdraftLimit, err := s.getMonthlyMaxOverdraftLimit(c.Request.Context())
-	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
+	maxOverdraftLimit := 0.0
+	if req.Scope == "general" || req.Scope == "carryover" {
+		maxOverdraftLimit, err = s.getMonthlyMaxOverdraftLimit(c.Request.Context())
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
 	}
 	killThreshold := killAllProcessBalanceThreshold(maxOverdraftLimit)
 	now := time.Now()
@@ -628,12 +664,46 @@ func (s *Server) handleAdminPointsBatchGrant(c *gin.Context) {
 	interruptUsers := map[string]struct{}{}
 	stateRecheckUsers := map[string]float64{}
 	method := "points_batch_plus"
-	if req.Amount < 0 {
+	if req.Scope == "carryover" {
+		method = "points_batch_carry_plus"
+		if req.Amount < 0 {
+			method = "points_batch_carry_minus"
+		}
+	} else if req.Scope == "node_exclusive" {
+		method = "points_batch_node_plus"
+		if req.Amount < 0 {
+			method = "points_batch_node_minus"
+		}
+	} else if req.Amount < 0 {
 		method = "points_batch_minus"
 	}
-	if err := s.store.WithTx(c.Request.Context(), func(tx *sql.Tx) error {
+	operator := s.currentOperator(c)
+	actionCtx := withRechargeReason(c.Request.Context(), req.Reason)
+	if err := s.store.WithTx(actionCtx, func(tx *sql.Tx) error {
 		for _, u := range users {
-			res, err := s.store.AdjustBalanceTx(c.Request.Context(), tx, u.Username, req.Amount, method, now, s.cfg)
+			if req.Scope == "node_exclusive" {
+				if _, err := s.store.AdjustNodeExclusiveBalanceTx(
+					actionCtx,
+					tx,
+					u.Username,
+					req.NodeID,
+					req.Amount,
+					method,
+					operator,
+					s.cfg,
+				); err != nil {
+					return err
+				}
+				changed++
+				continue
+			}
+			var res BalanceUpdateResult
+			var err error
+			if req.Scope == "carryover" {
+				res, err = s.store.AdjustCarryoverBalanceTx(actionCtx, tx, u.Username, req.Amount, method, now, s.cfg)
+			} else {
+				res, err = s.store.AdjustBalanceTx(actionCtx, tx, u.Username, req.Amount, method, now, s.cfg)
+			}
 			if err != nil {
 				return err
 			}
@@ -651,20 +721,22 @@ func (s *Server) handleAdminPointsBatchGrant(c *gin.Context) {
 
 	interruptedUsers := 0
 	interruptedNodes := 0
-	for username := range interruptUsers {
-		n, err := s.enqueueHardInterruptForBillingUser(
-			c.Request.Context(),
-			username,
-			maxOverdraftLimit,
-			fmt.Sprintf("全体积分调整后余额低于 %.2f 积分，已超过每月最大欠费上限，强制中断", killThreshold),
-		)
-		if err != nil {
-			log.Printf("全体积分调整后强制中断失败 username=%s err=%v", username, err)
-			continue
-		}
-		if n > 0 {
-			interruptedUsers++
-			interruptedNodes += n
+	if req.Scope == "general" || req.Scope == "carryover" {
+		for username := range interruptUsers {
+			n, err := s.enqueueHardInterruptForBillingUser(
+				c.Request.Context(),
+				username,
+				maxOverdraftLimit,
+				fmt.Sprintf("全体积分调整后余额低于 %.2f 积分，已超过每月最大欠费上限，强制中断", killThreshold),
+			)
+			if err != nil {
+				log.Printf("全体积分调整后强制中断失败 username=%s err=%v", username, err)
+				continue
+			}
+			if n > 0 {
+				interruptedUsers++
+				interruptedNodes += n
+			}
 		}
 	}
 	quotaRefreshUsers := 0
@@ -676,7 +748,7 @@ func (s *Server) handleAdminPointsBatchGrant(c *gin.Context) {
 	memoryRefreshUsers := 0
 	memoryRefreshNodes := 0
 	memoryRefreshErrs := 0
-	if len(stateRecheckUsers) > 0 {
+	if (req.Scope == "general" || req.Scope == "carryover") && len(stateRecheckUsers) > 0 {
 		usernames := make([]string, 0, len(stateRecheckUsers))
 		for username := range stateRecheckUsers {
 			usernames = append(usernames, username)
@@ -731,6 +803,8 @@ func (s *Server) handleAdminPointsBatchGrant(c *gin.Context) {
 
 	c.JSON(200, gin.H{
 		"ok":                    true,
+		"scope":                 req.Scope,
+		"node_id":               req.NodeID,
 		"amount":                req.Amount,
 		"granted_users":         changed,
 		"adjusted_users":        changed,
@@ -760,6 +834,17 @@ func (s *Server) handleAdminPointsBatchAdjustUsers(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "amount 不能为 0"})
 		return
 	}
+	var scopeErr error
+	req.Scope, scopeErr = normalizePointsAdjustScope(req.Scope)
+	req.NodeID = strings.TrimSpace(req.NodeID)
+	if scopeErr != nil {
+		c.JSON(400, gin.H{"error": scopeErr.Error()})
+		return
+	}
+	if req.Scope == "node_exclusive" && req.NodeID == "" {
+		c.JSON(400, gin.H{"error": "node_exclusive 模式下 node_id 不能为空"})
+		return
+	}
 	targetUsernames := uniqTrim(req.Usernames)
 	if len(targetUsernames) == 0 {
 		c.JSON(400, gin.H{"error": "usernames 不能为空"})
@@ -778,10 +863,13 @@ func (s *Server) handleAdminPointsBatchAdjustUsers(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "筛选结果为空或用户不存在"})
 		return
 	}
-	maxOverdraftLimit, err := s.getMonthlyMaxOverdraftLimit(c.Request.Context())
-	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
+	maxOverdraftLimit := 0.0
+	if req.Scope == "general" || req.Scope == "carryover" {
+		maxOverdraftLimit, err = s.getMonthlyMaxOverdraftLimit(c.Request.Context())
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
 	}
 	killThreshold := killAllProcessBalanceThreshold(maxOverdraftLimit)
 
@@ -790,12 +878,46 @@ func (s *Server) handleAdminPointsBatchAdjustUsers(c *gin.Context) {
 	interruptUsers := map[string]struct{}{}
 	stateRecheckUsers := map[string]float64{}
 	method := "points_batch_filtered_plus"
-	if req.Amount < 0 {
+	if req.Scope == "carryover" {
+		method = "points_batch_filtered_carry_plus"
+		if req.Amount < 0 {
+			method = "points_batch_filtered_carry_minus"
+		}
+	} else if req.Scope == "node_exclusive" {
+		method = "points_batch_filtered_node_plus"
+		if req.Amount < 0 {
+			method = "points_batch_filtered_node_minus"
+		}
+	} else if req.Amount < 0 {
 		method = "points_batch_filtered_minus"
 	}
-	if err := s.store.WithTx(c.Request.Context(), func(tx *sql.Tx) error {
+	operator := s.currentOperator(c)
+	actionCtx := withRechargeReason(c.Request.Context(), req.Reason)
+	if err := s.store.WithTx(actionCtx, func(tx *sql.Tx) error {
 		for _, username := range existingUsernames {
-			res, err := s.store.AdjustBalanceTx(c.Request.Context(), tx, username, req.Amount, method, now, s.cfg)
+			if req.Scope == "node_exclusive" {
+				if _, err := s.store.AdjustNodeExclusiveBalanceTx(
+					actionCtx,
+					tx,
+					username,
+					req.NodeID,
+					req.Amount,
+					method,
+					operator,
+					s.cfg,
+				); err != nil {
+					return err
+				}
+				changed++
+				continue
+			}
+			var res BalanceUpdateResult
+			var err error
+			if req.Scope == "carryover" {
+				res, err = s.store.AdjustCarryoverBalanceTx(actionCtx, tx, username, req.Amount, method, now, s.cfg)
+			} else {
+				res, err = s.store.AdjustBalanceTx(actionCtx, tx, username, req.Amount, method, now, s.cfg)
+			}
 			if err != nil {
 				return err
 			}
@@ -813,20 +935,22 @@ func (s *Server) handleAdminPointsBatchAdjustUsers(c *gin.Context) {
 
 	interruptedUsers := 0
 	interruptedNodes := 0
-	for username := range interruptUsers {
-		n, err := s.enqueueHardInterruptForBillingUser(
-			c.Request.Context(),
-			username,
-			maxOverdraftLimit,
-			fmt.Sprintf("批量积分调整后余额低于 %.2f 积分，已超过每月最大欠费上限，强制中断", killThreshold),
-		)
-		if err != nil {
-			log.Printf("筛选批量积分调整后强制中断失败 username=%s err=%v", username, err)
-			continue
-		}
-		if n > 0 {
-			interruptedUsers++
-			interruptedNodes += n
+	if req.Scope == "general" || req.Scope == "carryover" {
+		for username := range interruptUsers {
+			n, err := s.enqueueHardInterruptForBillingUser(
+				c.Request.Context(),
+				username,
+				maxOverdraftLimit,
+				fmt.Sprintf("批量积分调整后余额低于 %.2f 积分，已超过每月最大欠费上限，强制中断", killThreshold),
+			)
+			if err != nil {
+				log.Printf("筛选批量积分调整后强制中断失败 username=%s err=%v", username, err)
+				continue
+			}
+			if n > 0 {
+				interruptedUsers++
+				interruptedNodes += n
+			}
 		}
 	}
 	quotaRefreshUsers := 0
@@ -838,7 +962,7 @@ func (s *Server) handleAdminPointsBatchAdjustUsers(c *gin.Context) {
 	memoryRefreshUsers := 0
 	memoryRefreshNodes := 0
 	memoryRefreshErrs := 0
-	if len(stateRecheckUsers) > 0 {
+	if (req.Scope == "general" || req.Scope == "carryover") && len(stateRecheckUsers) > 0 {
 		usernames := make([]string, 0, len(stateRecheckUsers))
 		for username := range stateRecheckUsers {
 			usernames = append(usernames, username)
@@ -893,12 +1017,236 @@ func (s *Server) handleAdminPointsBatchAdjustUsers(c *gin.Context) {
 
 	c.JSON(200, gin.H{
 		"ok":                    true,
+		"scope":                 req.Scope,
+		"node_id":               req.NodeID,
 		"amount":                req.Amount,
 		"requested_users":       len(targetUsernames),
 		"matched_users":         len(existingUsernames),
 		"adjusted_users":        changed,
 		"skipped_users":         len(targetUsernames) - len(existingUsernames),
 		"total_adjusted":        req.Amount * float64(changed),
+		"interrupted_users":     interruptedUsers,
+		"interrupted_nodes":     interruptedNodes,
+		"quota_refresh_users":   quotaRefreshUsers,
+		"quota_refresh_nodes":   quotaRefreshNodes,
+		"quota_refresh_errors":  quotaRefreshErrs,
+		"gpu_refresh_users":     gpuRefreshUsers,
+		"gpu_refresh_nodes":     gpuRefreshNodes,
+		"gpu_refresh_errors":    gpuRefreshErrs,
+		"memory_refresh_users":  memoryRefreshUsers,
+		"memory_refresh_nodes":  memoryRefreshNodes,
+		"memory_refresh_errors": memoryRefreshErrs,
+	})
+}
+
+func (s *Server) handleAdminPointsBatchSetUsers(c *gin.Context) {
+	var req adminPointsBatchSetUsersReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "请求参数不合法"})
+		return
+	}
+	var scopeErr error
+	req.Scope, scopeErr = normalizePointsAdjustScope(req.Scope)
+	req.NodeID = strings.TrimSpace(req.NodeID)
+	if scopeErr != nil {
+		c.JSON(400, gin.H{"error": scopeErr.Error()})
+		return
+	}
+	if req.Scope == "node_exclusive" && req.NodeID == "" {
+		c.JSON(400, gin.H{"error": "node_exclusive 模式下 node_id 不能为空"})
+		return
+	}
+	if (req.Scope == "carryover" || req.Scope == "node_exclusive") && req.Value < 0 {
+		c.JSON(400, gin.H{"error": "结转积分和节点专属积分不能设为负数"})
+		return
+	}
+
+	targetUsernames := uniqTrim(req.Usernames)
+	if len(targetUsernames) == 0 {
+		c.JSON(400, gin.H{"error": "usernames 不能为空"})
+		return
+	}
+	if len(targetUsernames) > 50000 {
+		c.JSON(400, gin.H{"error": "批量用户数量过大（最大 50000）"})
+		return
+	}
+	existingUsernames, err := s.store.FilterExistingPointsUsernames(c.Request.Context(), targetUsernames)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if len(existingUsernames) == 0 {
+		c.JSON(400, gin.H{"error": "筛选结果为空或用户不存在"})
+		return
+	}
+
+	maxOverdraftLimit := 0.0
+	if req.Scope == "general" || req.Scope == "carryover" {
+		maxOverdraftLimit, err = s.getMonthlyMaxOverdraftLimit(c.Request.Context())
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	killThreshold := killAllProcessBalanceThreshold(maxOverdraftLimit)
+
+	now := time.Now()
+	changed := 0
+	totalDelta := 0.0
+	interruptUsers := map[string]struct{}{}
+	stateRecheckUsers := map[string]float64{}
+	method := "points_batch_filtered_set"
+	if req.Scope == "carryover" {
+		method = "points_batch_filtered_set_carry"
+	} else if req.Scope == "node_exclusive" {
+		method = "points_batch_filtered_set_node"
+	}
+	operator := s.currentOperator(c)
+	actionCtx := withRechargeReason(c.Request.Context(), req.Reason)
+	if err := s.store.WithTx(actionCtx, func(tx *sql.Tx) error {
+		for _, username := range existingUsernames {
+			if req.Scope == "node_exclusive" {
+				_, delta, err := s.store.SetNodeExclusiveBalanceTx(
+					actionCtx,
+					tx,
+					username,
+					req.NodeID,
+					req.Value,
+					method,
+					operator,
+					s.cfg,
+				)
+				if err != nil {
+					return err
+				}
+				totalDelta += delta
+				if delta != 0 {
+					changed++
+				}
+				continue
+			}
+
+			var res BalanceUpdateResult
+			var delta float64
+			var err error
+			if req.Scope == "carryover" {
+				res, delta, err = s.store.SetCarryoverBalanceTx(actionCtx, tx, username, req.Value, method, now, s.cfg)
+			} else {
+				res, delta, err = s.store.SetBalanceTx(actionCtx, tx, username, req.Value, method, now, s.cfg)
+			}
+			if err != nil {
+				return err
+			}
+			totalDelta += delta
+			if delta == 0 {
+				continue
+			}
+			changed++
+			stateRecheckUsers[username] = res.User.Balance + res.User.CarryoverBalance
+			if shouldTriggerOverdraftInterrupt(res.PrevEffectiveBalance, res.EffectiveBalance, maxOverdraftLimit) {
+				interruptUsers[username] = struct{}{}
+			}
+		}
+		return nil
+	}); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	interruptedUsers := 0
+	interruptedNodes := 0
+	if req.Scope == "general" || req.Scope == "carryover" {
+		for username := range interruptUsers {
+			n, err := s.enqueueHardInterruptForBillingUser(
+				c.Request.Context(),
+				username,
+				maxOverdraftLimit,
+				fmt.Sprintf("批量积分设定后余额低于 %.2f 积分，已超过每月最大欠费上限，强制中断", killThreshold),
+			)
+			if err != nil {
+				log.Printf("筛选批量积分设定后强制中断失败 username=%s err=%v", username, err)
+				continue
+			}
+			if n > 0 {
+				interruptedUsers++
+				interruptedNodes += n
+			}
+		}
+	}
+
+	quotaRefreshUsers := 0
+	quotaRefreshNodes := 0
+	quotaRefreshErrs := 0
+	gpuRefreshUsers := 0
+	gpuRefreshNodes := 0
+	gpuRefreshErrs := 0
+	memoryRefreshUsers := 0
+	memoryRefreshNodes := 0
+	memoryRefreshErrs := 0
+	if (req.Scope == "general" || req.Scope == "carryover") && len(stateRecheckUsers) > 0 {
+		usernames := make([]string, 0, len(stateRecheckUsers))
+		for username := range stateRecheckUsers {
+			usernames = append(usernames, username)
+		}
+		sort.Strings(usernames)
+		for _, username := range usernames {
+			n, err := s.refreshCPUQuotaForBillingUser(
+				c.Request.Context(),
+				username,
+				stateRecheckUsers[username],
+				fmt.Sprintf("筛选批量积分设定后重算限速（%s）", username),
+			)
+			if err != nil {
+				quotaRefreshErrs++
+				log.Printf("筛选批量积分设定后刷新 CPU 限速失败 username=%s err=%v", username, err)
+			} else if n > 0 {
+				quotaRefreshUsers++
+				quotaRefreshNodes += n
+			}
+			n, err = s.refreshGPUAccessForBillingUser(
+				c.Request.Context(),
+				username,
+				stateRecheckUsers[username],
+				fmt.Sprintf("筛选批量积分设定后同步 GPU 限制（%s）", username),
+			)
+			if err != nil {
+				gpuRefreshErrs++
+				log.Printf("筛选批量积分设定后刷新 GPU 限制失败 username=%s err=%v", username, err)
+				continue
+			}
+			if n > 0 {
+				gpuRefreshUsers++
+				gpuRefreshNodes += n
+			}
+			n, err = s.refreshMemoryLimitForBillingUser(
+				c.Request.Context(),
+				username,
+				stateRecheckUsers[username],
+				fmt.Sprintf("筛选批量积分设定后同步内存限额（%s）", username),
+			)
+			if err != nil {
+				memoryRefreshErrs++
+				log.Printf("筛选批量积分设定后刷新内存限额失败 username=%s err=%v", username, err)
+				continue
+			}
+			if n > 0 {
+				memoryRefreshUsers++
+				memoryRefreshNodes += n
+			}
+		}
+	}
+
+	c.JSON(200, gin.H{
+		"ok":                    true,
+		"scope":                 req.Scope,
+		"node_id":               req.NodeID,
+		"value":                 req.Value,
+		"requested_users":       len(targetUsernames),
+		"matched_users":         len(existingUsernames),
+		"changed_users":         changed,
+		"unchanged_users":       len(existingUsernames) - changed,
+		"skipped_users":         len(targetUsernames) - len(existingUsernames),
+		"total_delta":           totalDelta,
 		"interrupted_users":     interruptedUsers,
 		"interrupted_nodes":     interruptedNodes,
 		"quota_refresh_users":   quotaRefreshUsers,

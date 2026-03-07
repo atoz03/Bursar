@@ -14,7 +14,6 @@ import UserAccounts from "../views/pages/UserAccounts.vue";
 import AdminUsers from "../views/pages/AdminUsers.vue";
 import AdminNodes from "../views/pages/AdminNodes.vue";
 import AdminUsage from "../views/pages/AdminUsage.vue";
-import AdminQueue from "../views/pages/AdminQueue.vue";
 import AdminRequests from "../views/pages/AdminRequests.vue";
 import AdminMailSettings from "../views/pages/AdminMailSettings.vue";
 import AdminBoard from "../views/pages/AdminBoard.vue";
@@ -66,7 +65,6 @@ export const router = createRouter({
         { path: "admin/power-users", component: AdminPowerUsers },
         { path: "admin/board", component: AdminBoard },
         { path: "admin/usage", component: AdminUsage },
-        { path: "admin/queue", component: AdminQueue },
         { path: "admin/requests", component: AdminRequests },
         { path: "admin/mail", component: AdminMailSettings },
         { path: "admin/ha", component: AdminHA },
@@ -97,6 +95,7 @@ router.beforeEach(async (to) => {
     if (authState.role === "power_user") {
       if (authState.canViewBoard) return { path: "/admin/board" };
       if (authState.canViewNodes) return { path: "/admin/nodes" };
+      if (authState.canManagePoints) return { path: "/admin/points" };
       if (authState.canReviewRequests) return { path: "/admin/requests" };
       return { path: "/user/balance" };
     }
@@ -115,6 +114,7 @@ router.beforeEach(async (to) => {
       const p = to.path;
       if (p.startsWith("/admin/board") && authState.canViewBoard) return true;
       if (p.startsWith("/admin/nodes") && authState.canViewNodes) return true;
+      if (p.startsWith("/admin/points") && authState.canManagePoints) return true;
       if (p.startsWith("/admin/requests") && authState.canReviewRequests) return true;
       if (p.startsWith("/admin/profile")) return { path: "/user/profile" };
       if (p.startsWith("/admin/change-password")) return { path: "/user/change-password" };
@@ -128,6 +128,7 @@ router.beforeEach(async (to) => {
     if (authState.role === "power_user") {
       if (authState.canViewBoard) return { path: "/admin/board" };
       if (authState.canViewNodes) return { path: "/admin/nodes" };
+      if (authState.canManagePoints) return { path: "/admin/points" };
       if (authState.canReviewRequests) return { path: "/admin/requests" };
       return { path: "/user/balance" };
     }

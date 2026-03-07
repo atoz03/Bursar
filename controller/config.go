@@ -150,11 +150,13 @@ func (c *Config) Validate() error {
 
 type cliArgs struct {
 	configPath string
+	showVer    bool
 }
 
 func parseArgs() cliArgs {
 	var a cliArgs
 	flag.StringVar(&a.configPath, "config", "", "配置文件路径（yaml）")
+	flag.BoolVar(&a.showVer, "version", false, "打印版本信息并退出")
 	flag.Parse()
 	return a
 }

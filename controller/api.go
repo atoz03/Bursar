@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 )
@@ -26,20 +27,24 @@ import (
 type Server struct {
 	cfg   Config
 	store *Store
-	queue *Queue
 	metr  *controllerMetrics
 
 	nodeActionsMu      sync.Mutex
 	nodeActions        map[string][]Action
 	pointsResetMu      sync.Mutex
+	usageDeleteMu      sync.Mutex
 	cpuQuotaMu         sync.Mutex
 	cpuQuotaState      map[string]float64 // key: node_id::local_username
 	memoryLimitMu      sync.Mutex
 	memoryLimitState   map[string]float64 // key: node_id::local_username, value=memory_limit_gb
 	gpuAccessMu        sync.Mutex
 	gpuAccessState     map[string]bool // key: node_id::local_username, true=blocked
+	gpuVisibilityMu    sync.Mutex
+	gpuVisibilityState map[string]string // key: node_id::local_username, value=sorted gpu indices signature, e.g. "0,1,2"
 	securitySignalMu   sync.Mutex
 	securitySignalSeen map[string]securitySignalState // key: node_id::event_type
+	haSyncMu           sync.Mutex
+	haSyncRunning      bool
 }
 
 type securitySignalState struct {
@@ -52,18 +57,19 @@ const (
 	permViewNodes      = 2
 	permReviewRequests = 4
 	permManageNodes    = 8
+	permManagePoints   = 16
 )
 
 func NewServer(cfg Config, store *Store) *Server {
 	return &Server{
 		cfg:                cfg,
 		store:              store,
-		queue:              NewQueue(),
 		metr:               &controllerMetrics{},
 		nodeActions:        make(map[string][]Action),
 		cpuQuotaState:      make(map[string]float64),
 		memoryLimitState:   make(map[string]float64),
 		gpuAccessState:     make(map[string]bool),
+		gpuVisibilityState: make(map[string]string),
 		securitySignalSeen: make(map[string]securitySignalState),
 	}
 }
@@ -73,9 +79,70 @@ func (s *Server) enqueueNodeAction(nodeID string, action Action) {
 	if nodeID == "" {
 		return
 	}
+	actionCopy := action
+	if len(action.PIDs) > 0 {
+		actionCopy.PIDs = append([]int32(nil), action.PIDs...)
+	}
+	if len(action.GPUIndices) > 0 {
+		actionCopy.GPUIndices = append([]int(nil), action.GPUIndices...)
+	}
+	if len(action.GPUExclusiveAssignments) > 0 {
+		actionCopy.GPUExclusiveAssignments = make([]GPUExclusiveAssignment, len(action.GPUExclusiveAssignments))
+		for i := range action.GPUExclusiveAssignments {
+			actionCopy.GPUExclusiveAssignments[i] = GPUExclusiveAssignment{
+				Username:   strings.TrimSpace(action.GPUExclusiveAssignments[i].Username),
+				GPUIndices: append([]int(nil), action.GPUExclusiveAssignments[i].GPUIndices...),
+			}
+		}
+	}
 	s.nodeActionsMu.Lock()
-	defer s.nodeActionsMu.Unlock()
 	s.nodeActions[nodeID] = append(s.nodeActions[nodeID], action)
+	s.nodeActionsMu.Unlock()
+
+	if isProcessKillActionType(actionCopy.Type) {
+		go s.recordProcessKillAction(nodeID, actionCopy)
+	}
+}
+
+func isProcessKillActionType(actionType string) bool {
+	switch strings.TrimSpace(actionType) {
+	case "kill_process", "kill_all_processes", "kill_all_user_processes":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) recordProcessKillAction(nodeID string, action Action) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	localUsername := strings.TrimSpace(action.Username)
+	billingUsername := ""
+	if localUsername != "" {
+		mappedBilling, mapped, err := s.store.ResolveBillingUsername(ctx, nodeID, localUsername)
+		if err != nil {
+			log.Printf("[warn] 记录进程终止日志失败：解析平台账号失败 node=%s local=%s err=%v", nodeID, localUsername, err)
+		}
+		if mapped {
+			billingUsername = strings.TrimSpace(mappedBilling)
+		}
+		if billingUsername == "" {
+			billingUsername = localUsername
+		}
+	}
+
+	if err := s.store.InsertProcessKillRecord(
+		ctx,
+		nodeID,
+		localUsername,
+		billingUsername,
+		action.Type,
+		action.Reason,
+		action.PIDs,
+	); err != nil {
+		log.Printf("[warn] 记录进程终止日志失败：node=%s local=%s action=%s err=%v", nodeID, localUsername, action.Type, err)
+	}
 }
 
 func (s *Server) popNodeActions(nodeID string) []Action {
@@ -91,6 +158,10 @@ func (s *Server) popNodeActions(nodeID string) []Action {
 }
 
 func quotaStateKey(nodeID, localUsername string) string {
+	return strings.TrimSpace(nodeID) + "::" + strings.TrimSpace(localUsername)
+}
+
+func memoryLimitStateKey(nodeID, localUsername string) string {
 	return strings.TrimSpace(nodeID) + "::" + strings.TrimSpace(localUsername)
 }
 
@@ -187,13 +258,63 @@ func (s *Server) enqueueCPUQuotaAction(nodeID, localUsername string, quotaPercen
 	return true
 }
 
+func (s *Server) enqueueBindFailureConvergenceAction(ch UserNodeBindChallenge) {
+	nodeID := strings.TrimSpace(ch.NodeID)
+	localUsername := strings.TrimSpace(ch.LocalUsername)
+	if nodeID == "" || localUsername == "" {
+		return
+	}
+	reason := fmt.Sprintf(
+		"绑定 challenge 失败收敛：node=%s local=%s billing=%s status=%s reason=%s",
+		nodeID,
+		localUsername,
+		strings.TrimSpace(ch.BillingUsername),
+		strings.TrimSpace(ch.Status),
+		strings.TrimSpace(ch.FailReason),
+	)
+	s.enqueueNodeAction(nodeID, Action{
+		Type:     "kill_all_processes",
+		Username: localUsername,
+		Reason:   reason + "；强制终止全部进程",
+	})
+	s.enqueueNodeAction(nodeID, Action{
+		Type:     "kick_ssh_user",
+		Username: localUsername,
+		Reason:   reason + "；强制断开 SSH 会话",
+	})
+	s.enqueueNodeAction(nodeID, Action{
+		Type:   "force_sync",
+		Reason: reason + "；立即刷新 SSH 校验缓存",
+	})
+}
+
+func (s *Server) sweepNodeBindFailures(ctx context.Context, nodeID string) {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return
+	}
+	policy, err := s.store.GetNodeBindSecurityPolicy(ctx)
+	if err != nil {
+		log.Printf("[warn] 读取绑定安全策略失败：node=%s err=%v", nodeID, err)
+		return
+	}
+	items, err := s.store.PullNodeBindFailureActions(ctx, nodeID, time.Now(), policy)
+	if err != nil {
+		log.Printf("[warn] 扫描绑定 challenge 失败收敛任务失败：node=%s err=%v", nodeID, err)
+		return
+	}
+	for _, ch := range items {
+		s.enqueueBindFailureConvergenceAction(ch)
+	}
+}
+
 func (s *Server) nextMemoryLimitAction(nodeID, localUsername string, limitGB float64, reason string, force bool) (Action, bool) {
 	nodeID = strings.TrimSpace(nodeID)
 	localUsername = strings.TrimSpace(localUsername)
 	if nodeID == "" || localUsername == "" {
 		return Action{}, false
 	}
-	key := quotaStateKey(nodeID, localUsername)
+	key := memoryLimitStateKey(nodeID, localUsername)
 	s.memoryLimitMu.Lock()
 	prev, hadPrev := s.memoryLimitState[key]
 	if !force {
@@ -256,6 +377,67 @@ func (s *Server) nextGPUAccessAction(nodeID, localUsername string, blocked bool,
 	}, true
 }
 
+func normalizeGPUIndices(indices []int) []int {
+	set := make(map[int]struct{}, len(indices))
+	for _, idx := range indices {
+		if idx >= 0 {
+			set[idx] = struct{}{}
+		}
+	}
+	out := make([]int, 0, len(set))
+	for idx := range set {
+		out = append(out, idx)
+	}
+	sort.Ints(out)
+	return out
+}
+
+func gpuIndicesSignature(indices []int) string {
+	if len(indices) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(indices))
+	for _, idx := range indices {
+		parts = append(parts, strconv.Itoa(idx))
+	}
+	return strings.Join(parts, ",")
+}
+
+func (s *Server) nextGPUVisibilityAction(nodeID, localUsername string, gpuIndices []int, reason string, force bool) (Action, bool) {
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	if nodeID == "" || localUsername == "" {
+		return Action{}, false
+	}
+	normalized := normalizeGPUIndices(gpuIndices)
+	sig := gpuIndicesSignature(normalized)
+	key := quotaStateKey(nodeID, localUsername)
+	s.gpuVisibilityMu.Lock()
+	prevSig, hadPrev := s.gpuVisibilityState[key]
+	if !force {
+		if sig == "" && !hadPrev {
+			s.gpuVisibilityMu.Unlock()
+			return Action{}, false
+		}
+		if hadPrev && prevSig == sig {
+			s.gpuVisibilityMu.Unlock()
+			return Action{}, false
+		}
+	}
+	if sig == "" {
+		delete(s.gpuVisibilityState, key)
+	} else {
+		s.gpuVisibilityState[key] = sig
+	}
+	s.gpuVisibilityMu.Unlock()
+	return Action{
+		Type:       "set_gpu_visibility",
+		Username:   localUsername,
+		GPUIndices: normalized,
+		Reason:     reason,
+	}, true
+}
+
 func (s *Server) clearNodeCPUQuotaState(nodeID string) {
 	nodeID = strings.TrimSpace(nodeID)
 	if nodeID == "" {
@@ -269,6 +451,68 @@ func (s *Server) clearNodeCPUQuotaState(nodeID string) {
 		}
 	}
 	s.cpuQuotaMu.Unlock()
+}
+
+func manualCPUQuotaReason(limit NodeUserCPULimit) string {
+	base := strings.TrimSpace(limit.Reason)
+	if base == "" {
+		base = "管理员手动设置限速"
+	}
+	return fmt.Sprintf("管理员手动限速优先（%.2f%%）：%s", limit.CPUQuotaPercent, base)
+}
+
+func (s *Server) applyManualCPUQuotaOverride(
+	ctx context.Context,
+	nodeID string,
+	localUsername string,
+	targetQuota float64,
+	reason string,
+) (float64, string, error) {
+	limit, ok, err := s.store.GetNodeUserCPULimit(ctx, nodeID, localUsername)
+	if err != nil {
+		return targetQuota, reason, err
+	}
+	if !ok || limit == nil {
+		return targetQuota, reason, nil
+	}
+	return limit.CPUQuotaPercent, manualCPUQuotaReason(*limit), nil
+}
+
+func manualMemoryLimitReason(limit NodeUserMemoryLimit) string {
+	base := strings.TrimSpace(limit.Reason)
+	if base == "" {
+		base = "管理员手动设置内存限制"
+	}
+	return fmt.Sprintf("管理员手动内存限制优先（%.2f GB）：%s", limit.MemoryLimitGB, base)
+}
+
+func (s *Server) applyManualMemoryLimitOverride(
+	ctx context.Context,
+	nodeID string,
+	localUsername string,
+	targetLimitGB float64,
+	reason string,
+) (float64, string, error) {
+	limit, ok, err := s.store.GetNodeUserMemoryLimit(ctx, nodeID, localUsername)
+	if err != nil {
+		return targetLimitGB, reason, err
+	}
+	if !ok || limit == nil {
+		return targetLimitGB, reason, nil
+	}
+	return limit.MemoryLimitGB, manualMemoryLimitReason(*limit), nil
+}
+
+func manualGPUVisibilityReason(limit NodeUserGPUVisibility) string {
+	indices := normalizeGPUIndices(limit.GPUIndices)
+	if len(indices) == 0 {
+		return "管理员手动 GPU 可见限制优先：解除限制"
+	}
+	base := strings.TrimSpace(limit.Reason)
+	if base == "" {
+		base = "管理员手动设置 GPU 可见限制"
+	}
+	return fmt.Sprintf("管理员手动 GPU 可见限制优先（仅可见 GPU %s）：%s", gpuIndicesSignature(indices), base)
 }
 
 func (s *Server) resolveNodeQuotaPolicyFromStatus(node NodeStatus) (enabled bool, threshold float64, limited float64, blocked float64) {
@@ -327,6 +571,12 @@ func (s *Server) refreshCPUQuotaForBillingUser(ctx context.Context, billingUsern
 	if reasonPrefix == "" {
 		reasonPrefix = "管理员操作后重新评估 CPU 限速"
 	}
+	monthlyCfg, err := s.store.GetMonthlyPointsConfig(ctx)
+	if err != nil {
+		return 0, err
+	}
+	maxOverdraftLimit := normalizeMonthlyMaxOverdraftLimit(monthlyCfg.MaxOverdraftLimit)
+	overdraftExceeded := isOverdraftExceeded(effectiveBalance, maxOverdraftLimit)
 	queued := 0
 	for _, t := range targets {
 		node, ok := nodeByID[t.NodeID]
@@ -340,15 +590,19 @@ func (s *Server) refreshCPUQuotaForBillingUser(ctx context.Context, billingUsern
 		case !enabled:
 			quota = 0
 			reason = reasonPrefix + "：节点积分拦截关闭，解除限速"
-		case effectiveBalance <= 0:
+		case overdraftExceeded:
 			quota = blockedQuota
-			reason = fmt.Sprintf("%s：余额 %.2f<=0，执行欠费强限速（%.2f%%）", reasonPrefix, effectiveBalance, blockedQuota)
+			reason = fmt.Sprintf("%s：余额 %.2f 已超过每月欠费上限 %.2f，执行欠费强限速（%.2f%%）", reasonPrefix, effectiveBalance, maxOverdraftLimit, blockedQuota)
 		case effectiveBalance <= threshold:
 			quota = limitedQuota
 			reason = fmt.Sprintf("%s：余额 %.2f<=阈值 %.2f，执行低积分限速（%.2f%%）", reasonPrefix, effectiveBalance, threshold, limitedQuota)
 		default:
 			quota = 0
 			reason = fmt.Sprintf("%s：余额 %.2f>阈值 %.2f，解除限速", reasonPrefix, effectiveBalance, threshold)
+		}
+		quota, reason, err = s.applyManualCPUQuotaOverride(ctx, t.NodeID, t.LocalUsername, quota, reason)
+		if err != nil {
+			return queued, err
 		}
 		if s.enqueueCPUQuotaAction(t.NodeID, t.LocalUsername, quota, reason, true) {
 			queued++
@@ -459,6 +713,10 @@ func (s *Server) refreshMemoryLimitForBillingUser(ctx context.Context, billingUs
 			targetLimitGB = 0
 			actionReason = fmt.Sprintf("%s：余额 %.2f 未超过每月欠费上限 %.2f，解除内存限额", reasonPrefix, effectiveBalance, maxOverdraftLimit)
 		}
+		targetLimitGB, actionReason, err = s.applyManualMemoryLimitOverride(ctx, t.NodeID, t.LocalUsername, targetLimitGB, actionReason)
+		if err != nil {
+			return queued, err
+		}
 		action, ok := s.nextMemoryLimitAction(t.NodeID, t.LocalUsername, targetLimitGB, actionReason, true)
 		if !ok {
 			continue
@@ -482,7 +740,7 @@ func (s *Server) RouterWeb() *gin.Engine {
 	})
 	r.GET("/metrics", func(c *gin.Context) {
 		c.Header("Content-Type", "text/plain; charset=utf-8")
-		c.String(http.StatusOK, s.metr.render(s.queue.Len()))
+		c.String(http.StatusOK, s.metr.render())
 	})
 
 	api := r.Group("/api")
@@ -508,6 +766,7 @@ func (s *Server) RouterWeb() *gin.Engine {
 	user.Use(s.authSession())
 	user.GET("/me", s.handleUserMe)
 	user.GET("/me/balance", s.handleUserMyBalance)
+	user.GET("/me/points-increments", s.handleUserMyPointsIncrements)
 	user.GET("/me/usage", s.handleUserMyUsage)
 	user.PUT("/me/profile", s.handleUserMyProfileUpdate)
 	user.GET("/me/profile-change-requests", s.handleUserMyProfileChangeRequests)
@@ -517,14 +776,9 @@ func (s *Server) RouterWeb() *gin.Engine {
 	user.POST("/accounts", s.handleUserAccountsUpsert)
 	user.PUT("/accounts", s.handleUserAccountsUpdate)
 	user.DELETE("/accounts", s.handleUserAccountsDelete)
-
-	// 用户自助登记/开号申请（管理员审核）
-	api.GET("/requests", s.handleUserRequestsList)
-	api.POST("/requests/bind", s.handleUserBindRequestsCreate)
-	api.POST("/requests/open", s.handleUserOpenRequestCreate)
-
-	// 排队接口（可选）：当前实现为“纯排队/不分配”的可运行版本，便于后续接入真实资源分配策略
-	api.POST("/gpu/request", s.handleGPURequest)
+	user.GET("/requests", s.handleUserRequestsList)
+	user.POST("/requests/bind", s.handleUserBindRequestsCreate)
+	user.POST("/requests/open", s.handleUserOpenRequestCreate)
 
 	admin := api.Group("/admin")
 	admin.Use(s.authAdmin())
@@ -546,7 +800,6 @@ func (s *Server) RouterWeb() *gin.Engine {
 	admin.POST("/users/graduation-reminders/send", s.requireSuperAdmin(), s.handleAdminGraduationRemindersSend)
 	admin.GET("/prices", s.requireSuperAdmin(), s.handleAdminPrices)
 	admin.POST("/prices", s.requireSuperAdmin(), s.handleAdminSetPrice)
-	admin.GET("/gpu/queue", s.requireSuperAdmin(), s.handleAdminGPUQueue)
 	admin.GET("/requests", s.requireReviewPermission(), s.handleAdminRequestsList)
 	admin.GET("/registration-requests/overview", s.requireReviewPermission(), s.handleAdminRegistrationRequestsOverview)
 	admin.POST("/registration-requests/:id/approve", s.requireReviewPermission(), s.handleAdminRegistrationRequestApprove)
@@ -570,6 +823,11 @@ func (s *Server) RouterWeb() *gin.Engine {
 	admin.PUT("/notes/:id", s.requireSuperAdmin(), s.handleAdminNotesUpdate)
 	admin.DELETE("/notes/:id", s.requireSuperAdmin(), s.handleAdminNotesDelete)
 	admin.GET("/usage", s.requireSuperAdmin(), s.handleAdminUsage)
+	admin.GET("/usage/days", s.requireSuperAdmin(), s.handleAdminUsageDays)
+	admin.GET("/usage/range-estimate", s.requireSuperAdmin(), s.handleAdminUsageRangeEstimate)
+	admin.GET("/usage/retention", s.requireSuperAdmin(), s.handleAdminUsageRetentionGet)
+	admin.POST("/usage/retention", s.requireSuperAdmin(), s.handleAdminUsageRetentionSet)
+	admin.POST("/usage/delete-range", s.requireSuperAdmin(), s.handleAdminUsageDeleteRange)
 	admin.GET("/nodes", s.requireNodesPermission(), s.handleAdminNodes)
 	admin.GET("/nodes/:id/detail", s.requireNodesPermission(), s.handleAdminNodeDetail)
 	admin.GET("/nodes/:id/security-events", s.requireNodesPermission(), s.handleAdminNodeSecurityEvents)
@@ -579,6 +837,15 @@ func (s *Server) RouterWeb() *gin.Engine {
 	admin.GET("/nodes/:id/disk-quota", s.requireNodesPermission(), s.handleAdminNodeDiskQuotaGet)
 	admin.POST("/nodes/:id/disk-quota", s.requireNodesModifyPermission(), s.handleAdminNodeDiskQuotaSet)
 	admin.POST("/nodes/:id/disk-quota/apply", s.requireNodesModifyPermission(), s.handleAdminNodeDiskQuotaApply)
+	admin.GET("/nodes/:id/cpu-limits", s.requireNodesPermission(), s.handleAdminNodeCPULimits)
+	admin.POST("/nodes/:id/cpu-limits", s.requireNodesModifyPermission(), s.handleAdminNodeCPULimitUpsert)
+	admin.DELETE("/nodes/:id/cpu-limits", s.requireNodesModifyPermission(), s.handleAdminNodeCPULimitDelete)
+	admin.GET("/nodes/:id/memory-limits", s.requireNodesPermission(), s.handleAdminNodeMemoryLimits)
+	admin.POST("/nodes/:id/memory-limits", s.requireNodesModifyPermission(), s.handleAdminNodeMemoryLimitUpsert)
+	admin.DELETE("/nodes/:id/memory-limits", s.requireNodesModifyPermission(), s.handleAdminNodeMemoryLimitDelete)
+	admin.GET("/nodes/:id/gpu-visibility", s.requireNodesPermission(), s.handleAdminNodeGPUVisibilityGet)
+	admin.POST("/nodes/:id/gpu-visibility", s.requireNodesModifyPermission(), s.handleAdminNodeGPUVisibilityUpsert)
+	admin.DELETE("/nodes/:id/gpu-visibility", s.requireNodesModifyPermission(), s.handleAdminNodeGPUVisibilityDelete)
 	admin.GET("/nodes/:id/price", s.requireNodesPermission(), s.handleAdminNodePriceGet)
 	admin.POST("/nodes/:id/price", s.requireNodesModifyPermission(), s.handleAdminNodePriceSet)
 	admin.GET("/nodes/:id/ssh-exclusive", s.requireNodesPermission(), s.handleAdminNodeSSHExclusiveGet)
@@ -590,7 +857,13 @@ func (s *Server) RouterWeb() *gin.Engine {
 	admin.POST("/nodes/:id/ssh/disconnect-user", s.requireNodesModifyPermission(), s.handleAdminNodeDisconnectSSHUser)
 	admin.POST("/nodes/:id/ssh/disconnect-all", s.requireNodesModifyPermission(), s.handleAdminNodeDisconnectAllSSH)
 	admin.POST("/nodes/:id/processes/kill-all-users", s.requireNodesModifyPermission(), s.handleAdminNodeKillAllUserProcesses)
+	admin.POST("/nodes/:id/processes/kill-user", s.requireNodesModifyPermission(), s.handleAdminNodeKillUserProcesses)
 	admin.GET("/ha/status", s.requireSuperAdmin(), s.handleAdminHAStatus)
+	admin.GET("/ha/sync/config", s.requireSuperAdmin(), s.handleAdminHASyncConfigGet)
+	admin.POST("/ha/sync/config", s.requireSuperAdmin(), s.handleAdminHASyncConfigSet)
+	admin.GET("/ha/sync/runs", s.requireSuperAdmin(), s.handleAdminHASyncRuns)
+	admin.POST("/ha/sync/now", s.requireSuperAdmin(), s.handleAdminHASyncNow)
+	admin.POST("/ha/failover/activate", s.requireSuperAdmin(), s.handleAdminHAFailoverActivate)
 	admin.GET("/usage/export.csv", s.requireSuperAdmin(), s.handleAdminUsageExportCSV)
 	admin.GET("/mail/settings", s.requireSuperAdmin(), s.handleAdminMailSettingsGet)
 	admin.POST("/mail/settings", s.requireSuperAdmin(), s.handleAdminMailSettingsSet)
@@ -599,8 +872,17 @@ func (s *Server) RouterWeb() *gin.Engine {
 	admin.GET("/guideline", s.requireSuperAdmin(), s.handleAdminGuidelineGet)
 	admin.POST("/guideline", s.requireSuperAdmin(), s.handleAdminGuidelineSet)
 	admin.GET("/accounts", s.requireSuperAdmin(), s.handleAdminAccountsList)
+	admin.GET("/accounts/bind-policy", s.requireSuperAdmin(), s.handleAdminBindPolicyGet)
+	admin.POST("/accounts/bind-policy", s.requireSuperAdmin(), s.handleAdminBindPolicySet)
+	admin.GET("/accounts/bind-cooldowns", s.requireSuperAdmin(), s.handleAdminBindCooldownsList)
+	admin.POST("/accounts/bind-cooldowns/unfreeze", s.requireSuperAdmin(), s.handleAdminBindCooldownUnfreeze)
 	admin.GET("/accounts/mapping-risks", s.requireSuperAdmin(), s.handleAdminAccountMappingRisks)
+	admin.POST("/accounts/mapping-risks/clear", s.requireSuperAdmin(), s.handleAdminAccountMappingRiskClear)
 	admin.GET("/accounts/provision-logs", s.requireSuperAdmin(), s.handleAdminAccountProvisionLogs)
+	admin.GET("/accounts/unbind-records", s.requireSuperAdmin(), s.handleAdminUnbindRecordsList)
+	admin.POST("/accounts/unbind-request", s.requireSuperAdmin(), s.handleAdminAccountUnbindRequestCreate)
+	admin.GET("/cpu-limits", s.requireSuperAdmin(), s.handleAdminCPULimits)
+	admin.GET("/memory-limits", s.requireSuperAdmin(), s.handleAdminMemoryLimits)
 	admin.POST("/accounts", s.requireSuperAdmin(), s.handleAdminAccountsUpsert)
 	admin.POST("/accounts/provision", s.requireSuperAdmin(), s.handleAdminAccountProvision)
 	admin.POST("/accounts/disable", s.requireSuperAdmin(), s.handleAdminAccountDisable)
@@ -627,18 +909,25 @@ func (s *Server) RouterWeb() *gin.Engine {
 	admin.GET("/stats/platform-users/:username/nodes", s.requireBoardPermission(), s.handleAdminStatsPlatformUserNodes)
 	admin.GET("/stats/monthly", s.requireBoardPermission(), s.handleAdminStatsMonthly)
 	admin.GET("/stats/recharges", s.requireBoardPermission(), s.handleAdminStatsRecharges)
-	admin.GET("/points/users", s.requireSuperAdmin(), s.handleAdminPointsUsers)
-	admin.GET("/points/records", s.requireSuperAdmin(), s.handleAdminPointsRecords)
-	admin.POST("/points/adjust", s.requireSuperAdmin(), s.handleAdminPointsAdjust)
-	admin.POST("/points/batch-grant", s.requireSuperAdmin(), s.handleAdminPointsBatchGrant)
-	admin.POST("/points/batch-adjust-users", s.requireSuperAdmin(), s.handleAdminPointsBatchAdjustUsers)
-	admin.GET("/points/special-rules", s.requireSuperAdmin(), s.handleAdminPointsSpecialRulesList)
-	admin.POST("/points/special-rules", s.requireSuperAdmin(), s.handleAdminPointsSpecialRulesUpsert)
-	admin.DELETE("/points/special-rules/:username", s.requireSuperAdmin(), s.handleAdminPointsSpecialRulesDelete)
-	admin.GET("/points/monthly-config", s.requireSuperAdmin(), s.handleAdminPointsMonthlyConfigGet)
-	admin.POST("/points/monthly-config", s.requireSuperAdmin(), s.handleAdminPointsMonthlyConfigSet)
-	admin.GET("/points/monthly-reset/status", s.requireSuperAdmin(), s.handleAdminPointsMonthlyResetStatus)
-	admin.POST("/points/monthly-reset", s.requireSuperAdmin(), s.handleAdminPointsMonthlyReset)
+	admin.GET("/points/users", s.requirePointsPermission(), s.handleAdminPointsUsers)
+	admin.GET("/points/records", s.requirePointsPermission(), s.handleAdminPointsRecords)
+	admin.POST("/points/adjust", s.requirePointsPermission(), s.handleAdminPointsAdjust)
+	admin.POST("/points/batch-grant", s.requirePointsPermission(), s.handleAdminPointsBatchGrant)
+	admin.POST("/points/batch-adjust-users", s.requirePointsPermission(), s.handleAdminPointsBatchAdjustUsers)
+	admin.POST("/points/batch-set-users", s.requirePointsPermission(), s.handleAdminPointsBatchSetUsers)
+	admin.GET("/points/special-rules", s.requirePointsPermission(), s.handleAdminPointsSpecialRulesList)
+	admin.POST("/points/special-rules", s.requirePointsPermission(), s.handleAdminPointsSpecialRulesUpsert)
+	admin.DELETE("/points/special-rules/:username", s.requirePointsPermission(), s.handleAdminPointsSpecialRulesDelete)
+	admin.GET("/points/monthly-config", s.requirePointsPermission(), s.handleAdminPointsMonthlyConfigGet)
+	admin.POST("/points/monthly-config", s.requirePointsPermission(), s.handleAdminPointsMonthlyConfigSet)
+	admin.GET("/points/monthly-reset/status", s.requirePointsPermission(), s.handleAdminPointsMonthlyResetStatus)
+	admin.POST("/points/monthly-reset", s.requirePointsPermission(), s.handleAdminPointsMonthlyReset)
+
+	// 兼容单端口部署：未启用 internal_listen_addr 时，Agent/Registry/HA 内部接口仍挂在 /api 下。
+	// 启用 internal 独立端口后，这些接口仅在 RouterInternal 暴露。
+	if strings.TrimSpace(s.cfg.InternalListenAddr) == "" {
+		s.registerInternalAPIRoutes(api)
+	}
 
 	s.maybeServeWeb(r)
 	return r
@@ -653,16 +942,25 @@ func (s *Server) RouterInternal() *gin.Engine {
 	})
 
 	api := r.Group("/api")
-	api.Use(s.authAgent())
-	api.POST("/metrics", s.handleMetrics)
-	api.GET("/node/actions", s.handleNodeActions)
-	api.GET("/ha/status", s.handleHAStatus)
-	api.GET("/registry/resolve", s.handleRegistryResolve)
-	api.GET("/registry/nodes/:node_id/guard-state", s.handleRegistryNodeGuardState)
-	api.GET("/registry/nodes/:node_id/users.txt", s.handleRegistryNodeUsersTxt)
-	api.GET("/registry/nodes/:node_id/blocked.txt", s.handleRegistryNodeBlockedUsersTxt)
-	api.GET("/registry/nodes/:node_id/exempt.txt", s.handleRegistryNodeExemptUsersTxt)
+	s.registerInternalAPIRoutes(api)
 	return r
+}
+
+func (s *Server) registerInternalAPIRoutes(api *gin.RouterGroup) {
+	if api == nil {
+		return
+	}
+	api.POST("/registry/bind-claim", s.handleRegistryBindClaim)
+	internal := api.Group("")
+	internal.Use(s.authAgent())
+	internal.POST("/metrics", s.handleMetrics)
+	internal.GET("/node/actions", s.handleNodeActions)
+	internal.GET("/ha/status", s.handleHAStatus)
+	internal.GET("/registry/resolve", s.handleRegistryResolve)
+	internal.GET("/registry/nodes/:node_id/guard-state", s.handleRegistryNodeGuardState)
+	internal.GET("/registry/nodes/:node_id/users.txt", s.handleRegistryNodeUsersTxt)
+	internal.GET("/registry/nodes/:node_id/blocked.txt", s.handleRegistryNodeBlockedUsersTxt)
+	internal.GET("/registry/nodes/:node_id/exempt.txt", s.handleRegistryNodeExemptUsersTxt)
 }
 
 func (s *Server) authSession() gin.HandlerFunc {
@@ -727,7 +1025,7 @@ func (s *Server) authAdmin() gin.HandlerFunc {
 		if strings.HasPrefix(auth, prefix) && strings.TrimSpace(strings.TrimPrefix(auth, prefix)) == s.cfg.AdminToken {
 			c.Set("auth_method", "token")
 			c.Set("auth_role", "admin")
-			c.Set("auth_perms", uint32(permViewBoard|permViewNodes|permManageNodes|permReviewRequests))
+			c.Set("auth_perms", uint32(permViewBoard|permViewNodes|permManageNodes|permReviewRequests|permManagePoints))
 			c.Next()
 			return
 		}
@@ -931,6 +1229,21 @@ func (s *Server) requireReviewPermission() gin.HandlerFunc {
 			return
 		}
 		if role == "power_user" && (getAuthPerms(c)&permReviewRequests) != 0 {
+			c.Next()
+			return
+		}
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+	}
+}
+
+func (s *Server) requirePointsPermission() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		role := getAuthRole(c)
+		if role == "admin" {
+			c.Next()
+			return
+		}
+		if role == "power_user" && (getAuthPerms(c)&permManagePoints) != 0 {
 			c.Next()
 			return
 		}
@@ -1983,6 +2296,99 @@ func (s *Server) handleUserMyBalance(c *gin.Context) {
 	})
 }
 
+func userPointsRecordReason(row PointsOperationRecord) string {
+	reason := strings.TrimSpace(row.Reason)
+	if reason != "" {
+		return reason
+	}
+	switch strings.TrimSpace(row.Method) {
+	case "monthly_reset":
+		return "月初通用积分重置"
+	case "monthly_carryover_reset":
+		return "月初结转积分重置"
+	case "points_adjust_plus":
+		return "管理员手动加分"
+	case "points_adjust_carry_plus":
+		return "管理员手动增加结转积分"
+	case "points_adjust_node_plus":
+		return "管理员手动增加节点专属积分"
+	case "points_batch_plus", "points_batch_grant":
+		return "管理员全体加分"
+	case "points_batch_carry_plus":
+		return "管理员全体增加结转积分"
+	case "points_batch_node_plus":
+		return "管理员全体增加节点专属积分"
+	case "points_batch_filtered_plus":
+		return "管理员按筛选结果批量加分"
+	case "points_batch_filtered_carry_plus":
+		return "管理员按筛选结果批量增加结转积分"
+	case "points_batch_filtered_node_plus":
+		return "管理员按筛选结果批量增加节点专属积分"
+	case "points_batch_filtered_set":
+		return "管理员按筛选结果设定通用积分"
+	case "points_batch_filtered_set_carry":
+		return "管理员按筛选结果设定结转积分"
+	case "points_batch_filtered_set_node":
+		return "管理员按筛选结果设定节点专属积分"
+	default:
+		return ""
+	}
+}
+
+func (s *Server) handleUserMyPointsIncrements(c *gin.Context) {
+	username := strings.TrimSpace(fmt.Sprintf("%v", c.MustGet("auth_user")))
+	if username == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "username 不能为空"})
+		return
+	}
+	limit := 200
+	if v := strings.TrimSpace(c.Query("limit")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			limit = n
+		}
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	sinceID := int64(0)
+	if v := strings.TrimSpace(c.Query("since_id")); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			sinceID = n
+		}
+	}
+
+	rows, err := s.store.ListUserPointsIncreaseRecords(c.Request.Context(), username, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	latestRechargeID := int64(0)
+	unreadCount := 0
+	unreadAmount := 0.0
+	for i := range rows {
+		if rows[i].RechargeID > latestRechargeID {
+			latestRechargeID = rows[i].RechargeID
+		}
+		rows[i].Reason = userPointsRecordReason(rows[i])
+		if rows[i].RechargeID > sinceID {
+			if rows[i].Amount > 0 {
+				unreadCount++
+				unreadAmount += rows[i].Amount
+			} else if rows[i].Method == "monthly_reset" || rows[i].Method == "monthly_carryover_reset" {
+				unreadCount++
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"records":            rows,
+		"unread_count":       unreadCount,
+		"unread_amount":      unreadAmount,
+		"latest_recharge_id": latestRechargeID,
+	})
+}
+
 func (s *Server) handleUserMyUsage(c *gin.Context) {
 	username := strings.TrimSpace(fmt.Sprintf("%v", c.MustGet("auth_user")))
 	limit := 200
@@ -2086,6 +2492,7 @@ func (s *Server) handleUserMyProfileChangeRequests(c *gin.Context) {
 type userAccountUpsertReq struct {
 	NodeID        string `json:"node_id"`
 	LocalUsername string `json:"local_username"`
+	Message       string `json:"message"`
 }
 
 type userAccountUpdateReq struct {
@@ -2095,6 +2502,157 @@ type userAccountUpdateReq struct {
 	NewLocalUsername string `json:"new_local_username"`
 }
 
+type userMappedNodePricePolicy struct {
+	nodePrice       *float64
+	cpuPrice        *float64
+	modelOverrides  map[string]float64
+	modelPriceIndex PriceIndex
+}
+
+func mapPriceRowsFromOverrides(overrides map[string]float64) []PriceRow {
+	if len(overrides) == 0 {
+		return nil
+	}
+	rows := make([]PriceRow, 0, len(overrides))
+	for model, price := range overrides {
+		rows = append(rows, PriceRow{Model: model, Price: price})
+	}
+	return rows
+}
+
+func resolveMappedNodeGPUPrice(
+	gpuModel string,
+	policy userMappedNodePricePolicy,
+	globalPriceIndex PriceIndex,
+	defaultGPUPrice float64,
+) (float64, string) {
+	if strings.TrimSpace(gpuModel) != "" {
+		if v, ok := policy.modelPriceIndex.MatchPrice(gpuModel); ok {
+			return v, "node_model_override"
+		}
+	}
+	if policy.nodePrice != nil {
+		return *policy.nodePrice, "node_price_policy"
+	}
+	if strings.TrimSpace(gpuModel) != "" {
+		if v, ok := globalPriceIndex.MatchPrice(gpuModel); ok {
+			return v, "resource_prices_gpu_model"
+		}
+	}
+	return defaultGPUPrice, "config_default_gpu_price"
+}
+
+func (s *Server) buildUserMappedNodeInfos(ctx context.Context, rows []UserNodeAccount) ([]UserMappedNodeInfo, error) {
+	if len(rows) == 0 {
+		return []UserMappedNodeInfo{}, nil
+	}
+	globalPrices, err := s.store.ListPrices(ctx)
+	if err != nil {
+		return nil, err
+	}
+	globalPriceIndex := NewPriceIndex(globalPrices)
+	defaultCPUPrice, defaultCPUPriceSource := s.defaultCPUPricePerCoreMinuteWithSource(ctx)
+
+	statusCache := make(map[string]*NodeStatus, len(rows))
+	pricePolicyCache := make(map[string]userMappedNodePricePolicy, len(rows))
+	out := make([]UserMappedNodeInfo, 0, len(rows))
+
+	for _, r := range rows {
+		nodeID := strings.TrimSpace(r.NodeID)
+		localUsername := strings.TrimSpace(r.LocalUsername)
+		if nodeID == "" || localUsername == "" {
+			continue
+		}
+		info := UserMappedNodeInfo{
+			NodeID:              nodeID,
+			LocalUsername:       localUsername,
+			HomeQuotaMountpoint: "/home",
+		}
+
+		nodeStatus, seen := statusCache[nodeID]
+		if !seen {
+			st, err := s.store.GetNodeStatus(ctx, nodeID)
+			if err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					statusCache[nodeID] = nil
+				} else {
+					return nil, err
+				}
+			} else {
+				statusCache[nodeID] = &st
+				nodeStatus = &st
+			}
+		}
+		if nodeStatus != nil {
+			info.CPUModel = strings.TrimSpace(nodeStatus.CPUModel)
+			info.CPUCount = nodeStatus.CPUCount
+			info.GPUModel = strings.TrimSpace(nodeStatus.GPUModel)
+			info.GPUCount = nodeStatus.GPUCount
+		}
+
+		policy, seen := pricePolicyCache[nodeID]
+		if !seen {
+			gpuPrice, cpuPrice, modelOverrides, err := s.store.GetNodePricePolicy(ctx, nodeID)
+			if err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					policy = userMappedNodePricePolicy{
+						nodePrice:       nil,
+						cpuPrice:        nil,
+						modelOverrides:  nil,
+						modelPriceIndex: NewPriceIndex(nil),
+					}
+				} else {
+					return nil, err
+				}
+			} else {
+				policy = userMappedNodePricePolicy{
+					nodePrice:       gpuPrice,
+					cpuPrice:        cpuPrice,
+					modelOverrides:  modelOverrides,
+					modelPriceIndex: NewPriceIndex(mapPriceRowsFromOverrides(modelOverrides)),
+				}
+			}
+			pricePolicyCache[nodeID] = policy
+		}
+
+		gpuPrice, gpuSource := resolveMappedNodeGPUPrice(
+			info.GPUModel,
+			policy,
+			globalPriceIndex,
+			s.cfg.DefaultPricePerMinute,
+		)
+		info.EffectiveGPUPricePerMinute = gpuPrice
+		info.GPUPriceSource = gpuSource
+
+		info.EffectiveCPUPricePerCoreMinute = defaultCPUPrice
+		info.CPUPriceSource = defaultCPUPriceSource
+		if policy.cpuPrice != nil {
+			info.EffectiveCPUPricePerCoreMinute = *policy.cpuPrice
+			info.CPUPriceSource = "node_cpu_price_policy"
+		}
+
+		quota, found, err := s.store.GetNodeUserDiskQuota(ctx, nodeID, localUsername, "/home")
+		if err != nil {
+			return nil, err
+		}
+		if found && quota != nil {
+			info.HomeQuotaMountpoint = strings.TrimSpace(quota.Mountpoint)
+			used := quota.UsedMB
+			soft := quota.SoftMB
+			hard := quota.HardMB
+			updatedAt := quota.UpdatedAt
+			info.HomeQuotaUsedMB = &used
+			info.HomeQuotaSoftMB = &soft
+			info.HomeQuotaHardMB = &hard
+			info.HomeQuotaUpdatedAt = &updatedAt
+			info.HomeQuotaEnforced = soft > 0 || hard > 0
+		}
+
+		out = append(out, info)
+	}
+	return out, nil
+}
+
 func (s *Server) handleUserAccountsList(c *gin.Context) {
 	billing := strings.TrimSpace(fmt.Sprintf("%v", c.MustGet("auth_user")))
 	rows, err := s.store.ListUserNodeAccountsByBilling(c.Request.Context(), billing, 5000)
@@ -2102,7 +2660,41 @@ func (s *Server) handleUserAccountsList(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"accounts": rows})
+	cooldown, err := s.store.GetUserNodeBindCooldown(c.Request.Context(), billing)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	activeChallenge, hasActive, err := s.store.GetLatestActiveUserBindChallenge(c.Request.Context(), billing, time.Now())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	activePayload := gin.H(nil)
+	if hasActive {
+		activePayload = gin.H{
+			"challenge_id":      activeChallenge.ChallengeID,
+			"request_id":        activeChallenge.RequestID,
+			"node_id":           activeChallenge.NodeID,
+			"local_username":    activeChallenge.LocalUsername,
+			"status":            activeChallenge.Status,
+			"expires_at":        activeChallenge.ExpiresAt,
+			"challenge_token":   activeChallenge.ChallengeToken,
+			"claim_command":     fmt.Sprintf("gpuops-claim %s", activeChallenge.ChallengeToken),
+			"failure_processed": activeChallenge.FailureProcessed,
+		}
+	}
+	mappedNodeInfos, err := s.buildUserMappedNodeInfos(c.Request.Context(), rows)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"accounts":          rows,
+		"active_challenge":  activePayload,
+		"bind_cooldown":     cooldown,
+		"mapped_node_infos": mappedNodeInfos,
+	})
 }
 
 func (s *Server) handleUserProvisionMessagesList(c *gin.Context) {
@@ -2152,6 +2744,7 @@ func (s *Server) handleUserAccountsUpsert(c *gin.Context) {
 	}
 	req.NodeID = strings.TrimSpace(req.NodeID)
 	req.LocalUsername = strings.TrimSpace(req.LocalUsername)
+	req.Message = strings.TrimSpace(req.Message)
 	if req.NodeID == "" || req.LocalUsername == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id/local_username 不能为空"})
 		return
@@ -2170,150 +2763,179 @@ func (s *Server) handleUserAccountsUpsert(c *gin.Context) {
 		})
 		return
 	}
-	mappedBilling, mapped, err := s.store.ResolveBillingUsername(c.Request.Context(), req.NodeID, req.LocalUsername)
+	policy, err := s.store.GetNodeBindSecurityPolicy(c.Request.Context())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	if mapped && strings.TrimSpace(mappedBilling) != "" && strings.TrimSpace(mappedBilling) != billing {
-		c.JSON(http.StatusConflict, gin.H{
-			"error":                   fmt.Sprintf("节点 %s 的账号 %s 已绑定到平台账号 %s。若冒充绑定他人账号将按平台规则追责，请更换节点账号或联系管理员核验。", req.NodeID, req.LocalUsername, mappedBilling),
-			"reason":                  "mapping_exists_other_user",
-			"node_id":                 req.NodeID,
-			"local_username":          req.LocalUsername,
-			"mapped_billing_username": mappedBilling,
-		})
+	challengeToken, err := randomTokenURLSafe(24)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "生成 challenge token 失败"})
 		return
 	}
-	if err := s.store.UpsertUserNodeAccountWithAudit(
-		c.Request.Context(),
-		req.NodeID,
-		req.LocalUsername,
-		billing,
-		billing,
-		"user",
-		"用户新增/更新节点账号映射",
-	); err != nil {
+	var challenge UserNodeBindChallenge
+	now := time.Now()
+	if err := s.store.WithTx(c.Request.Context(), func(tx *sql.Tx) error {
+		var txErr error
+		challenge, txErr = s.store.CreateUserBindChallengeTx(
+			c.Request.Context(),
+			tx,
+			billing,
+			req.NodeID,
+			req.LocalUsername,
+			req.Message,
+			challengeToken,
+			now,
+			policy,
+		)
+		return txErr
+	}); err != nil {
 		var conflictErr *NodeAccountOwnershipConflictError
 		if errors.As(err, &conflictErr) {
 			c.JSON(http.StatusConflict, gin.H{
-				"error":                   fmt.Sprintf("节点 %s 的账号 %s 已绑定到平台账号 %s。严禁冒充绑定，冒充行为将追责，请联系管理员处理。", conflictErr.NodeID, conflictErr.LocalUsername, conflictErr.ExistingBilling),
-				"reason":                  "mapping_exists_other_user",
-				"node_id":                 conflictErr.NodeID,
-				"local_username":          conflictErr.LocalUsername,
-				"mapped_billing_username": conflictErr.ExistingBilling,
+				"error":          fmt.Sprintf("节点 %s 的账号 %s 已被绑定，禁止换绑。请先提交解绑申请并等待管理员审批。", conflictErr.NodeID, conflictErr.LocalUsername),
+				"reason":         "mapping_exists_other_user",
+				"node_id":        conflictErr.NodeID,
+				"local_username": conflictErr.LocalUsername,
+			})
+			return
+		}
+		var cooldownErr *NodeBindCooldownError
+		if errors.As(err, &cooldownErr) {
+			c.JSON(http.StatusTooManyRequests, gin.H{
+				"error":          fmt.Sprintf("绑定失败后冷却中，请于 %s 后再申请", formatRFC3339InBeijing(cooldownErr.CooldownUntil)),
+				"reason":         "bind_cooldown_active",
+				"cooldown_until": cooldownErr.CooldownUntil,
+			})
+			return
+		}
+		var frozenErr *NodeBindTargetFrozenError
+		if errors.As(err, &frozenErr) {
+			_ = s.store.WithTx(c.Request.Context(), func(tx *sql.Tx) error {
+				reportID := fmt.Sprintf("bind-freeze-%d", time.Now().UnixNano())
+				_, txErr := s.store.InsertNodeSecurityEventTx(
+					c.Request.Context(),
+					tx,
+					reportID,
+					frozenErr.NodeID,
+					"mapping_contention",
+					"warning",
+					"节点账号绑定争抢触发冻结",
+					[]string{frozenErr.LocalUsername},
+					map[string]any{
+						"billing_username": billing,
+						"node_id":          frozenErr.NodeID,
+						"local_username":   frozenErr.LocalUsername,
+						"freeze_until":     frozenErr.FreezeUntil,
+					},
+					2*time.Minute,
+				)
+				return txErr
+			})
+			c.JSON(http.StatusLocked, gin.H{
+				"error":          fmt.Sprintf("该节点账号存在多人争抢，已冻结至 %s", formatRFC3339InBeijing(frozenErr.FreezeUntil)),
+				"reason":         "mapping_target_frozen",
+				"node_id":        frozenErr.NodeID,
+				"local_username": frozenErr.LocalUsername,
+				"freeze_until":   frozenErr.FreezeUntil,
+			})
+			return
+		}
+		var activeErr *NodeBindActiveChallengeError
+		if errors.As(err, &activeErr) {
+			c.JSON(http.StatusConflict, gin.H{
+				"error":                  fmt.Sprintf("你当前已有进行中的绑定 challenge（%s/%s），同一时间只能存在一个 challenge", activeErr.Challenge.NodeID, activeErr.Challenge.LocalUsername),
+				"reason":                 "bind_active_challenge_exists",
+				"active_challenge_id":    activeErr.Challenge.ChallengeID,
+				"active_challenge_node":  activeErr.Challenge.NodeID,
+				"active_challenge_local": activeErr.Challenge.LocalUsername,
+				"active_expires_at":      activeErr.Challenge.ExpiresAt,
+				"claim_command":          fmt.Sprintf("gpuops-claim %s", activeErr.Challenge.ChallengeToken),
+			})
+			return
+		}
+		if errors.Is(err, errNodeBindAlreadyBound) {
+			c.JSON(http.StatusConflict, gin.H{
+				"error":          "该节点账号已经有绑定，不能重复绑定，请联系管理员处理",
+				"reason":         "mapping_exists_same_user",
+				"node_id":        req.NodeID,
+				"local_username": req.LocalUsername,
 			})
 			return
 		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"ok": true})
+
+	challengeReason := fmt.Sprintf("平台账号 %s 申请绑定 challenge 窗口（%d秒）", billing, policy.ChallengeWindowSeconds)
+	if s.enqueueCPUQuotaAction(req.NodeID, req.LocalUsername, policy.TrialCPUQuotaPercent, challengeReason+"：临时 CPU 限速", true) {
+		// no-op
+	}
+	if memoryAction, ok := s.nextMemoryLimitAction(req.NodeID, req.LocalUsername, policy.TrialMemoryLimitGB, challengeReason+"：临时内存限额", true); ok {
+		s.enqueueNodeAction(req.NodeID, memoryAction)
+	}
+	if policy.TrialGPUBlocked {
+		s.enqueueNodeAction(req.NodeID, Action{
+			Type:     "block_user",
+			Username: req.LocalUsername,
+			Reason:   challengeReason + "：临时隐藏 GPU",
+		})
+	}
+	s.enqueueNodeAction(req.NodeID, Action{
+		Type:   "force_sync",
+		Reason: challengeReason + "：刷新 SSH 校验缓存",
+	})
+
+	c.JSON(http.StatusOK, gin.H{
+		"ok": true,
+		"challenge": gin.H{
+			"challenge_id":    challenge.ChallengeID,
+			"request_id":      challenge.RequestID,
+			"node_id":         challenge.NodeID,
+			"local_username":  challenge.LocalUsername,
+			"status":          challenge.Status,
+			"expires_at":      challenge.ExpiresAt,
+			"challenge_token": challenge.ChallengeToken,
+			"claim_command":   fmt.Sprintf("gpuops-claim %s", challenge.ChallengeToken),
+		},
+		"policy": policy,
+	})
 }
 
 func (s *Server) handleUserAccountsUpdate(c *gin.Context) {
-	billing := strings.TrimSpace(fmt.Sprintf("%v", c.MustGet("auth_user")))
-	var req userAccountUpdateReq
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	req.OldNodeID = strings.TrimSpace(req.OldNodeID)
-	req.OldLocalUsername = strings.TrimSpace(req.OldLocalUsername)
-	req.NewNodeID = strings.TrimSpace(req.NewNodeID)
-	req.NewLocalUsername = strings.TrimSpace(req.NewLocalUsername)
-	if req.OldNodeID == "" || req.OldLocalUsername == "" || req.NewNodeID == "" || req.NewLocalUsername == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "节点编号和节点账号不能为空"})
-		return
-	}
-	reserved, reservedMsg, err := s.validateAdminReservedNodeMapping(c.Request.Context(), req.NewNodeID, req.NewLocalUsername, billing)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	if reserved {
-		c.JSON(http.StatusForbidden, gin.H{
-			"error":          reservedMsg,
-			"reason":         "admin_local_username_reserved",
-			"node_id":        req.NewNodeID,
-			"local_username": req.NewLocalUsername,
-		})
-		return
-	}
-	targetBilling, targetMapped, err := s.store.ResolveBillingUsername(c.Request.Context(), req.NewNodeID, req.NewLocalUsername)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	if targetMapped && strings.TrimSpace(targetBilling) != "" && strings.TrimSpace(targetBilling) != billing {
-		c.JSON(http.StatusConflict, gin.H{
-			"error":                   fmt.Sprintf("节点 %s 的账号 %s 已绑定到平台账号 %s。若冒充绑定他人账号将按平台规则追责，请更换节点账号或联系管理员核验。", req.NewNodeID, req.NewLocalUsername, targetBilling),
-			"reason":                  "mapping_exists_other_user",
-			"node_id":                 req.NewNodeID,
-			"local_username":          req.NewLocalUsername,
-			"mapped_billing_username": targetBilling,
-		})
-		return
-	}
-	if err := s.store.UpdateUserNodeAccountWithAudit(
-		c.Request.Context(),
-		req.OldNodeID, req.OldLocalUsername, billing,
-		req.NewNodeID, req.NewLocalUsername, billing,
-		billing, "user", "用户修改节点账号映射",
-	); err != nil {
-		var conflictErr *NodeAccountOwnershipConflictError
-		if errors.As(err, &conflictErr) {
-			c.JSON(http.StatusConflict, gin.H{
-				"error":                   fmt.Sprintf("节点 %s 的账号 %s 已绑定到平台账号 %s。严禁冒充绑定，冒充行为将追责，请联系管理员处理。", conflictErr.NodeID, conflictErr.LocalUsername, conflictErr.ExistingBilling),
-				"reason":                  "mapping_exists_other_user",
-				"node_id":                 conflictErr.NodeID,
-				"local_username":          conflictErr.LocalUsername,
-				"mapped_billing_username": conflictErr.ExistingBilling,
-			})
-			return
-		}
-		if errors.Is(err, sql.ErrNoRows) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "记录不存在"})
-			return
-		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"ok": true})
+	c.JSON(http.StatusForbidden, gin.H{
+		"error":  "不允许自助换绑。请先提交解绑申请，管理员审批通过后再发起新绑定。",
+		"reason": "mapping_rebind_forbidden",
+	})
 }
 
 func (s *Server) handleUserAccountsDelete(c *gin.Context) {
 	billing := strings.TrimSpace(fmt.Sprintf("%v", c.MustGet("auth_user")))
 	nodeID := strings.TrimSpace(c.Query("node_id"))
 	localUsername := strings.TrimSpace(c.Query("local_username"))
-	if err := s.store.DeleteUserNodeAccountWithAudit(
-		c.Request.Context(),
-		nodeID, localUsername, billing,
-		billing, "user", "用户删除节点账号映射",
-	); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "记录不存在"})
-			return
-		}
+	reason := strings.TrimSpace(c.Query("reason"))
+	if nodeID == "" || localUsername == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id/local_username 不能为空"})
+		return
+	}
+	if utf8.RuneCountInString(reason) < 10 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "解绑理由至少 10 个字"})
+		return
+	}
+	var requestID int
+	if err := s.store.WithTx(c.Request.Context(), func(tx *sql.Tx) error {
+		var txErr error
+		requestID, txErr = s.store.CreateUserRequestTx(c.Request.Context(), tx, "unbind", billing, nodeID, localUsername, reason)
+		return txErr
+	}); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	// 删除映射后立即收敛该本地账号会话，避免“映射已删但进程/SSH仍在运行”。
-	s.enqueueNodeAction(nodeID, Action{
-		Type:     "kill_all_processes",
-		Username: localUsername,
-		Reason:   fmt.Sprintf("平台用户 %s 删除节点账号映射：强制终止该账号全部进程", billing),
+	c.JSON(http.StatusOK, gin.H{
+		"ok":         true,
+		"request_id": requestID,
+		"message":    "解绑申请已提交，等待管理员审核",
 	})
-	s.enqueueNodeAction(nodeID, Action{
-		Type:     "kick_ssh_user",
-		Username: localUsername,
-		Reason:   fmt.Sprintf("平台用户 %s 删除节点账号映射：强制断开 SSH 会话", billing),
-	})
-	s.enqueueNodeAction(nodeID, Action{
-		Type:   "force_sync",
-		Reason: fmt.Sprintf("平台用户 %s 删除节点账号映射：立即刷新节点 SSH 策略缓存", billing),
-	})
-	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 type adminAccountUpsertReq struct {
@@ -2359,9 +2981,83 @@ type adminAccountEnableReq struct {
 	Reason          string `json:"reason"`
 }
 
+type adminAccountUnbindRequestCreateReq struct {
+	BillingUsername string `json:"billing_username"`
+	NodeID          string `json:"node_id"`
+	LocalUsername   string `json:"local_username"`
+	Reason          string `json:"reason"`
+}
+
+type adminBindCooldownUnfreezeReq struct {
+	BillingUsername string `json:"billing_username"`
+}
+
+func (s *Server) handleAdminBindPolicyGet(c *gin.Context) {
+	policy, err := s.store.GetNodeBindSecurityPolicy(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, policy)
+}
+
+func (s *Server) handleAdminBindPolicySet(c *gin.Context) {
+	var req NodeBindSecurityPolicy
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := s.store.UpsertNodeBindSecurityPolicy(c.Request.Context(), req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	policy, err := s.store.GetNodeBindSecurityPolicy(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "policy": policy})
+}
+
+func (s *Server) handleAdminBindCooldownsList(c *gin.Context) {
+	activeOnly := true
+	if v := strings.TrimSpace(c.Query("active_only")); v != "" {
+		vv := strings.ToLower(v)
+		activeOnly = vv != "0" && vv != "false" && vv != "no" && vv != "off"
+	}
+	limit := parseLimit(c.Query("limit"), 500, 5000)
+	rows, err := s.store.ListUserNodeBindCooldowns(c.Request.Context(), activeOnly, limit, time.Now())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"rows": rows})
+}
+
+func (s *Server) handleAdminBindCooldownUnfreeze(c *gin.Context) {
+	var req adminBindCooldownUnfreezeReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	req.BillingUsername = strings.TrimSpace(req.BillingUsername)
+	if req.BillingUsername == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "billing_username 不能为空"})
+		return
+	}
+	cooldown, err := s.store.ClearUserNodeBindCooldown(c.Request.Context(), req.BillingUsername, time.Now())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "cooldown": cooldown})
+}
+
 func (s *Server) handleAdminAccountsList(c *gin.Context) {
 	billing := strings.TrimSpace(c.Query("billing_username"))
-	rows, err := s.store.ListUserNodeAccounts(c.Request.Context(), billing, 5000)
+	nodeID := strings.TrimSpace(c.Query("node_id"))
+	localUsername := strings.TrimSpace(c.Query("local_username"))
+	rows, err := s.store.ListUserNodeAccountsWithFilter(c.Request.Context(), billing, nodeID, localUsername, 5000)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -2387,6 +3083,89 @@ func (s *Server) handleAdminAccountProvisionLogs(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"logs": rows})
 }
 
+func (s *Server) handleAdminUnbindRecordsList(c *gin.Context) {
+	billing := strings.TrimSpace(c.Query("billing_username"))
+	nodeID := strings.TrimSpace(c.Query("node_id"))
+	localUsername := strings.TrimSpace(c.Query("local_username"))
+	status := strings.TrimSpace(c.Query("status"))
+	sourceType := strings.TrimSpace(c.Query("source_type"))
+	limit := parseLimit(c.Query("limit"), 300, 5000)
+	rows, err := s.store.ListUserNodeUnbindRecords(
+		c.Request.Context(),
+		billing,
+		nodeID,
+		localUsername,
+		status,
+		sourceType,
+		limit,
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"records": rows})
+}
+
+func (s *Server) handleAdminAccountUnbindRequestCreate(c *gin.Context) {
+	var req adminAccountUnbindRequestCreateReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	req.BillingUsername = strings.TrimSpace(req.BillingUsername)
+	req.NodeID = strings.TrimSpace(req.NodeID)
+	req.LocalUsername = strings.TrimSpace(req.LocalUsername)
+	req.Reason = strings.TrimSpace(req.Reason)
+	if req.NodeID == "" || req.LocalUsername == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id/local_username 不能为空"})
+		return
+	}
+	if utf8.RuneCountInString(req.Reason) < 10 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "解绑理由至少 10 个字"})
+		return
+	}
+	mappedBilling, mapped, err := s.store.ResolveBillingUsername(c.Request.Context(), req.NodeID, req.LocalUsername)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !mapped {
+		c.JSON(http.StatusNotFound, gin.H{"error": "该节点账号映射不存在"})
+		return
+	}
+	if req.BillingUsername != "" && req.BillingUsername != mappedBilling {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "映射校验失败：该节点账号不属于指定平台账号"})
+		return
+	}
+	requestReason := req.Reason
+	operator := s.currentOperator(c)
+	var requestID int
+	if err := s.store.WithTx(c.Request.Context(), func(tx *sql.Tx) error {
+		var txErr error
+		requestID, txErr = s.store.CreateUserRequestTx(
+			c.Request.Context(),
+			tx,
+			"unbind",
+			mappedBilling,
+			req.NodeID,
+			req.LocalUsername,
+			requestReason,
+		)
+		return txErr
+	}); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"ok":               true,
+		"request_id":       requestID,
+		"billing_username": mappedBilling,
+		"node_id":          req.NodeID,
+		"local_username":   req.LocalUsername,
+		"message":          fmt.Sprintf("已由管理员 %s 代提交解绑申请，等待审批", operator),
+	})
+}
+
 func (s *Server) handleAdminAccountMappingRisks(c *gin.Context) {
 	days := parseLimit(c.Query("days"), 30, 365)
 	minSwitches := parseLimit(c.Query("min_switches"), 2, 100)
@@ -2401,6 +3180,35 @@ func (s *Server) handleAdminAccountMappingRisks(c *gin.Context) {
 		"min_switches":   minSwitches,
 		"total_risky":    len(rows),
 		"risky_accounts": rows,
+	})
+}
+
+type adminAccountMappingRiskClearReq struct {
+	NodeID        string `json:"node_id"`
+	LocalUsername string `json:"local_username"`
+}
+
+func (s *Server) handleAdminAccountMappingRiskClear(c *gin.Context) {
+	var req adminAccountMappingRiskClearReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数不合法"})
+		return
+	}
+	req.NodeID = strings.TrimSpace(req.NodeID)
+	req.LocalUsername = strings.TrimSpace(req.LocalUsername)
+	if req.NodeID == "" || req.LocalUsername == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id/local_username 不能为空"})
+		return
+	}
+	operator := s.currentOperator(c)
+	if err := s.store.ClearUserNodeAccountMappingRisk(c.Request.Context(), req.NodeID, req.LocalUsername, operator); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"ok":             true,
+		"node_id":        req.NodeID,
+		"local_username": req.LocalUsername,
 	})
 }
 
@@ -2492,12 +3300,25 @@ func (s *Server) handleAdminAccountsDelete(c *gin.Context) {
 	billing := strings.TrimSpace(c.Query("billing_username"))
 	nodeID := strings.TrimSpace(c.Query("node_id"))
 	localUsername := strings.TrimSpace(c.Query("local_username"))
+	reason := strings.TrimSpace(c.Query("reason"))
+	if nodeID == "" || localUsername == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id/local_username 不能为空"})
+		return
+	}
+	if utf8.RuneCountInString(reason) < 10 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "解绑理由至少 10 个字"})
+		return
+	}
 	operator := s.currentOperator(c)
-	if err := s.store.DeleteUserNodeAccountWithAudit(
+	resolvedBilling, err := s.store.AdminForceUnbindUserNodeAccountWithRecord(
 		c.Request.Context(),
-		nodeID, localUsername, billing,
-		operator, "admin", "管理员删除节点账号映射",
-	); err != nil {
+		nodeID,
+		localUsername,
+		billing,
+		operator,
+		reason,
+	)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "记录不存在"})
 			return
@@ -2508,18 +3329,24 @@ func (s *Server) handleAdminAccountsDelete(c *gin.Context) {
 	s.enqueueNodeAction(nodeID, Action{
 		Type:     "kill_all_processes",
 		Username: localUsername,
-		Reason:   fmt.Sprintf("管理员 %s 删除节点账号映射：强制终止该账号全部进程", operator),
+		Reason:   fmt.Sprintf("管理员 %s 强制解绑节点账号映射：强制终止该账号全部进程", operator),
 	})
 	s.enqueueNodeAction(nodeID, Action{
 		Type:     "kick_ssh_user",
 		Username: localUsername,
-		Reason:   fmt.Sprintf("管理员 %s 删除节点账号映射：强制断开 SSH 会话", operator),
+		Reason:   fmt.Sprintf("管理员 %s 强制解绑节点账号映射：强制断开 SSH 会话", operator),
 	})
 	s.enqueueNodeAction(nodeID, Action{
 		Type:   "force_sync",
-		Reason: fmt.Sprintf("管理员 %s 删除节点账号映射：立即刷新节点 SSH 策略缓存", operator),
+		Reason: fmt.Sprintf("管理员 %s 强制解绑节点账号映射：立即刷新节点 SSH 策略缓存", operator),
 	})
-	c.JSON(http.StatusOK, gin.H{"ok": true})
+	c.JSON(http.StatusOK, gin.H{
+		"ok":               true,
+		"billing_username": resolvedBilling,
+		"node_id":          nodeID,
+		"local_username":   localUsername,
+		"message":          "已强制解绑，并记录到解绑记录",
+	})
 }
 
 func (s *Server) handleAdminAccountDisable(c *gin.Context) {
@@ -2729,6 +3556,59 @@ func (s *Server) handleAdminAccountProvision(c *gin.Context) {
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	// 开通前做节点可用性预检：避免节点未部署/未升级时仍下发密钥，造成“看似成功、实际失败”。
+	lastReportAt := node.LastSeenAt
+	if node.LastReportTS.After(lastReportAt) {
+		lastReportAt = node.LastReportTS
+	}
+	if node.UpdatedAt.After(lastReportAt) {
+		lastReportAt = node.UpdatedAt
+	}
+	if lastReportAt.IsZero() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error":   "节点当前没有有效上报记录，可能未部署或未启动 gpu-node-agent，暂不能开通账号",
+			"node_id": req.NodeID,
+		})
+		return
+	}
+	intervalSec := node.IntervalSeconds
+	if intervalSec <= 0 {
+		intervalSec = s.cfg.SampleIntervalSeconds
+	}
+	if intervalSec <= 0 {
+		intervalSec = 60
+	}
+	maxLag := time.Duration(intervalSec*3) * time.Second
+	if maxLag < 3*time.Minute {
+		maxLag = 3 * time.Minute
+	}
+	if maxLag > 15*time.Minute {
+		maxLag = 15 * time.Minute
+	}
+	if time.Since(lastReportAt) > maxLag {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error": fmt.Sprintf(
+				"节点最近上报时间为 %s，已超过可接受离线窗口（%s），请先确认节点在线并完成 agent 部署/升级",
+				formatRFC3339InBeijing(lastReportAt),
+				maxLag.String(),
+			),
+			"node_id":        req.NodeID,
+			"last_report_at": lastReportAt,
+		})
+		return
+	}
+	localUsersSnapshot, err := s.store.ListNodeLocalUsersWithPlatformMapping(c.Request.Context(), req.NodeID, 1)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "校验节点本地用户清单失败: " + err.Error()})
+		return
+	}
+	if len(localUsersSnapshot) == 0 {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error":   "节点未上报本地用户清单，可能未部署或未升级到支持开通的 agent 版本，请先升级节点并等待一次上报后再试",
+			"node_id": req.NodeID,
+		})
 		return
 	}
 
@@ -3123,6 +4003,72 @@ func (s *Server) shouldSkipAdminMappedDiskQuotaTarget(
 		return false, nil
 	}
 	return s.isAdminAccountCached(ctx, billing, adminCache)
+}
+
+func (s *Server) ensurePowerUserCanOperateLocalUser(c *gin.Context, nodeID string, localUsername string, operation string) bool {
+	if getAuthRole(c) != "power_user" {
+		return true
+	}
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	if nodeID == "" || localUsername == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id/local_username 不能为空"})
+		return false
+	}
+	isAdminMapped, adminUsername, err := s.store.IsNodeLocalMappedToAdmin(c.Request.Context(), nodeID, localUsername)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return false
+	}
+	if !isAdminMapped {
+		return true
+	}
+	adminUsername = strings.TrimSpace(adminUsername)
+	if adminUsername == "" {
+		adminUsername = "管理员账号"
+	}
+	op := strings.TrimSpace(operation)
+	if op == "" {
+		op = "该操作"
+	}
+	c.JSON(http.StatusForbidden, gin.H{
+		"error":          fmt.Sprintf("高级用户不能对管理员映射账号执行%s：节点 %s 用户 %s -> %s", op, nodeID, localUsername, adminUsername),
+		"reason":         "admin_mapping_protected",
+		"node_id":        nodeID,
+		"local_username": localUsername,
+		"admin_username": adminUsername,
+	})
+	return false
+}
+
+func (s *Server) ensurePowerUserCanOperateNodeWide(c *gin.Context, nodeID string, operation string) bool {
+	if getAuthRole(c) != "power_user" {
+		return true
+	}
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id 不能为空"})
+		return false
+	}
+	adminLocals, err := s.store.ListNodeAdminMappedLocals(c.Request.Context(), nodeID, 20)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return false
+	}
+	if len(adminLocals) == 0 {
+		return true
+	}
+	op := strings.TrimSpace(operation)
+	if op == "" {
+		op = "该操作"
+	}
+	c.JSON(http.StatusForbidden, gin.H{
+		"error":             fmt.Sprintf("节点 %s 存在管理员映射账号（如 %s），高级用户不能执行%s", nodeID, adminLocals[0], op),
+		"reason":            "admin_mapping_protected",
+		"node_id":           nodeID,
+		"admin_local_users": adminLocals,
+	})
+	return false
 }
 
 func (s *Server) resolveSSHListEntries(ctx context.Context, req sshListUpsertReq) ([]sshListEntry, error) {
@@ -3613,6 +4559,7 @@ type powerUserCreateReq struct {
 	CanViewBoard      bool   `json:"can_view_board"`
 	CanViewNodes      bool   `json:"can_view_nodes"`
 	CanManageNodes    bool   `json:"can_manage_nodes"`
+	CanManagePoints   bool   `json:"can_manage_points"`
 	CanReviewRequests bool   `json:"can_review_requests"`
 }
 
@@ -3621,6 +4568,7 @@ type powerUserPromoteReq struct {
 	CanViewBoard      bool   `json:"can_view_board"`
 	CanViewNodes      bool   `json:"can_view_nodes"`
 	CanManageNodes    bool   `json:"can_manage_nodes"`
+	CanManagePoints   bool   `json:"can_manage_points"`
 	CanReviewRequests bool   `json:"can_review_requests"`
 }
 
@@ -3628,6 +4576,7 @@ type powerUserPermReq struct {
 	CanViewBoard      bool `json:"can_view_board"`
 	CanViewNodes      bool `json:"can_view_nodes"`
 	CanManageNodes    bool `json:"can_manage_nodes"`
+	CanManagePoints   bool `json:"can_manage_points"`
 	CanReviewRequests bool `json:"can_review_requests"`
 }
 
@@ -3652,7 +4601,7 @@ func (s *Server) handleAdminPowerUsersCreate(c *gin.Context) {
 	if createdBy == "" {
 		createdBy = "admin"
 	}
-	if err := s.store.CreatePowerUser(c.Request.Context(), req.Username, req.Password, req.CanViewBoard, req.CanViewNodes, req.CanManageNodes, req.CanReviewRequests, createdBy); err != nil {
+	if err := s.store.CreatePowerUser(c.Request.Context(), req.Username, req.Password, req.CanViewBoard, req.CanViewNodes, req.CanManageNodes, req.CanManagePoints, req.CanReviewRequests, createdBy); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -3676,6 +4625,7 @@ func (s *Server) handleAdminPowerUsersPromote(c *gin.Context) {
 		req.CanViewBoard,
 		req.CanViewNodes,
 		req.CanManageNodes,
+		req.CanManagePoints,
 		req.CanReviewRequests,
 		operator,
 	); err != nil {
@@ -3700,7 +4650,7 @@ func (s *Server) handleAdminPowerUsersUpdatePermissions(c *gin.Context) {
 	if updatedBy == "" {
 		updatedBy = "admin"
 	}
-	if err := s.store.UpdatePowerUserPermissions(c.Request.Context(), username, req.CanViewBoard, req.CanViewNodes, req.CanManageNodes, req.CanReviewRequests, updatedBy); err != nil {
+	if err := s.store.UpdatePowerUserPermissions(c.Request.Context(), username, req.CanViewBoard, req.CanViewNodes, req.CanManageNodes, req.CanManagePoints, req.CanReviewRequests, updatedBy); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "记录不存在"})
 			return
@@ -3791,7 +4741,12 @@ func (s *Server) handleAdminUsage(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"records": records})
+	killRecords, err := s.store.ListProcessKillRecordsAdmin(c.Request.Context(), billingUsername, localUsername, unregisteredOnly, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"records": records, "kill_records": killRecords})
 }
 
 func (s *Server) handleAdminStatsUsers(c *gin.Context) {
@@ -3811,7 +4766,7 @@ func (s *Server) handleAdminStatsUsers(c *gin.Context) {
 		return
 	}
 	if restricted && len(visibleNodes) == 0 {
-		c.JSON(http.StatusOK, gin.H{"from": from.Format(time.RFC3339), "to": to.Format(time.RFC3339), "rows": []UsageUserSummary{}})
+		c.JSON(http.StatusOK, gin.H{"from": formatRFC3339InBeijing(from), "to": formatRFC3339InBeijing(to), "rows": []UsageUserSummary{}})
 		return
 	}
 	rows, err := s.store.ListUsageSummaryByUser(c.Request.Context(), from, to, limit, visibleNodes)
@@ -3819,7 +4774,7 @@ func (s *Server) handleAdminStatsUsers(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"from": from.Format(time.RFC3339), "to": to.Format(time.RFC3339), "rows": rows})
+	c.JSON(http.StatusOK, gin.H{"from": formatRFC3339InBeijing(from), "to": formatRFC3339InBeijing(to), "rows": rows})
 }
 
 func (s *Server) handleAdminStatsPlatformUsers(c *gin.Context) {
@@ -3839,7 +4794,7 @@ func (s *Server) handleAdminStatsPlatformUsers(c *gin.Context) {
 		return
 	}
 	if restricted && len(visibleNodes) == 0 {
-		c.JSON(http.StatusOK, gin.H{"from": from.Format(time.RFC3339), "to": to.Format(time.RFC3339), "rows": []PlatformUsageUserSummary{}})
+		c.JSON(http.StatusOK, gin.H{"from": formatRFC3339InBeijing(from), "to": formatRFC3339InBeijing(to), "rows": []PlatformUsageUserSummary{}})
 		return
 	}
 	rows, err := s.store.ListPlatformUsageSummaryByUser(c.Request.Context(), from, to, limit, visibleNodes)
@@ -3862,7 +4817,7 @@ func (s *Server) handleAdminStatsPlatformUsers(c *gin.Context) {
 		}
 		rows = filtered
 	}
-	c.JSON(http.StatusOK, gin.H{"from": from.Format(time.RFC3339), "to": to.Format(time.RFC3339), "rows": rows})
+	c.JSON(http.StatusOK, gin.H{"from": formatRFC3339InBeijing(from), "to": formatRFC3339InBeijing(to), "rows": rows})
 }
 
 func (s *Server) handleAdminStatsPlatformUserNodes(c *gin.Context) {
@@ -3898,7 +4853,7 @@ func (s *Server) handleAdminStatsPlatformUserNodes(c *gin.Context) {
 		return
 	}
 	if restricted && len(visibleNodes) == 0 {
-		c.JSON(http.StatusOK, gin.H{"from": from.Format(time.RFC3339), "to": to.Format(time.RFC3339), "username": username, "rows": []PlatformUsageNodeDetail{}})
+		c.JSON(http.StatusOK, gin.H{"from": formatRFC3339InBeijing(from), "to": formatRFC3339InBeijing(to), "username": username, "rows": []PlatformUsageNodeDetail{}})
 		return
 	}
 	rows, err := s.store.ListPlatformUsageNodeDetails(c.Request.Context(), username, from, to, limit, visibleNodes)
@@ -3906,7 +4861,7 @@ func (s *Server) handleAdminStatsPlatformUserNodes(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"from": from.Format(time.RFC3339), "to": to.Format(time.RFC3339), "username": username, "rows": rows})
+	c.JSON(http.StatusOK, gin.H{"from": formatRFC3339InBeijing(from), "to": formatRFC3339InBeijing(to), "username": username, "rows": rows})
 }
 
 func (s *Server) handleAdminProfileChangeRequestsList(c *gin.Context) {
@@ -3970,7 +4925,7 @@ func (s *Server) handleAdminStatsMonthly(c *gin.Context) {
 		return
 	}
 	if restricted && len(visibleNodes) == 0 {
-		c.JSON(http.StatusOK, gin.H{"from": from.Format(time.RFC3339), "to": to.Format(time.RFC3339), "rows": []UsageMonthlySummary{}})
+		c.JSON(http.StatusOK, gin.H{"from": formatRFC3339InBeijing(from), "to": formatRFC3339InBeijing(to), "rows": []UsageMonthlySummary{}})
 		return
 	}
 	rows, err := s.store.ListUsageMonthlyByUser(c.Request.Context(), from, to, limit, visibleNodes)
@@ -3993,7 +4948,7 @@ func (s *Server) handleAdminStatsMonthly(c *gin.Context) {
 		}
 		rows = filtered
 	}
-	c.JSON(http.StatusOK, gin.H{"from": from.Format(time.RFC3339), "to": to.Format(time.RFC3339), "rows": rows})
+	c.JSON(http.StatusOK, gin.H{"from": formatRFC3339InBeijing(from), "to": formatRFC3339InBeijing(to), "rows": rows})
 }
 
 func (s *Server) handleAdminStatsRecharges(c *gin.Context) {
@@ -4023,7 +4978,7 @@ func (s *Server) handleAdminStatsRecharges(c *gin.Context) {
 		}
 		rows = filtered
 	}
-	c.JSON(http.StatusOK, gin.H{"from": from.Format(time.RFC3339), "to": to.Format(time.RFC3339), "rows": rows})
+	c.JSON(http.StatusOK, gin.H{"from": formatRFC3339InBeijing(from), "to": formatRFC3339InBeijing(to), "rows": rows})
 }
 
 func (s *Server) handleAdminNodes(c *gin.Context) {
@@ -4089,8 +5044,8 @@ func (s *Server) handleAdminNodeDetail(c *gin.Context) {
 		return
 	}
 
-	// 统一使用 UTC，避免本地时区导致 report_ts 时间窗口错位，出现 history 为空。
-	to := time.Now().UTC()
+	// 统一使用北京时间，避免跨时区部署造成时间窗口和页面展示不一致。
+	to := nowInBeijing()
 	from := to.Add(-time.Duration(minutes) * time.Minute)
 	history, err := s.store.ListNodeRuntimeSnapshots(c.Request.Context(), nodeID, from, to, limit)
 	if err != nil {
@@ -4141,12 +5096,12 @@ func (s *Server) handleAdminNodeDetail(c *gin.Context) {
 		"history":            history,
 		"local_users":        localUsers,
 		"monthly_user_costs": monthlyUserCosts,
-		"monthly_from":       monthStart.Format(time.RFC3339),
-		"monthly_to":         nowLocal.Format(time.RFC3339),
+		"monthly_from":       formatRFC3339InBeijing(monthStart),
+		"monthly_to":         formatRFC3339InBeijing(nowLocal),
 		"security_events":    securityEvents,
 		"suspicious_users":   suspiciousUsers,
-		"from":               from.Format(time.RFC3339),
-		"to":                 to.Format(time.RFC3339),
+		"from":               formatRFC3339InBeijing(from),
+		"to":                 formatRFC3339InBeijing(to),
 	})
 }
 
@@ -4325,10 +5280,10 @@ func (s *Server) handleAdminNodeSecurityEvents(c *gin.Context) {
 	var fromText string
 	var toText string
 	if from != nil {
-		fromText = from.UTC().Format(time.RFC3339)
+		fromText = formatRFC3339InBeijing(*from)
 	}
 	if to != nil {
-		toText = to.UTC().Format(time.RFC3339)
+		toText = formatRFC3339InBeijing(*to)
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"node_id":            nodeID,
@@ -4383,9 +5338,10 @@ type adminNodeModelPriceOverride struct {
 }
 
 type adminNodePriceSetReq struct {
-	PricePerMinute      *float64                      `json:"price_per_minute"`
-	UseDefault          bool                          `json:"use_default"`
-	ModelPriceOverrides []adminNodeModelPriceOverride `json:"model_price_overrides"`
+	PricePerMinute        *float64                      `json:"price_per_minute"`
+	CPUPricePerCoreMinute *float64                      `json:"cpu_price_per_core_minute"`
+	UseDefault            bool                          `json:"use_default"`
+	ModelPriceOverrides   []adminNodeModelPriceOverride `json:"model_price_overrides"`
 }
 
 func nodeModelPriceOverridesToRespRows(in map[string]float64) []gin.H {
@@ -4405,6 +5361,25 @@ func nodeModelPriceOverridesToRespRows(in map[string]float64) []gin.H {
 		})
 	}
 	return out
+}
+
+func (s *Server) defaultCPUPricePerCoreMinuteWithSource(ctx context.Context) (float64, string) {
+	cpuPrice := s.cfg.CPUPricePerCoreMinute
+	prices, err := s.store.ListPrices(ctx)
+	if err != nil {
+		return cpuPrice, "config_default_cpu_price"
+	}
+	priceIndex := NewPriceIndex(prices)
+	if v, ok := priceIndex.MatchPrice("CPU_CORE"); ok {
+		cpuPrice = v
+		return cpuPrice, "resource_prices_cpu_core"
+	}
+	return cpuPrice, "config_default_cpu_price"
+}
+
+func (s *Server) defaultCPUPricePerCoreMinute(ctx context.Context) float64 {
+	v, _ := s.defaultCPUPricePerCoreMinuteWithSource(ctx)
+	return v
 }
 
 func (s *Server) handleAdminNodeSSHGuardSet(c *gin.Context) {
@@ -4578,17 +5553,18 @@ func (s *Server) handleAdminNodePointsInterceptSet(c *gin.Context) {
 					continue
 				}
 				effectiveBalance := pu.Balance + pu.CarryoverBalance
+				overdraftExceeded := isOverdraftExceeded(effectiveBalance, monthlyCfg.MaxOverdraftLimit)
 				switch {
-				case effectiveBalance <= 0:
+				case overdraftExceeded:
 					targetQuota = blockedQuota
-					reason = fmt.Sprintf("管理员 %s 更新节点积分限速策略：余额 %.2f<=0，执行欠费强限速（%.2f%%）", operator, effectiveBalance, blockedQuota)
+					reason = fmt.Sprintf("管理员 %s 更新节点积分限速策略：余额 %.2f 已超过每月欠费上限 %.2f，执行欠费强限速（%.2f%%）", operator, effectiveBalance, normalizeMonthlyMaxOverdraftLimit(monthlyCfg.MaxOverdraftLimit), blockedQuota)
 				case effectiveBalance <= threshold:
 					targetQuota = limitedQuota
 					reason = fmt.Sprintf("管理员 %s 更新节点积分限速策略：余额 %.2f<=阈值 %.2f，执行低积分限速（%.2f%%）", operator, effectiveBalance, threshold, limitedQuota)
 				default:
 					targetQuota = 0
 				}
-				if isOverdraftExceeded(effectiveBalance, monthlyCfg.MaxOverdraftLimit) && overdraftMemoryLimit > 0 {
+				if overdraftExceeded && overdraftMemoryLimit > 0 {
 					targetMemoryGB = overdraftMemoryLimit
 					memoryReason = fmt.Sprintf("管理员 %s 更新节点积分限速策略：余额 %.2f 已超过每月欠费上限，内存上限设为 %.2f GB", operator, effectiveBalance, targetMemoryGB)
 				} else {
@@ -4599,6 +5575,16 @@ func (s *Server) handleAdminNodePointsInterceptSet(c *gin.Context) {
 				memoryReason = fmt.Sprintf("管理员 %s 关闭积分拦截，按节点策略解除内存限额", operator)
 			}
 
+			targetQuota, reason, manualErr := s.applyManualCPUQuotaOverride(c.Request.Context(), nodeID, local, targetQuota, reason)
+			if manualErr != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": manualErr.Error()})
+				return
+			}
+			targetMemoryGB, memoryReason, manualMemoryErr := s.applyManualMemoryLimitOverride(c.Request.Context(), nodeID, local, targetMemoryGB, memoryReason)
+			if manualMemoryErr != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": manualMemoryErr.Error()})
+				return
+			}
 			if s.enqueueCPUQuotaAction(nodeID, local, targetQuota, reason, true) {
 				quotaSyncTargets++
 				if !req.Enabled {
@@ -4715,7 +5701,7 @@ func (s *Server) handleAdminNodeDiskQuotaGet(c *gin.Context) {
 		"effective_soft_mb":    defaultSoft,
 		"effective_hard_mb":    defaultHard,
 		"users":                localUsers,
-		"checked_at":           node.LastReportTS.UTC().Format(time.RFC3339),
+		"checked_at":           formatRFC3339InBeijing(node.LastReportTS),
 	})
 }
 
@@ -5044,6 +6030,456 @@ func (s *Server) handleAdminNodeDiskQuotaApply(c *gin.Context) {
 	})
 }
 
+type adminNodeCPULimitUpsertReq struct {
+	LocalUsername   string  `json:"local_username"`
+	CPUQuotaPercent float64 `json:"cpu_quota_percent"`
+	Reason          string  `json:"reason"`
+}
+
+type adminNodeMemoryLimitUpsertReq struct {
+	LocalUsername string  `json:"local_username"`
+	MemoryLimitGB float64 `json:"memory_limit_gb"`
+	Reason        string  `json:"reason"`
+}
+
+func (s *Server) handleAdminNodeCPULimits(c *gin.Context) {
+	nodeID := strings.TrimSpace(c.Param("id"))
+	if !s.ensureNodeReadable(c, nodeID) {
+		return
+	}
+	if _, err := s.store.GetNodeStatus(c.Request.Context(), nodeID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	limit := parseLimit(c.Query("limit"), 1000, 10000)
+	rows, err := s.store.ListNodeUserCPULimits(c.Request.Context(), nodeID, "", limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"node_id": nodeID, "rows": rows})
+}
+
+func (s *Server) handleAdminNodeCPULimitUpsert(c *gin.Context) {
+	nodeID := strings.TrimSpace(c.Param("id"))
+	if !s.ensureNodeReadable(c, nodeID) {
+		return
+	}
+	if _, err := s.store.GetNodeStatus(c.Request.Context(), nodeID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	var req adminNodeCPULimitUpsertReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数不合法"})
+		return
+	}
+	localUsername := strings.TrimSpace(req.LocalUsername)
+	if localUsername == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "local_username 不能为空"})
+		return
+	}
+	if !s.ensurePowerUserCanOperateLocalUser(c, nodeID, localUsername, "CPU 限速") {
+		return
+	}
+	if req.CPUQuotaPercent <= 0 || req.CPUQuotaPercent > 100 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cpu_quota_percent 必须在 (0, 100] 范围内"})
+		return
+	}
+	operator := strings.TrimSpace(c.GetString("auth_user"))
+	if operator == "" {
+		operator = "admin"
+	}
+	reason := strings.TrimSpace(req.Reason)
+	if reason == "" {
+		reason = fmt.Sprintf("管理员 %s 手动设置限速 %.2f%%", operator, req.CPUQuotaPercent)
+	}
+	limitRow, err := s.store.UpsertNodeUserCPULimit(c.Request.Context(), nodeID, localUsername, req.CPUQuotaPercent, reason, operator)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if s.enqueueCPUQuotaAction(nodeID, localUsername, req.CPUQuotaPercent, manualCPUQuotaReason(limitRow), true) {
+		s.enqueueNodeAction(nodeID, Action{
+			Type:   "force_sync",
+			Reason: fmt.Sprintf("管理员 %s 更新手动限速，立即刷新节点状态", operator),
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"ok":             true,
+		"node_id":        nodeID,
+		"local_username": localUsername,
+		"row":            limitRow,
+	})
+}
+
+func (s *Server) handleAdminNodeCPULimitDelete(c *gin.Context) {
+	nodeID := strings.TrimSpace(c.Param("id"))
+	if !s.ensureNodeReadable(c, nodeID) {
+		return
+	}
+	if _, err := s.store.GetNodeStatus(c.Request.Context(), nodeID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	localUsername := strings.TrimSpace(c.Query("local_username"))
+	if localUsername == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "local_username 不能为空"})
+		return
+	}
+	if !s.ensurePowerUserCanOperateLocalUser(c, nodeID, localUsername, "解除 CPU 限速") {
+		return
+	}
+	if err := s.store.DeleteNodeUserCPULimit(c.Request.Context(), nodeID, localUsername); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "限速记录不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	operator := strings.TrimSpace(c.GetString("auth_user"))
+	if operator == "" {
+		operator = "admin"
+	}
+	s.enqueueCPUQuotaAction(nodeID, localUsername, 0, fmt.Sprintf("管理员 %s 删除手动限速，解除 CPU 限制", operator), true)
+	s.enqueueNodeAction(nodeID, Action{
+		Type:   "force_sync",
+		Reason: fmt.Sprintf("管理员 %s 删除手动限速，立即刷新节点状态", operator),
+	})
+	c.JSON(http.StatusOK, gin.H{
+		"ok":             true,
+		"node_id":        nodeID,
+		"local_username": localUsername,
+	})
+}
+
+func (s *Server) handleAdminCPULimits(c *gin.Context) {
+	billingUsername := strings.TrimSpace(c.Query("billing_username"))
+	nodeID := strings.TrimSpace(c.Query("node_id"))
+	limit := parseLimit(c.Query("limit"), 1000, 10000)
+	rows, err := s.store.ListNodeUserCPULimits(c.Request.Context(), nodeID, billingUsername, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"billing_username": billingUsername,
+		"node_id":          nodeID,
+		"rows":             rows,
+	})
+}
+
+func (s *Server) handleAdminNodeMemoryLimits(c *gin.Context) {
+	nodeID := strings.TrimSpace(c.Param("id"))
+	if !s.ensureNodeReadable(c, nodeID) {
+		return
+	}
+	if _, err := s.store.GetNodeStatus(c.Request.Context(), nodeID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	limit := parseLimit(c.Query("limit"), 1000, 10000)
+	rows, err := s.store.ListNodeUserMemoryLimits(c.Request.Context(), nodeID, "", limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"node_id": nodeID, "rows": rows})
+}
+
+func (s *Server) handleAdminNodeMemoryLimitUpsert(c *gin.Context) {
+	nodeID := strings.TrimSpace(c.Param("id"))
+	if !s.ensureNodeReadable(c, nodeID) {
+		return
+	}
+	if _, err := s.store.GetNodeStatus(c.Request.Context(), nodeID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	var req adminNodeMemoryLimitUpsertReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数不合法"})
+		return
+	}
+	localUsername := strings.TrimSpace(req.LocalUsername)
+	if localUsername == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "local_username 不能为空"})
+		return
+	}
+	if !s.ensurePowerUserCanOperateLocalUser(c, nodeID, localUsername, "内存限制") {
+		return
+	}
+	if req.MemoryLimitGB <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "memory_limit_gb 必须大于 0"})
+		return
+	}
+	operator := strings.TrimSpace(c.GetString("auth_user"))
+	if operator == "" {
+		operator = "admin"
+	}
+	reason := strings.TrimSpace(req.Reason)
+	if reason == "" {
+		reason = fmt.Sprintf("管理员 %s 手动设置内存上限 %.2f GB", operator, req.MemoryLimitGB)
+	}
+	limitRow, err := s.store.UpsertNodeUserMemoryLimit(c.Request.Context(), nodeID, localUsername, req.MemoryLimitGB, reason, operator)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if action, ok := s.nextMemoryLimitAction(nodeID, localUsername, req.MemoryLimitGB, manualMemoryLimitReason(limitRow), true); ok {
+		s.enqueueNodeAction(nodeID, action)
+		s.enqueueNodeAction(nodeID, Action{
+			Type:   "force_sync",
+			Reason: fmt.Sprintf("管理员 %s 更新手动内存限制，立即刷新节点状态", operator),
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"ok":             true,
+		"node_id":        nodeID,
+		"local_username": localUsername,
+		"row":            limitRow,
+	})
+}
+
+func (s *Server) handleAdminNodeMemoryLimitDelete(c *gin.Context) {
+	nodeID := strings.TrimSpace(c.Param("id"))
+	if !s.ensureNodeReadable(c, nodeID) {
+		return
+	}
+	if _, err := s.store.GetNodeStatus(c.Request.Context(), nodeID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	localUsername := strings.TrimSpace(c.Query("local_username"))
+	if localUsername == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "local_username 不能为空"})
+		return
+	}
+	if !s.ensurePowerUserCanOperateLocalUser(c, nodeID, localUsername, "解除内存限制") {
+		return
+	}
+	if err := s.store.DeleteNodeUserMemoryLimit(c.Request.Context(), nodeID, localUsername); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "内存限制记录不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	operator := strings.TrimSpace(c.GetString("auth_user"))
+	if operator == "" {
+		operator = "admin"
+	}
+	if action, ok := s.nextMemoryLimitAction(nodeID, localUsername, 0, fmt.Sprintf("管理员 %s 删除手动内存限制，解除内存限额", operator), true); ok {
+		s.enqueueNodeAction(nodeID, action)
+	}
+	s.enqueueNodeAction(nodeID, Action{
+		Type:   "force_sync",
+		Reason: fmt.Sprintf("管理员 %s 删除手动内存限制，立即刷新节点状态", operator),
+	})
+	c.JSON(http.StatusOK, gin.H{
+		"ok":             true,
+		"node_id":        nodeID,
+		"local_username": localUsername,
+	})
+}
+
+func (s *Server) handleAdminMemoryLimits(c *gin.Context) {
+	billingUsername := strings.TrimSpace(c.Query("billing_username"))
+	nodeID := strings.TrimSpace(c.Query("node_id"))
+	limit := parseLimit(c.Query("limit"), 1000, 10000)
+	rows, err := s.store.ListNodeUserMemoryLimits(c.Request.Context(), nodeID, billingUsername, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"billing_username": billingUsername,
+		"node_id":          nodeID,
+		"rows":             rows,
+	})
+}
+
+type adminNodeGPUVisibilityUpsertReq struct {
+	LocalUsername string `json:"local_username"`
+	GPUIndices    []int  `json:"gpu_indices"`
+	Reason        string `json:"reason"`
+}
+
+func (s *Server) handleAdminNodeGPUVisibilityGet(c *gin.Context) {
+	nodeID := strings.TrimSpace(c.Param("id"))
+	if !s.ensureNodeReadable(c, nodeID) {
+		return
+	}
+	node, err := s.store.GetNodeStatus(c.Request.Context(), nodeID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	limit := parseLimit(c.Query("limit"), 1000, 10000)
+	localUsers, err := s.store.ListNodeLocalUsersWithPlatformMapping(c.Request.Context(), nodeID, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	rows := make([]NodeLocalUser, 0, len(localUsers))
+	for _, u := range localUsers {
+		if len(u.GPUVisibleIndices) > 0 {
+			rows = append(rows, u)
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"node_id":   nodeID,
+		"gpu_count": node.GPUCount,
+		"rows":      rows,
+	})
+}
+
+func (s *Server) handleAdminNodeGPUVisibilityUpsert(c *gin.Context) {
+	nodeID := strings.TrimSpace(c.Param("id"))
+	if !s.ensureNodeReadable(c, nodeID) {
+		return
+	}
+	node, err := s.store.GetNodeStatus(c.Request.Context(), nodeID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	var req adminNodeGPUVisibilityUpsertReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数不合法"})
+		return
+	}
+	localUsername := strings.TrimSpace(req.LocalUsername)
+	if localUsername == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "local_username 不能为空"})
+		return
+	}
+	if !s.ensurePowerUserCanOperateLocalUser(c, nodeID, localUsername, "GPU 可见限制") {
+		return
+	}
+	gpuIndices := normalizeGPUIndices(req.GPUIndices)
+	if len(gpuIndices) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "gpu_indices 至少选择一个 GPU 编号"})
+		return
+	}
+	if node.GPUCount > 0 {
+		for _, idx := range gpuIndices {
+			if idx >= node.GPUCount {
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("gpu_index 超出节点 GPU 数量：%d（gpu_count=%d）", idx, node.GPUCount)})
+				return
+			}
+		}
+	}
+	operator := strings.TrimSpace(c.GetString("auth_user"))
+	if operator == "" {
+		operator = "admin"
+	}
+	reason := strings.TrimSpace(req.Reason)
+	if reason == "" {
+		reason = fmt.Sprintf("管理员 %s 设置 GPU 可见限制：仅可见 GPU %s", operator, gpuIndicesSignature(gpuIndices))
+	}
+	row, err := s.store.UpsertNodeUserGPUVisibility(c.Request.Context(), nodeID, localUsername, gpuIndices, reason, operator)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if action, ok := s.nextGPUVisibilityAction(nodeID, localUsername, gpuIndices, reason, true); ok {
+		s.enqueueNodeAction(nodeID, action)
+	}
+	s.enqueueNodeAction(nodeID, Action{
+		Type:   "force_sync",
+		Reason: fmt.Sprintf("管理员 %s 更新用户 GPU 可见限制，立即刷新节点状态", operator),
+	})
+	c.JSON(http.StatusOK, gin.H{
+		"ok":             true,
+		"node_id":        nodeID,
+		"local_username": localUsername,
+		"gpu_count":      node.GPUCount,
+		"row":            row,
+	})
+}
+
+func (s *Server) handleAdminNodeGPUVisibilityDelete(c *gin.Context) {
+	nodeID := strings.TrimSpace(c.Param("id"))
+	if !s.ensureNodeReadable(c, nodeID) {
+		return
+	}
+	if _, err := s.store.GetNodeStatus(c.Request.Context(), nodeID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	localUsername := strings.TrimSpace(c.Query("local_username"))
+	if localUsername == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "local_username 不能为空"})
+		return
+	}
+	if !s.ensurePowerUserCanOperateLocalUser(c, nodeID, localUsername, "解除 GPU 限制") {
+		return
+	}
+	if err := s.store.DeleteNodeUserGPUVisibility(c.Request.Context(), nodeID, localUsername); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "GPU 可见限制记录不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	operator := strings.TrimSpace(c.GetString("auth_user"))
+	if operator == "" {
+		operator = "admin"
+	}
+	if action, ok := s.nextGPUVisibilityAction(nodeID, localUsername, nil, fmt.Sprintf("管理员 %s 解除 GPU 可见限制", operator), true); ok {
+		s.enqueueNodeAction(nodeID, action)
+	}
+	s.enqueueNodeAction(nodeID, Action{
+		Type:   "force_sync",
+		Reason: fmt.Sprintf("管理员 %s 解除用户 GPU 可见限制，立即刷新节点状态", operator),
+	})
+	c.JSON(http.StatusOK, gin.H{
+		"ok":             true,
+		"node_id":        nodeID,
+		"local_username": localUsername,
+	})
+}
+
 func (s *Server) handleAdminNodePriceGet(c *gin.Context) {
 	nodeID := strings.TrimSpace(c.Param("id"))
 	if nodeID == "" {
@@ -5058,22 +6494,53 @@ func (s *Server) handleAdminNodePriceGet(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	price, modelOverrides, err := s.store.GetNodePricePolicy(c.Request.Context(), nodeID)
+	price, cpuPrice, modelOverrides, err := s.store.GetNodePricePolicy(c.Request.Context(), nodeID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	mode := "default"
-	if price != nil {
+	if price != nil || cpuPrice != nil {
 		mode = "custom"
 	}
+	defaultCPUPricePerCoreMinute := s.defaultCPUPricePerCoreMinute(c.Request.Context())
+	effectiveGPUPricePerMinute := s.cfg.DefaultPricePerMinute
+	if price != nil {
+		effectiveGPUPricePerMinute = *price
+	}
+	effectiveCPUPricePerCoreMinute := defaultCPUPricePerCoreMinute
+	if cpuPrice != nil {
+		effectiveCPUPricePerCoreMinute = *cpuPrice
+	}
 	c.JSON(http.StatusOK, gin.H{
-		"ok":                       true,
-		"node_id":                  nodeID,
-		"price_per_minute":         price,
-		"model_price_overrides":    nodeModelPriceOverridesToRespRows(modelOverrides),
-		"mode":                     mode,
-		"default_price_per_minute": s.cfg.DefaultPricePerMinute,
+		"ok":                                  true,
+		"node_id":                             nodeID,
+		"price_per_minute":                    price,
+		"cpu_price_per_core_minute":           cpuPrice,
+		"effective_price_per_minute":          effectiveGPUPricePerMinute,
+		"effective_cpu_price_per_core_minute": effectiveCPUPricePerCoreMinute,
+		"model_price_overrides":               nodeModelPriceOverridesToRespRows(modelOverrides),
+		"mode":                                mode,
+		"default_price_per_minute":            s.cfg.DefaultPricePerMinute,
+		"default_cpu_price_per_core_minute":   defaultCPUPricePerCoreMinute,
+		"billing_rules": gin.H{
+			"gpu_formula":              "每个 GPU 进程每分钟费用 = 节点GPU单价 × GPU卡数",
+			"cpu_formula":              "每个进程每分钟CPU费用 = (cpu_percent / 100) × CPU核分钟单价",
+			"combined_formula":         "每个进程每分钟总费用 = GPU费用 + CPU费用",
+			"sample_interval_seconds":  s.cfg.SampleIntervalSeconds,
+			"billing_interval_formula": "最终费用 = 每分钟总费用 × (上报间隔秒数 / 60)",
+			"gpu_price_priority": []string{
+				"节点按卡型单价（已废弃，保留兼容）",
+				"节点GPU单价",
+				"全局GPU型号单价(resource_prices)",
+				"默认GPU单价(default_price_per_minute)",
+			},
+			"cpu_price_priority": []string{
+				"节点CPU单价",
+				"全局CPU单价(resource_prices: CPU_CORE)",
+				"默认CPU单价(cpu_price_per_core_minute)",
+			},
+		},
 	})
 }
 
@@ -5100,6 +6567,10 @@ func (s *Server) handleAdminNodePriceSet(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "price_per_minute 不能为负数"})
 		return
 	}
+	if req.CPUPricePerCoreMinute != nil && *req.CPUPricePerCoreMinute < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cpu_price_per_core_minute 不能为负数"})
+		return
+	}
 	if req.PricePerMinute == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "price_per_minute 不能为空（请按节点设置单价）"})
 		return
@@ -5113,31 +6584,45 @@ func (s *Server) handleAdminNodePriceSet(c *gin.Context) {
 		return
 	}
 
-	prevPrice, prevModelOverrides, err := s.store.GetNodePricePolicy(c.Request.Context(), nodeID)
+	prevPrice, prevCPUPrice, prevModelOverrides, err := s.store.GetNodePricePolicy(c.Request.Context(), nodeID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	targetPrice := req.PricePerMinute
+	targetCPUPrice := req.CPUPricePerCoreMinute
+	if targetCPUPrice == nil {
+		if prevCPUPrice != nil {
+			v := *prevCPUPrice
+			targetCPUPrice = &v
+		} else {
+			v := s.defaultCPUPricePerCoreMinute(c.Request.Context())
+			targetCPUPrice = &v
+		}
+	}
 	targetModelOverrides := map[string]float64{}
 	operator := strings.TrimSpace(c.GetString("auth_user"))
 	if operator == "" {
 		operator = "admin"
 	}
-	if err := s.store.UpsertNodePricePolicy(c.Request.Context(), nodeID, targetPrice, targetModelOverrides, operator); err != nil {
+	if err := s.store.UpsertNodePricePolicy(c.Request.Context(), nodeID, targetPrice, targetCPUPrice, targetModelOverrides, operator); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	mode := "custom"
+	defaultCPUPricePerCoreMinute := s.defaultCPUPricePerCoreMinute(c.Request.Context())
 	c.JSON(http.StatusOK, gin.H{
-		"ok":                             true,
-		"node_id":                        nodeID,
-		"previous_price_per_minute":      prevPrice,
-		"previous_model_price_overrides": nodeModelPriceOverridesToRespRows(prevModelOverrides),
-		"price_per_minute":               targetPrice,
-		"model_price_overrides":          nodeModelPriceOverridesToRespRows(targetModelOverrides),
-		"mode":                           mode,
-		"default_price_per_minute":       s.cfg.DefaultPricePerMinute,
+		"ok":                                 true,
+		"node_id":                            nodeID,
+		"previous_price_per_minute":          prevPrice,
+		"previous_cpu_price_per_core_minute": prevCPUPrice,
+		"previous_model_price_overrides":     nodeModelPriceOverridesToRespRows(prevModelOverrides),
+		"price_per_minute":                   targetPrice,
+		"cpu_price_per_core_minute":          targetCPUPrice,
+		"model_price_overrides":              nodeModelPriceOverridesToRespRows(targetModelOverrides),
+		"mode":                               mode,
+		"default_price_per_minute":           s.cfg.DefaultPricePerMinute,
+		"default_cpu_price_per_core_minute":  defaultCPUPricePerCoreMinute,
 	})
 }
 
@@ -5147,7 +6632,8 @@ func (s *Server) handleAdminNodeSSHExclusiveGet(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id 不能为空"})
 		return
 	}
-	if _, err := s.store.GetNodeStatus(c.Request.Context(), nodeID); err != nil {
+	node, err := s.store.GetNodeStatus(c.Request.Context(), nodeID)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
 			return
@@ -5155,7 +6641,7 @@ func (s *Server) handleAdminNodeSSHExclusiveGet(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	enabled, err := s.store.GetNodeSSHExclusivePolicy(c.Request.Context(), nodeID)
+	enabled, blockOtherSSH, err := s.store.GetNodeSSHExclusiveConfig(c.Request.Context(), nodeID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
@@ -5169,6 +6655,16 @@ func (s *Server) handleAdminNodeSSHExclusiveGet(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	gpuAssignments, err := s.store.ListNodeExclusiveGPUAssignments(c.Request.Context(), nodeID, 200000)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	exemptUsers, err := s.store.ListExemptLocalUsersByNode(c.Request.Context(), nodeID, 200000)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	candidates, err := s.store.ListNodeExclusiveCandidates(c.Request.Context(), nodeID, 10000)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -5177,14 +6673,25 @@ func (s *Server) handleAdminNodeSSHExclusiveGet(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"node_id":               nodeID,
 		"enabled":               enabled,
+		"block_other_ssh":       blockOtherSSH,
 		"exclusive_users":       users,
 		"candidate_local_users": candidates,
+		"gpu_count":             node.GPUCount,
+		"gpu_assignments":       gpuAssignments,
+		"exempt_users":          exemptUsers,
 	})
 }
 
+type adminNodeExclusiveGPUAssignmentReq struct {
+	LocalUsername string `json:"local_username"`
+	GPUIndices    []int  `json:"gpu_indices"`
+}
+
 type adminNodeSSHExclusiveSetReq struct {
-	Enabled        bool     `json:"enabled"`
-	ExclusiveUsers []string `json:"exclusive_users"`
+	Enabled        bool                                 `json:"enabled"`
+	BlockOtherSSH  *bool                                `json:"block_other_ssh"`
+	ExclusiveUsers []string                             `json:"exclusive_users"`
+	GPUAssignments []adminNodeExclusiveGPUAssignmentReq `json:"gpu_assignments"`
 }
 
 func (s *Server) handleAdminNodeSSHExclusiveSet(c *gin.Context) {
@@ -5193,7 +6700,8 @@ func (s *Server) handleAdminNodeSSHExclusiveSet(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id 不能为空"})
 		return
 	}
-	if _, err := s.store.GetNodeStatus(c.Request.Context(), nodeID); err != nil {
+	node, err := s.store.GetNodeStatus(c.Request.Context(), nodeID)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
 			return
@@ -5210,19 +6718,104 @@ func (s *Server) handleAdminNodeSSHExclusiveSet(c *gin.Context) {
 	if operator == "" {
 		operator = "admin"
 	}
-	if err := s.store.ReplaceNodeExclusiveUsers(c.Request.Context(), nodeID, req.Enabled, req.ExclusiveUsers, operator); err != nil {
+	blockOtherSSH := true
+	if req.BlockOtherSSH != nil {
+		blockOtherSSH = *req.BlockOtherSSH
+	}
+	exclusiveUsers := uniqTrim(req.ExclusiveUsers)
+	allowedUsers := map[string]struct{}{}
+	for _, u := range exclusiveUsers {
+		if !s.ensurePowerUserCanOperateLocalUser(c, nodeID, u, "GPU 独享限制") {
+			return
+		}
+		allowedUsers[u] = struct{}{}
+	}
+	gpuAssignments := make([]NodeExclusiveGPUAssignment, 0, len(req.GPUAssignments))
+	gpuOwner := map[int]string{}
+	for _, item := range req.GPUAssignments {
+		u := strings.TrimSpace(item.LocalUsername)
+		if u == "" {
+			continue
+		}
+		if _, ok := allowedUsers[u]; !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("GPU 分配用户 %s 不在独享用户列表中", u)})
+			return
+		}
+		idxSet := map[int]struct{}{}
+		idxs := make([]int, 0, len(item.GPUIndices))
+		for _, idx := range item.GPUIndices {
+			if idx < 0 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("gpu_index 不能为负数：%d", idx)})
+				return
+			}
+			if node.GPUCount > 0 && idx >= node.GPUCount {
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("gpu_index 超出节点 GPU 数量：%d（gpu_count=%d）", idx, node.GPUCount)})
+				return
+			}
+			if _, ok := idxSet[idx]; ok {
+				continue
+			}
+			idxSet[idx] = struct{}{}
+			if prev, ok := gpuOwner[idx]; ok && prev != u {
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("GPU %d 已分配给 %s，不能重复分配给 %s", idx, prev, u)})
+				return
+			}
+			gpuOwner[idx] = u
+			idxs = append(idxs, idx)
+		}
+		sort.Ints(idxs)
+		gpuAssignments = append(gpuAssignments, NodeExclusiveGPUAssignment{
+			LocalUsername: u,
+			GPUIndices:    idxs,
+		})
+	}
+	sort.Slice(gpuAssignments, func(i, j int) bool {
+		return gpuAssignments[i].LocalUsername < gpuAssignments[j].LocalUsername
+	})
+	if !req.Enabled {
+		exclusiveUsers = nil
+		gpuAssignments = nil
+	}
+	if err := s.store.ReplaceNodeExclusiveUsers(c.Request.Context(), nodeID, req.Enabled, blockOtherSSH, exclusiveUsers, gpuAssignments, operator); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	exemptUsers, _ := s.store.ListExemptLocalUsersByNode(c.Request.Context(), nodeID, 200000)
+	exemptSet := map[string]struct{}{}
+	for _, u := range exemptUsers {
+		exemptSet[strings.TrimSpace(u)] = struct{}{}
+	}
+	exemptIgnored := make([]string, 0)
+	for _, u := range exclusiveUsers {
+		if _, ok := exemptSet[strings.TrimSpace(u)]; ok {
+			exemptIgnored = append(exemptIgnored, strings.TrimSpace(u))
+		}
+	}
+	plan := make([]GPUExclusiveAssignment, 0, len(gpuAssignments))
+	for _, item := range gpuAssignments {
+		plan = append(plan, GPUExclusiveAssignment{
+			Username:   item.LocalUsername,
+			GPUIndices: item.GPUIndices,
+		})
+	}
+	s.enqueueNodeAction(nodeID, Action{
+		Type:                    "set_gpu_exclusive",
+		GPUExclusiveEnabled:     req.Enabled,
+		GPUExclusiveAssignments: plan,
+		Reason:                  fmt.Sprintf("管理员 %s 更新节点独享 GPU 分配策略", operator),
+	})
 	s.enqueueNodeAction(nodeID, Action{
 		Type:   "force_sync",
 		Reason: fmt.Sprintf("管理员 %s 更新节点独享策略，立即刷新 SSH 策略缓存", operator),
 	})
 	c.JSON(http.StatusOK, gin.H{
-		"ok":              true,
-		"node_id":         nodeID,
-		"enabled":         req.Enabled,
-		"exclusive_users": uniqTrim(req.ExclusiveUsers),
+		"ok":                   true,
+		"node_id":              nodeID,
+		"enabled":              req.Enabled,
+		"block_other_ssh":      blockOtherSSH,
+		"exclusive_users":      exclusiveUsers,
+		"gpu_assignments":      gpuAssignments,
+		"exempt_ignored_users": exemptIgnored,
 	})
 }
 
@@ -5332,6 +6925,18 @@ func (s *Server) handleAdminNodeSSHUserPlatform(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	adminMapping := false
+	adminUsername := ""
+	if mapped && strings.TrimSpace(billing) != "" {
+		adminMapping, err = s.store.IsAdminAccount(c.Request.Context(), strings.TrimSpace(billing))
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if adminMapping {
+			adminUsername = strings.TrimSpace(billing)
+		}
+	}
 	platform := ""
 	realName := ""
 	msg := "未在平台开通"
@@ -5345,6 +6950,9 @@ func (s *Server) handleAdminNodeSSHUserPlatform(c *gin.Context) {
 		} else {
 			msg = "节点账号与平台账号同名"
 		}
+		if adminMapping {
+			msg = "已映射到管理员账号"
+		}
 	} else if mapped {
 		msg = "映射存在，但平台账号不存在"
 	}
@@ -5355,6 +6963,8 @@ func (s *Server) handleAdminNodeSSHUserPlatform(c *gin.Context) {
 		"mapped_username":   billing,
 		"platform_exists":   exists,
 		"platform_username": platform,
+		"admin_mapping":     adminMapping,
+		"admin_username":    adminUsername,
 		"real_name":         realName,
 		"message":           msg,
 	})
@@ -5364,6 +6974,9 @@ func (s *Server) handleAdminNodeDisconnectAllSSH(c *gin.Context) {
 	nodeID := strings.TrimSpace(c.Param("id"))
 	if nodeID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id 不能为空"})
+		return
+	}
+	if !s.ensurePowerUserCanOperateNodeWide(c, nodeID, "SSH 全体下线") {
 		return
 	}
 	node, err := s.store.GetNodeStatus(c.Request.Context(), nodeID)
@@ -5389,7 +7002,7 @@ func (s *Server) handleAdminNodeDisconnectAllSSH(c *gin.Context) {
 		"ssh_active_count": node.SSHActiveCount,
 		"message":          "已下发清理指令，节点会在约 1 秒内执行",
 		"requested_by":     operator,
-		"requested_at":     time.Now().UTC().Format(time.RFC3339),
+		"requested_at":     formatRFC3339InBeijing(time.Now()),
 	})
 }
 
@@ -5397,6 +7010,9 @@ func (s *Server) handleAdminNodeKillAllUserProcesses(c *gin.Context) {
 	nodeID := strings.TrimSpace(c.Param("id"))
 	if nodeID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id 不能为空"})
+		return
+	}
+	if !s.ensurePowerUserCanOperateNodeWide(c, nodeID, "清理全部用户进程") {
 		return
 	}
 	if _, err := s.store.GetNodeStatus(c.Request.Context(), nodeID); err != nil {
@@ -5420,11 +7036,15 @@ func (s *Server) handleAdminNodeKillAllUserProcesses(c *gin.Context) {
 		"node_id":      nodeID,
 		"message":      "已下发清理全部用户进程指令，节点会在约 1 秒内执行",
 		"requested_by": operator,
-		"requested_at": time.Now().UTC().Format(time.RFC3339),
+		"requested_at": formatRFC3339InBeijing(time.Now()),
 	})
 }
 
 type adminNodeDisconnectUserReq struct {
+	LocalUsername string `json:"local_username"`
+}
+
+type adminNodeKillUserProcessesReq struct {
 	LocalUsername string `json:"local_username"`
 }
 
@@ -5451,6 +7071,9 @@ func (s *Server) handleAdminNodeDisconnectSSHUser(c *gin.Context) {
 	localUsername := strings.TrimSpace(req.LocalUsername)
 	if localUsername == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "local_username 不能为空"})
+		return
+	}
+	if !s.ensurePowerUserCanOperateLocalUser(c, nodeID, localUsername, "SSH 下线") {
 		return
 	}
 
@@ -5480,7 +7103,56 @@ func (s *Server) handleAdminNodeDisconnectSSHUser(c *gin.Context) {
 		"local_username": localUsername,
 		"message":        "已下发强制下线指令，节点会在约 1 秒内执行",
 		"requested_by":   operator,
-		"requested_at":   time.Now().UTC().Format(time.RFC3339),
+		"requested_at":   formatRFC3339InBeijing(time.Now()),
+	})
+}
+
+func (s *Server) handleAdminNodeKillUserProcesses(c *gin.Context) {
+	nodeID := strings.TrimSpace(c.Param("id"))
+	if nodeID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id 不能为空"})
+		return
+	}
+	if _, err := s.store.GetNodeStatus(c.Request.Context(), nodeID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "节点不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	var req adminNodeKillUserProcessesReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数不合法"})
+		return
+	}
+	localUsername := strings.TrimSpace(req.LocalUsername)
+	if localUsername == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "local_username 不能为空"})
+		return
+	}
+	if !s.ensurePowerUserCanOperateLocalUser(c, nodeID, localUsername, "清理进程") {
+		return
+	}
+
+	operator := strings.TrimSpace(fmt.Sprintf("%v", c.GetString("auth_user")))
+	if operator == "" {
+		operator = "admin"
+	}
+	s.enqueueNodeAction(nodeID, Action{
+		Type:     "kill_all_processes",
+		Username: localUsername,
+		Reason:   fmt.Sprintf("管理员 %s 发起：强制清理用户 %s 的全部进程", operator, localUsername),
+	})
+
+	c.JSON(http.StatusOK, gin.H{
+		"ok":             true,
+		"node_id":        nodeID,
+		"local_username": localUsername,
+		"message":        fmt.Sprintf("已下发用户 %s 的清理进程指令，节点会在约 1 秒内执行", localUsername),
+		"requested_by":   operator,
+		"requested_at":   formatRFC3339InBeijing(time.Now()),
 	})
 }
 
@@ -5516,12 +7188,338 @@ func (s *Server) handleAdminNodeSyncNow(c *gin.Context) {
 		"node_id":      nodeID,
 		"message":      "已下发立即同步指令，节点会在约 1 秒内执行",
 		"requested_by": operator,
-		"requested_at": time.Now().UTC().Format(time.RFC3339),
+		"requested_at": formatRFC3339InBeijing(time.Now()),
+	})
+}
+
+func parseUsageRange(fromStr string, toStr string) (time.Time, bool, time.Time, bool, error) {
+	fromStr = strings.TrimSpace(fromStr)
+	toStr = strings.TrimSpace(toStr)
+	var (
+		from    time.Time
+		hasFrom bool
+		to      time.Time
+		hasTo   bool
+	)
+	if fromStr != "" {
+		t, err := parseTimeFlexible(fromStr)
+		if err != nil {
+			return time.Time{}, false, time.Time{}, false, fmt.Errorf("from 时间格式不合法，建议 RFC3339 或 YYYY-MM-DD")
+		}
+		from = t
+		hasFrom = true
+	}
+	if toStr != "" {
+		t, err := parseTimeFlexible(toStr)
+		if err != nil {
+			return time.Time{}, false, time.Time{}, false, fmt.Errorf("to 时间格式不合法，建议 RFC3339 或 YYYY-MM-DD")
+		}
+		if len(toStr) == len("2006-01-02") {
+			t = t.Add(24*time.Hour - time.Nanosecond)
+		}
+		to = t
+		hasTo = true
+	}
+	if hasFrom && hasTo && to.Before(from) {
+		return time.Time{}, false, time.Time{}, false, fmt.Errorf("to 不能早于 from")
+	}
+	return from, hasFrom, to, hasTo, nil
+}
+
+func usageRetentionResp(cfg UsageRetentionSettings) gin.H {
+	out := gin.H{
+		"retention_days":       cfg.RetentionDays,
+		"enabled":              cfg.RetentionDays > 0,
+		"last_deleted_records": cfg.LastDeletedRecords,
+		"last_deleted_mode":    strings.TrimSpace(cfg.LastDeletedMode),
+		"last_deleted_by":      strings.TrimSpace(cfg.LastDeletedBy),
+	}
+	if cfg.LastDeletedAt != nil && !cfg.LastDeletedAt.IsZero() {
+		out["last_deleted_at"] = formatRFC3339InBeijing(*cfg.LastDeletedAt)
+		out["last_deleted_day"] = inBeijing(*cfg.LastDeletedAt).Format("2006-01-02")
+	}
+	if cfg.LastDeletedFrom != nil && !cfg.LastDeletedFrom.IsZero() {
+		out["last_deleted_from"] = formatRFC3339InBeijing(*cfg.LastDeletedFrom)
+	}
+	if cfg.LastDeletedTo != nil && !cfg.LastDeletedTo.IsZero() {
+		out["last_deleted_to"] = formatRFC3339InBeijing(*cfg.LastDeletedTo)
+	}
+	return out
+}
+
+type adminUsageRetentionSetReq struct {
+	RetentionDays int `json:"retention_days"`
+}
+
+func (s *Server) handleAdminUsageRetentionGet(c *gin.Context) {
+	cfg, err := s.store.GetUsageRetentionSettings(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, usageRetentionResp(cfg))
+}
+
+func (s *Server) handleAdminUsageRetentionSet(c *gin.Context) {
+	var req adminUsageRetentionSetReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数不合法"})
+		return
+	}
+	if req.RetentionDays < 0 || req.RetentionDays > 3650 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "retention_days 需在 0-3650 天之间"})
+		return
+	}
+	if err := s.store.UpsertUsageRetentionDays(c.Request.Context(), req.RetentionDays); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	cfg, err := s.store.GetUsageRetentionSettings(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, usageRetentionResp(cfg))
+}
+
+func (s *Server) runUsageDeleteWithRecord(
+	ctx context.Context,
+	billingUsername string,
+	localUsername string,
+	unregisteredOnly bool,
+	hasFrom bool,
+	from time.Time,
+	hasTo bool,
+	to time.Time,
+	mode string,
+	operator string,
+) (int64, int64, int64, int64, error) {
+	s.usageDeleteMu.Lock()
+	defer s.usageDeleteMu.Unlock()
+
+	recordsBefore, estimatedCSVBytes, estimatedDBBytes, err := s.store.EstimateUsageRange(
+		ctx,
+		billingUsername,
+		localUsername,
+		unregisteredOnly,
+		hasFrom,
+		from,
+		hasTo,
+		to,
+	)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	deleted, err := s.store.DeleteUsageRange(
+		ctx,
+		billingUsername,
+		localUsername,
+		unregisteredOnly,
+		hasFrom,
+		from,
+		hasTo,
+		to,
+	)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+
+	var fromPtr *time.Time
+	if hasFrom {
+		v := from
+		fromPtr = &v
+	}
+	var toPtr *time.Time
+	if hasTo {
+		v := to
+		toPtr = &v
+	}
+	if recErr := s.store.RecordUsageDeleteRun(ctx, nowInBeijing(), fromPtr, toPtr, deleted, mode, operator); recErr != nil {
+		log.Printf("记录 usage 删除结果失败 mode=%s operator=%s err=%v", mode, operator, recErr)
+	}
+	return recordsBefore, deleted, estimatedCSVBytes, estimatedDBBytes, nil
+}
+
+func (s *Server) runUsageAutoDeleteOnce(ctx context.Context) error {
+	cfg, err := s.store.GetUsageRetentionSettings(ctx)
+	if err != nil {
+		return err
+	}
+	if cfg.RetentionDays <= 0 {
+		return nil
+	}
+	now := nowInBeijing()
+	if cfg.LastDeletedAt != nil && !cfg.LastDeletedAt.IsZero() && strings.EqualFold(strings.TrimSpace(cfg.LastDeletedMode), "auto") {
+		if inBeijing(*cfg.LastDeletedAt).Format("2006-01-02") == now.Format("2006-01-02") {
+			return nil
+		}
+	}
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, beijingLocation)
+	cutoff := dayStart.AddDate(0, 0, -cfg.RetentionDays).Add(-time.Nanosecond)
+	if cutoff.IsZero() {
+		return nil
+	}
+	_, deleted, estimatedCSVBytes, estimatedDBBytes, err := s.runUsageDeleteWithRecord(
+		ctx,
+		"",
+		"",
+		false,
+		false,
+		time.Time{},
+		true,
+		cutoff,
+		"auto",
+		"system",
+	)
+	if err != nil {
+		return err
+	}
+	log.Printf("usage 自动删除完成 retention_days=%d cutoff=%s deleted=%d estimated_csv_bytes=%d estimated_db_bytes=%d",
+		cfg.RetentionDays,
+		formatRFC3339InBeijing(cutoff),
+		deleted,
+		estimatedCSVBytes,
+		estimatedDBBytes,
+	)
+	return nil
+}
+
+func (s *Server) StartUsageAutoDeleteScheduler(ctx context.Context) {
+	run := func() {
+		runCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		if err := s.runUsageAutoDeleteOnce(runCtx); err != nil {
+			log.Printf("usage 自动删除任务异常：%v", err)
+		}
+	}
+	go func() {
+		run()
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				run()
+			}
+		}
+	}()
+}
+
+func (s *Server) parseUsageAdminFilter(c *gin.Context) (string, string, bool) {
+	billingUsername := strings.TrimSpace(c.Query("billing_username"))
+	if billingUsername == "" {
+		billingUsername = strings.TrimSpace(c.Query("username"))
+	}
+	localUsername := strings.TrimSpace(c.Query("local_username"))
+	unregisteredOnly := strings.TrimSpace(c.Query("unregistered_only")) == "1"
+	return billingUsername, localUsername, unregisteredOnly
+}
+
+func (s *Server) handleAdminUsageDays(c *gin.Context) {
+	billingUsername, localUsername, unregisteredOnly := s.parseUsageAdminFilter(c)
+	from, hasFrom, to, hasTo, err := parseUsageRange(c.Query("from"), c.Query("to"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	days, err := s.store.ListUsageDateStats(c.Request.Context(), billingUsername, localUsername, unregisteredOnly, hasFrom, from, hasTo, to, 4000)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"days": days})
+}
+
+func (s *Server) handleAdminUsageRangeEstimate(c *gin.Context) {
+	billingUsername, localUsername, unregisteredOnly := s.parseUsageAdminFilter(c)
+	fromStr := strings.TrimSpace(c.Query("from"))
+	toStr := strings.TrimSpace(c.Query("to"))
+	from, hasFrom, to, hasTo, err := parseUsageRange(fromStr, toStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if !hasFrom || !hasTo {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "from/to 不能为空"})
+		return
+	}
+	records, estimatedCSVBytes, estimatedDBBytes, err := s.store.EstimateUsageRange(c.Request.Context(), billingUsername, localUsername, unregisteredOnly, hasFrom, from, hasTo, to)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"from":                formatRFC3339InBeijing(from),
+		"to":                  formatRFC3339InBeijing(to),
+		"records":             records,
+		"estimated_csv_bytes": estimatedCSVBytes,
+		"estimated_db_bytes":  estimatedDBBytes,
+	})
+}
+
+type adminUsageDeleteRangeReq struct {
+	From             string `json:"from"`
+	To               string `json:"to"`
+	BillingUsername  string `json:"billing_username"`
+	LocalUsername    string `json:"local_username"`
+	UnregisteredOnly bool   `json:"unregistered_only"`
+	Confirm          bool   `json:"confirm"`
+}
+
+func (s *Server) handleAdminUsageDeleteRange(c *gin.Context) {
+	var req adminUsageDeleteRangeReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数不合法"})
+		return
+	}
+	if !req.Confirm {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "删除前请显式确认 confirm=true"})
+		return
+	}
+	from, hasFrom, to, hasTo, err := parseUsageRange(req.From, req.To)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if !hasFrom || !hasTo {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "from/to 不能为空"})
+		return
+	}
+	operator := strings.TrimSpace(c.GetString("auth_user"))
+	if operator == "" {
+		operator = "admin"
+	}
+	recordsBefore, deleted, estimatedCSVBytes, estimatedDBBytes, err := s.runUsageDeleteWithRecord(
+		c.Request.Context(),
+		strings.TrimSpace(req.BillingUsername),
+		strings.TrimSpace(req.LocalUsername),
+		req.UnregisteredOnly,
+		hasFrom,
+		from,
+		hasTo,
+		to,
+		"manual",
+		operator,
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"ok":                  true,
+		"from":                formatRFC3339InBeijing(from),
+		"to":                  formatRFC3339InBeijing(to),
+		"records_before":      recordsBefore,
+		"deleted_records":     deleted,
+		"estimated_csv_bytes": estimatedCSVBytes,
+		"estimated_db_bytes":  estimatedDBBytes,
 	})
 }
 
 func (s *Server) handleAdminUsageExportCSV(c *gin.Context) {
-	username := strings.TrimSpace(c.Query("username"))
+	billingUsername, localUsername, unregisteredOnly := s.parseUsageAdminFilter(c)
 	fromStr := strings.TrimSpace(c.Query("from"))
 	toStr := strings.TrimSpace(c.Query("to"))
 	limit := 20000
@@ -5534,26 +7532,14 @@ func (s *Server) handleAdminUsageExportCSV(c *gin.Context) {
 		limit = 20000
 	}
 
-	var from time.Time
-	var to time.Time
-	var err error
-	if fromStr != "" {
-		from, err = parseTimeFlexible(fromStr)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "from 时间格式不合法，建议 RFC3339 或 YYYY-MM-DD"})
-			return
-		}
-	}
-	if toStr != "" {
-		to, err = parseTimeFlexible(toStr)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "to 时间格式不合法，建议 RFC3339 或 YYYY-MM-DD"})
-			return
-		}
+	from, hasFrom, to, hasTo, err := parseUsageRange(fromStr, toStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
 
 	ctx := c.Request.Context()
-	rows, err := s.store.queryUsageRows(ctx, username, fromStr != "", from, toStr != "", to, limit)
+	rows, err := s.store.queryUsageRows(ctx, billingUsername, localUsername, unregisteredOnly, hasFrom, from, hasTo, to, limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -5577,7 +7563,7 @@ func (s *Server) handleAdminUsageExportCSV(c *gin.Context) {
 			return
 		}
 		_ = w.Write([]string{
-			ts.Format(time.RFC3339),
+			formatRFC3339InBeijing(ts),
 			nodeID,
 			user,
 			localUsername,
@@ -5634,7 +7620,7 @@ func (s *Server) handleAdminMailTest(c *gin.Context) {
 		return
 	}
 	subject := "GPU Ops 邮件配置测试"
-	body := fmt.Sprintf("你好 %s，\n\n这是一封测试邮件，表示管理员已成功配置 SMTP。\n时间：%s\n\nGPU Ops 团队", username, time.Now().Format(time.RFC3339))
+	body := fmt.Sprintf("你好 %s，\n\n这是一封测试邮件，表示管理员已成功配置 SMTP。\n时间：%s\n\nGPU Ops 团队", username, formatRFC3339InBeijing(time.Now()))
 	if err := sendResetPasswordMail(settings, email, subject, body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "发送失败: " + err.Error()})
 		return
@@ -5743,12 +7729,14 @@ func (s *Server) handleMetrics(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "report_id 不能为空（用于幂等防重）"})
 		return
 	}
+	s.sweepNodeBindFailures(c.Request.Context(), data.NodeID)
 
 	reportTS, err := time.Parse(time.RFC3339, strings.TrimSpace(data.Timestamp))
 	if err != nil {
 		// 允许 Agent 不传或传错时间，控制器兜底为当前时间
-		reportTS = time.Now()
+		reportTS = nowInBeijing()
 	}
+	reportTS = inBeijing(reportTS)
 
 	// 先做轻量清洗：去掉无效记录，避免污染账单
 	cleaned := make([]UserProcess, 0, len(data.Users))
@@ -5777,6 +7765,7 @@ func (s *Server) handleNodeActions(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id 不能为空"})
 		return
 	}
+	s.sweepNodeBindFailures(c.Request.Context(), nodeID)
 	actions := s.popNodeActions(nodeID)
 	c.JSON(http.StatusOK, ControllerResponse{Actions: actions})
 }
@@ -5797,12 +7786,18 @@ type haSummary struct {
 }
 
 type haNodeStatus struct {
-	Enabled    bool      `json:"enabled"`
-	Node       string    `json:"node"`
-	Role       string    `json:"role"`
-	ListenAddr string    `json:"listen_addr"`
-	CheckedAt  time.Time `json:"checked_at"`
-	Summary    haSummary `json:"summary"`
+	Enabled         bool      `json:"enabled"`
+	Node            string    `json:"node"`
+	Role            string    `json:"role"`
+	ListenAddr      string    `json:"listen_addr"`
+	CheckedAt       time.Time `json:"checked_at"`
+	Summary         haSummary `json:"summary"`
+	AppVersion      string    `json:"app_version"`
+	AppCommit       string    `json:"app_commit,omitempty"`
+	AppBuildAt      string    `json:"app_build_at,omitempty"`
+	AppBinarySHA256 string    `json:"app_binary_sha256,omitempty"`
+	StartedAt       string    `json:"started_at,omitempty"`
+	UptimeSeconds   int64     `json:"uptime_seconds,omitempty"`
 }
 
 func (s *Server) queryCount(ctx context.Context, q string) int64 {
@@ -5821,7 +7816,7 @@ func (s *Server) queryMaxTime(ctx context.Context, q string) string {
 	if !t.Valid {
 		return ""
 	}
-	return t.Time.UTC().Format(time.RFC3339)
+	return formatRFC3339InBeijing(t.Time)
 }
 
 func (s *Server) buildHASummary(ctx context.Context) haSummary {
@@ -5857,14 +7852,49 @@ func (s *Server) buildHASummary(ctx context.Context) haSummary {
 }
 
 func (s *Server) localHAStatus(ctx context.Context) haNodeStatus {
-	return haNodeStatus{
-		Enabled:    s.cfg.HAEnabled,
-		Node:       strings.TrimSpace(s.cfg.HANode),
-		Role:       strings.TrimSpace(strings.ToLower(s.cfg.HARole)),
-		ListenAddr: strings.TrimSpace(s.cfg.ListenAddr),
-		CheckedAt:  time.Now().UTC(),
-		Summary:    s.buildHASummary(ctx),
+	buildInfo := currentControllerBuildInfo()
+	now := nowInBeijing()
+	startedAtText := ""
+	uptimeSeconds := int64(0)
+	if !buildInfo.StartedAt.IsZero() {
+		startedAtText = formatRFC3339InBeijing(buildInfo.StartedAt)
+		if now.After(buildInfo.StartedAt) {
+			uptimeSeconds = int64(now.Sub(buildInfo.StartedAt) / time.Second)
+		}
 	}
+	return haNodeStatus{
+		Enabled:         s.cfg.HAEnabled,
+		Node:            strings.TrimSpace(s.cfg.HANode),
+		Role:            strings.TrimSpace(strings.ToLower(s.cfg.HARole)),
+		ListenAddr:      strings.TrimSpace(s.cfg.ListenAddr),
+		CheckedAt:       now,
+		Summary:         s.buildHASummary(ctx),
+		AppVersion:      strings.TrimSpace(buildInfo.Version),
+		AppCommit:       strings.TrimSpace(buildInfo.Commit),
+		AppBuildAt:      strings.TrimSpace(buildInfo.BuildAt),
+		AppBinarySHA256: strings.TrimSpace(buildInfo.BinarySHA256),
+		StartedAt:       startedAtText,
+		UptimeSeconds:   uptimeSeconds,
+	}
+}
+
+func matchHAAppVersion(local haNodeStatus, peer haNodeStatus) bool {
+	localBin := strings.TrimSpace(local.AppBinarySHA256)
+	peerBin := strings.TrimSpace(peer.AppBinarySHA256)
+	if localBin != "" && peerBin != "" {
+		return strings.EqualFold(localBin, peerBin)
+	}
+	localCommit := strings.TrimSpace(local.AppCommit)
+	peerCommit := strings.TrimSpace(peer.AppCommit)
+	if localCommit != "" && peerCommit != "" {
+		return strings.EqualFold(localCommit, peerCommit)
+	}
+	localVer := strings.TrimSpace(local.AppVersion)
+	peerVer := strings.TrimSpace(peer.AppVersion)
+	if localVer != "" && peerVer != "" {
+		return strings.EqualFold(localVer, peerVer)
+	}
+	return false
 }
 
 func (s *Server) handleHAStatus(c *gin.Context) {
@@ -5876,11 +7906,12 @@ func (s *Server) handleAdminHAStatus(c *gin.Context) {
 	peerURL := strings.TrimSpace(s.cfg.HAPeerURL)
 	if !s.cfg.HAEnabled || peerURL == "" {
 		c.JSON(http.StatusOK, gin.H{
-			"enabled": s.cfg.HAEnabled,
-			"local":   local,
-			"peer":    nil,
-			"in_sync": false,
-			"message": "未配置容灾对端",
+			"enabled":       s.cfg.HAEnabled,
+			"local":         local,
+			"peer":          nil,
+			"in_sync":       false,
+			"version_match": false,
+			"message":       "未配置容灾对端",
 		})
 		return
 	}
@@ -5889,10 +7920,11 @@ func (s *Server) handleAdminHAStatus(c *gin.Context) {
 	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, peerEndpoint, nil)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
-			"enabled": s.cfg.HAEnabled,
-			"local":   local,
-			"peer":    gin.H{"reachable": false, "error": err.Error(), "url": peerURL},
-			"in_sync": false,
+			"enabled":       s.cfg.HAEnabled,
+			"local":         local,
+			"peer":          gin.H{"reachable": false, "error": err.Error(), "url": peerURL},
+			"in_sync":       false,
+			"version_match": false,
 		})
 		return
 	}
@@ -5904,10 +7936,11 @@ func (s *Server) handleAdminHAStatus(c *gin.Context) {
 	resp, err := client.Do(req)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
-			"enabled": s.cfg.HAEnabled,
-			"local":   local,
-			"peer":    gin.H{"reachable": false, "error": err.Error(), "url": peerURL},
-			"in_sync": false,
+			"enabled":       s.cfg.HAEnabled,
+			"local":         local,
+			"peer":          gin.H{"reachable": false, "error": err.Error(), "url": peerURL},
+			"in_sync":       false,
+			"version_match": false,
 		})
 		return
 	}
@@ -5915,10 +7948,11 @@ func (s *Server) handleAdminHAStatus(c *gin.Context) {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
 		c.JSON(http.StatusOK, gin.H{
-			"enabled": s.cfg.HAEnabled,
-			"local":   local,
-			"peer":    gin.H{"reachable": false, "error": fmt.Sprintf("status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body))), "url": peerURL},
-			"in_sync": false,
+			"enabled":       s.cfg.HAEnabled,
+			"local":         local,
+			"peer":          gin.H{"reachable": false, "error": fmt.Sprintf("status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body))), "url": peerURL},
+			"in_sync":       false,
+			"version_match": false,
 		})
 		return
 	}
@@ -5927,64 +7961,26 @@ func (s *Server) handleAdminHAStatus(c *gin.Context) {
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&peerWrap); err != nil {
 		c.JSON(http.StatusOK, gin.H{
-			"enabled": s.cfg.HAEnabled,
-			"local":   local,
-			"peer":    gin.H{"reachable": false, "error": "解析对端状态失败: " + err.Error(), "url": peerURL},
-			"in_sync": false,
+			"enabled":       s.cfg.HAEnabled,
+			"local":         local,
+			"peer":          gin.H{"reachable": false, "error": "解析对端状态失败: " + err.Error(), "url": peerURL},
+			"in_sync":       false,
+			"version_match": false,
 		})
 		return
 	}
 	inSync := peerWrap.Status.Summary.Digest != "" && peerWrap.Status.Summary.Digest == local.Summary.Digest
+	versionMatch := matchHAAppVersion(local, peerWrap.Status)
 	c.JSON(http.StatusOK, gin.H{
-		"enabled":  s.cfg.HAEnabled,
-		"local":    local,
-		"peer":     gin.H{"reachable": true, "url": peerURL, "status": peerWrap.Status},
-		"in_sync":  inSync,
-		"note":     "建议主备控制器连接同一个 PostgreSQL 数据库以实现自动同步与恢复后一致性",
-		"checked":  time.Now().UTC().Format(time.RFC3339),
-		"peer_url": peerURL,
+		"enabled":       s.cfg.HAEnabled,
+		"local":         local,
+		"peer":          gin.H{"reachable": true, "url": peerURL, "status": peerWrap.Status},
+		"in_sync":       inSync,
+		"version_match": versionMatch,
+		"note":          "建议主备控制器连接同一个 PostgreSQL 数据库以实现自动同步与恢复后一致性",
+		"checked":       formatRFC3339InBeijing(time.Now()),
+		"peer_url":      peerURL,
 	})
-}
-
-type gpuRequestReq struct {
-	Username string `json:"username"`
-	GPUType  string `json:"gpu_type"`
-	Count    int    `json:"count"`
-}
-
-func (s *Server) handleGPURequest(c *gin.Context) {
-	var req gpuRequestReq
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	req.Username = strings.TrimSpace(req.Username)
-	req.GPUType = strings.TrimSpace(req.GPUType)
-	if req.Username == "" || req.GPUType == "" || req.Count <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "username/gpu_type/count 参数不合法"})
-		return
-	}
-
-	item := QueueItem{
-		Username:  req.Username,
-		GPUType:   req.GPUType,
-		Count:     req.Count,
-		Timestamp: time.Now(),
-	}
-
-	pos := s.queue.Enqueue(item)
-	estimated := estimateWaitMinutes(pos)
-
-	c.JSON(http.StatusOK, gin.H{
-		"status":            "queued",
-		"position":          pos,
-		"estimated_minutes": estimated,
-		"message":           "当前无可用 GPU，已加入排队",
-	})
-}
-
-func (s *Server) handleAdminGPUQueue(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"queue": s.queue.Snapshot()})
 }
 
 func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS time.Time) ([]Action, error) {
@@ -6032,9 +8028,12 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 		if v, ok := priceIndex.MatchPrice("CPU_CORE"); ok {
 			cpuPricePerCoreMinute = v
 		}
-		nodePriceOverride, nodeModelPriceOverrides, err := s.store.GetNodePricePolicyTx(ctx, tx, data.NodeID)
+		nodePriceOverride, nodeCPUPriceOverride, nodeModelPriceOverrides, err := s.store.GetNodePricePolicyTx(ctx, tx, data.NodeID)
 		if err != nil {
 			return err
+		}
+		if nodeCPUPriceOverride != nil {
+			cpuPricePerCoreMinute = *nodeCPUPriceOverride
 		}
 		nodeModelPriceRows := make([]PriceRow, 0, len(nodeModelPriceOverrides))
 		for model, price := range nodeModelPriceOverrides {
@@ -6052,6 +8051,42 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 		}
 		// 语义约定：积分拦截开关“开启” => 正常扣分与限速；“关闭” => 不扣分且不限速。
 		nodePointsBillingEnabled := nodePointsPolicy.Enabled
+		nodeManualCPULimits := make(map[string]NodeUserCPULimit)
+		if limits, err := s.store.ListNodeUserCPULimitsByNodeTx(ctx, tx, data.NodeID, 10000); err != nil {
+			return err
+		} else {
+			for _, l := range limits {
+				local := strings.TrimSpace(l.LocalUsername)
+				if local == "" {
+					continue
+				}
+				nodeManualCPULimits[local] = l
+			}
+		}
+		nodeManualMemoryLimits := make(map[string]NodeUserMemoryLimit)
+		if limits, err := s.store.ListNodeUserMemoryLimitsByNodeTx(ctx, tx, data.NodeID, 10000); err != nil {
+			return err
+		} else {
+			for _, l := range limits {
+				local := strings.TrimSpace(l.LocalUsername)
+				if local == "" {
+					continue
+				}
+				nodeManualMemoryLimits[local] = l
+			}
+		}
+		nodeManualGPUVisibility := make(map[string]NodeUserGPUVisibility)
+		if limits, err := s.store.ListNodeUserGPUVisibilityByNodeTx(ctx, tx, data.NodeID, 10000); err != nil {
+			return err
+		} else {
+			for _, l := range limits {
+				local := strings.TrimSpace(l.LocalUsername)
+				if local == "" {
+					continue
+				}
+				nodeManualGPUVisibility[local] = l
+			}
+		}
 
 		// 同一台节点的映射/豁免在一次上报内复用，避免对每个进程重复查库。
 		resolveCache := make(map[string]string) // local_username -> billing_username（未绑定时为自身）
@@ -6191,7 +8226,7 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 				relatedUsers,
 				map[string]any{
 					"node_id":               data.NodeID,
-					"report_ts":             reportTS.UTC().Format(time.RFC3339),
+					"report_ts":             formatRFC3339InBeijing(reportTS),
 					"related_usernames":     relatedUsers,
 					"judgement":             "疑似挖矿",
 					"suspicious_user_count": len(relatedUsers),
@@ -6262,7 +8297,7 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 				relatedUsers,
 				map[string]any{
 					"node_id":                data.NodeID,
-					"report_ts":              reportTS.UTC().Format(time.RFC3339),
+					"report_ts":              formatRFC3339InBeijing(reportTS),
 					"cpu_percent_sum":        round4(cpuPercentSum),
 					"node_cpu_count":         nodeCPUCount,
 					"threshold_percent":      95.0,
@@ -6306,6 +8341,19 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 				if gpuAction, ok := s.nextGPUAccessAction(data.NodeID, localUsername, nowOverdraftExceeded, gpuReason, false); ok {
 					actions = append(actions, gpuAction)
 				}
+				if !nowOverdraftExceeded {
+					if manualGPU, hasManualGPU := nodeManualGPUVisibility[localUsername]; hasManualGPU && len(manualGPU.GPUIndices) > 0 {
+						if gpuVisAction, ok := s.nextGPUVisibilityAction(
+							data.NodeID,
+							localUsername,
+							manualGPU.GPUIndices,
+							manualGPUVisibilityReason(manualGPU),
+							true,
+						); ok {
+							actions = append(actions, gpuVisAction)
+						}
+					}
+				}
 				targetMemoryGB := 0.0
 				memoryReason := fmt.Sprintf(
 					"余额 %.2f 未超过每月欠费上限 %.2f，解除内存限额",
@@ -6321,35 +8369,52 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 						targetMemoryGB,
 					)
 				}
-				if memoryAction, ok := s.nextMemoryLimitAction(data.NodeID, localUsername, targetMemoryGB, memoryReason, false); ok {
+				if manual, hasManual := nodeManualMemoryLimits[localUsername]; hasManual {
+					targetMemoryGB = manual.MemoryLimitGB
+					memoryReason = manualMemoryLimitReason(manual)
+				}
+				forceMemorySync := nowOverdraftExceeded && targetMemoryGB > 0
+				if memoryAction, ok := s.nextMemoryLimitAction(data.NodeID, localUsername, targetMemoryGB, memoryReason, forceMemorySync); ok {
 					actions = append(actions, memoryAction)
 				}
 
 				if s.cfg.EnableCPUControl {
-					switch {
-					case effectiveBalance <= 0:
+					if manual, hasManual := nodeManualCPULimits[localUsername]; hasManual {
 						if quotaAction, ok := s.nextCPUQuotaAction(
 							data.NodeID,
 							localUsername,
-							nodeBlockedCPUQuota,
-							fmt.Sprintf("余额 %.2f<=0，按节点策略执行欠费强限速（%.2f%%）", effectiveBalance, nodeBlockedCPUQuota),
+							manual.CPUQuotaPercent,
+							manualCPUQuotaReason(manual),
 							false,
 						); ok {
 							actions = append(actions, quotaAction)
 						}
-					case effectiveBalance <= nodeThrottleThreshold:
-						if quotaAction, ok := s.nextCPUQuotaAction(
-							data.NodeID,
-							localUsername,
-							nodeLimitedCPUQuota,
-							fmt.Sprintf("余额 %.2f<=阈值 %.2f，按节点策略执行限速（%.2f%%）", effectiveBalance, nodeThrottleThreshold, nodeLimitedCPUQuota),
-							false,
-						); ok {
-							actions = append(actions, quotaAction)
-						}
-					default:
-						if quotaAction, ok := s.nextCPUQuotaAction(data.NodeID, localUsername, 0, "余额已恢复，解除 CPU 限制", false); ok {
-							actions = append(actions, quotaAction)
+					} else {
+						switch {
+						case nowOverdraftExceeded:
+							if quotaAction, ok := s.nextCPUQuotaAction(
+								data.NodeID,
+								localUsername,
+								nodeBlockedCPUQuota,
+								fmt.Sprintf("余额 %.2f 已超过每月欠费上限 %.2f，按节点策略执行欠费强限速（%.2f%%）", effectiveBalance, normalizeMonthlyMaxOverdraftLimit(monthlyCfg.MaxOverdraftLimit), nodeBlockedCPUQuota),
+								false,
+							); ok {
+								actions = append(actions, quotaAction)
+							}
+						case effectiveBalance <= nodeThrottleThreshold:
+							if quotaAction, ok := s.nextCPUQuotaAction(
+								data.NodeID,
+								localUsername,
+								nodeLimitedCPUQuota,
+								fmt.Sprintf("余额 %.2f<=阈值 %.2f，按节点策略执行限速（%.2f%%）", effectiveBalance, nodeThrottleThreshold, nodeLimitedCPUQuota),
+								false,
+							); ok {
+								actions = append(actions, quotaAction)
+							}
+						default:
+							if quotaAction, ok := s.nextCPUQuotaAction(data.NodeID, localUsername, 0, "余额已恢复，解除 CPU 限制", false); ok {
+								actions = append(actions, quotaAction)
+							}
 						}
 					}
 				}
@@ -6441,6 +8506,19 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 			if action, ok := s.nextGPUAccessAction(data.NodeID, localUsername, overdraftExceeded, gpuReason, false); ok {
 				actions = append(actions, action)
 			}
+			if !overdraftExceeded {
+				if manualGPU, hasManualGPU := nodeManualGPUVisibility[localUsername]; hasManualGPU && len(manualGPU.GPUIndices) > 0 {
+					if gpuVisAction, ok := s.nextGPUVisibilityAction(
+						data.NodeID,
+						localUsername,
+						manualGPU.GPUIndices,
+						manualGPUVisibilityReason(manualGPU),
+						true,
+					); ok {
+						actions = append(actions, gpuVisAction)
+					}
+				}
+			}
 			targetMemoryGB := 0.0
 			memoryReason := "SSH 在线账号余额同步：节点积分拦截关闭，解除内存限额"
 			if !nodePointsBillingEnabled {
@@ -6460,26 +8538,43 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 					normalizeMonthlyMaxOverdraftLimit(monthlyCfg.MaxOverdraftLimit),
 				)
 			}
-			if memoryAction, ok := s.nextMemoryLimitAction(data.NodeID, localUsername, targetMemoryGB, memoryReason, false); ok {
+			if manual, hasManual := nodeManualMemoryLimits[localUsername]; hasManual {
+				targetMemoryGB = manual.MemoryLimitGB
+				memoryReason = manualMemoryLimitReason(manual)
+			}
+			forceMemorySync := overdraftExceeded && targetMemoryGB > 0
+			if memoryAction, ok := s.nextMemoryLimitAction(data.NodeID, localUsername, targetMemoryGB, memoryReason, forceMemorySync); ok {
 				actions = append(actions, memoryAction)
 			}
 
 			if s.cfg.EnableCPUControl {
-				targetQuota := 0.0
-				quotaReason := "SSH 在线账号余额同步：状态正常，解除 CPU 限制"
-				switch {
-				case !nodePointsBillingEnabled:
-					targetQuota = 0
-					quotaReason = "SSH 在线账号余额同步：节点积分拦截关闭，解除 CPU 限制"
-				case bal.effectiveBalance <= 0:
-					targetQuota = nodeBlockedCPUQuota
-					quotaReason = fmt.Sprintf("SSH 在线账号余额同步：余额 %.2f<=0，执行欠费强限速（%.2f%%）", bal.effectiveBalance, nodeBlockedCPUQuota)
-				case bal.effectiveBalance <= nodeThrottleThreshold:
-					targetQuota = nodeLimitedCPUQuota
-					quotaReason = fmt.Sprintf("SSH 在线账号余额同步：余额 %.2f<=阈值 %.2f，执行限速（%.2f%%）", bal.effectiveBalance, nodeThrottleThreshold, nodeLimitedCPUQuota)
-				}
-				if quotaAction, ok := s.nextCPUQuotaAction(data.NodeID, localUsername, targetQuota, quotaReason, false); ok {
-					actions = append(actions, quotaAction)
+				if manual, hasManual := nodeManualCPULimits[localUsername]; hasManual {
+					if quotaAction, ok := s.nextCPUQuotaAction(
+						data.NodeID,
+						localUsername,
+						manual.CPUQuotaPercent,
+						manualCPUQuotaReason(manual),
+						false,
+					); ok {
+						actions = append(actions, quotaAction)
+					}
+				} else {
+					targetQuota := 0.0
+					quotaReason := "SSH 在线账号余额同步：状态正常，解除 CPU 限制"
+					switch {
+					case !nodePointsBillingEnabled:
+						targetQuota = 0
+						quotaReason = "SSH 在线账号余额同步：节点积分拦截关闭，解除 CPU 限制"
+					case overdraftExceeded:
+						targetQuota = nodeBlockedCPUQuota
+						quotaReason = fmt.Sprintf("SSH 在线账号余额同步：余额 %.2f 已超过每月欠费上限 %.2f，执行欠费强限速（%.2f%%）", bal.effectiveBalance, normalizeMonthlyMaxOverdraftLimit(monthlyCfg.MaxOverdraftLimit), nodeBlockedCPUQuota)
+					case bal.effectiveBalance <= nodeThrottleThreshold:
+						targetQuota = nodeLimitedCPUQuota
+						quotaReason = fmt.Sprintf("SSH 在线账号余额同步：余额 %.2f<=阈值 %.2f，执行限速（%.2f%%）", bal.effectiveBalance, nodeThrottleThreshold, nodeLimitedCPUQuota)
+					}
+					if quotaAction, ok := s.nextCPUQuotaAction(data.NodeID, localUsername, targetQuota, quotaReason, false); ok {
+						actions = append(actions, quotaAction)
+					}
 				}
 			}
 		}
@@ -6515,6 +8610,7 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 			data.GPUCount,
 			data.OSVersion,
 			data.KernelVersion,
+			data.AgentVersion,
 			data.NodeIP,
 			data.NodeMAC,
 			data.DiskTotalGB,
@@ -6608,6 +8704,8 @@ func detectMiningIndicators(command string) []string {
 func (s *Server) recordNodeSecuritySignalsTx(ctx context.Context, tx *sql.Tx, data MetricsData, reportTS time.Time) error {
 	const sshFailThreshold5m = 20
 	const signalClearHold = 10 * time.Minute
+	// 跨控制器实例/重启兜底：同类安全信号在冷却期内不重复落库，避免“历史信号反复播报”。
+	const signalDBCooldown = 30 * time.Minute
 	if sig := data.SecuritySignals; sig != nil {
 		sshFailedSpikeActive := sig.SSHFailedCount5m > sshFailThreshold5m
 		if sshFailedSpikeActive && s.shouldEmitSecuritySignalEvent(data.NodeID, "ssh_failed_login_spike", true, reportTS, signalClearHold) {
@@ -6623,7 +8721,7 @@ func (s *Server) recordNodeSecuritySignalsTx(ctx context.Context, tx *sql.Tx, da
 				sig.SSHFailedUsernames,
 				map[string]any{
 					"node_id":               data.NodeID,
-					"report_ts":             reportTS.UTC().Format(time.RFC3339),
+					"report_ts":             formatRFC3339InBeijing(reportTS),
 					"window_minutes":        5,
 					"failed_count":          sig.SSHFailedCount5m,
 					"threshold":             sshFailThreshold5m,
@@ -6632,7 +8730,7 @@ func (s *Server) recordNodeSecuritySignalsTx(ctx context.Context, tx *sql.Tx, da
 					"judgement":             "恶意登录失败峰值",
 					"security_signal_input": "agent.security_signals",
 				},
-				0,
+				signalDBCooldown,
 			); err != nil {
 				return err
 			}
@@ -6658,7 +8756,7 @@ func (s *Server) recordNodeSecuritySignalsTx(ctx context.Context, tx *sql.Tx, da
 				sig.SSHFailedUsernames,
 				map[string]any{
 					"node_id":               data.NodeID,
-					"report_ts":             reportTS.UTC().Format(time.RFC3339),
+					"report_ts":             formatRFC3339InBeijing(reportTS),
 					"window_minutes":        5,
 					"bruteforce_sources":    sig.SSHBruteforceSources,
 					"failed_count":          sig.SSHFailedCount5m,
@@ -6667,7 +8765,7 @@ func (s *Server) recordNodeSecuritySignalsTx(ctx context.Context, tx *sql.Tx, da
 					"judgement":             "SSH 爆破",
 					"security_signal_input": "agent.security_signals",
 				},
-				0,
+				signalDBCooldown,
 			); err != nil {
 				return err
 			}
@@ -6693,13 +8791,13 @@ func (s *Server) recordNodeSecuritySignalsTx(ctx context.Context, tx *sql.Tx, da
 				nil,
 				map[string]any{
 					"node_id":               data.NodeID,
-					"report_ts":             reportTS.UTC().Format(time.RFC3339),
+					"report_ts":             formatRFC3339InBeijing(reportTS),
 					"scan_sources":          sig.PortScanSources,
 					"scan_target_ports":     sig.PortScanTargetPorts,
 					"judgement":             "异常端口扫描",
 					"security_signal_input": "agent.security_signals",
 				},
-				0,
+				signalDBCooldown,
 			); err != nil {
 				return err
 			}
@@ -6743,7 +8841,7 @@ func (s *Server) recordNodeSecuritySignalsTx(ctx context.Context, tx *sql.Tx, da
 		relatedUsers,
 		map[string]any{
 			"node_id":               data.NodeID,
-			"report_ts":             reportTS.UTC().Format(time.RFC3339),
+			"report_ts":             formatRFC3339InBeijing(reportTS),
 			"risk_mounts":           detailsMounts,
 			"related_usernames":     relatedUsers,
 			"threshold_percent":     98.0,
@@ -6853,8 +8951,8 @@ func parseTimeFlexible(v string) (time.Time, error) {
 	if t, err := time.Parse(time.RFC3339, v); err == nil {
 		return t, nil
 	}
-	// YYYY-MM-DD（按 UTC 00:00:00）
-	if t, err := time.Parse("2006-01-02", v); err == nil {
+	// YYYY-MM-DD（按北京时间 00:00:00）
+	if t, err := time.ParseInLocation("2006-01-02", v, time.Local); err == nil {
 		return t, nil
 	}
 	// 兼容常见：YYYY-MM-DD HH:MM:SS（按本地时间）
@@ -6865,7 +8963,7 @@ func parseTimeFlexible(v string) (time.Time, error) {
 }
 
 func parseStatsRange(c *gin.Context, defaultDays int) (time.Time, time.Time, error) {
-	now := time.Now()
+	now := nowInBeijing()
 	from := now.AddDate(0, 0, -defaultDays)
 	to := now
 	if x := strings.TrimSpace(c.Query("from")); x != "" {
@@ -6884,6 +8982,12 @@ func parseStatsRange(c *gin.Context, defaultDays int) (time.Time, time.Time, err
 			t = t.Add(24*time.Hour - time.Nanosecond)
 		}
 		to = t
+	}
+	if from.After(now) {
+		return time.Time{}, time.Time{}, fmt.Errorf("from 不能晚于今天")
+	}
+	if to.After(now) {
+		to = now
 	}
 	if to.Before(from) {
 		return time.Time{}, time.Time{}, fmt.Errorf("to 不能早于 from")

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -19,19 +20,35 @@ import (
 )
 
 const (
-	appSettingSMTPHost              = "smtp_host"
-	appSettingSMTPPort              = "smtp_port"
-	appSettingSMTPUser              = "smtp_user"
-	appSettingSMTPPass              = "smtp_pass"
-	appSettingFromEmail             = "from_email"
-	appSettingFromName              = "from_name"
-	appSettingUserGuideline         = "user_guideline_markdown"
-	appSettingUserGuidelineBy       = "user_guideline_updated_by"
-	appSettingMonthlyDoctorPoints   = "monthly_points_doctor"
-	appSettingMonthlyMasterPoints   = "monthly_points_master"
-	appSettingMonthlyOtherPoints    = "monthly_points_other"
-	appSettingMonthlyCarryoverLimit = "monthly_points_carryover_limit"
-	appSettingMonthlyMaxOverdraft   = "monthly_points_max_overdraft_limit"
+	appSettingSMTPHost                   = "smtp_host"
+	appSettingSMTPPort                   = "smtp_port"
+	appSettingSMTPUser                   = "smtp_user"
+	appSettingSMTPPass                   = "smtp_pass"
+	appSettingFromEmail                  = "from_email"
+	appSettingFromName                   = "from_name"
+	appSettingUserGuideline              = "user_guideline_markdown"
+	appSettingUserGuidelineBy            = "user_guideline_updated_by"
+	appSettingMonthlyDoctorPoints        = "monthly_points_doctor"
+	appSettingMonthlyMasterPoints        = "monthly_points_master"
+	appSettingMonthlyOtherPoints         = "monthly_points_other"
+	appSettingMonthlyCarryoverLimit      = "monthly_points_carryover_limit"
+	appSettingMonthlyMaxOverdraft        = "monthly_points_max_overdraft_limit"
+	appSettingUsageRetentionDays         = "usage_retention_days"
+	appSettingUsageLastDeleteAt          = "usage_last_delete_at"
+	appSettingUsageLastDeleteFrom        = "usage_last_delete_from"
+	appSettingUsageLastDeleteTo          = "usage_last_delete_to"
+	appSettingUsageLastDeleteCount       = "usage_last_delete_count"
+	appSettingUsageLastDeleteMode        = "usage_last_delete_mode"
+	appSettingUsageLastDeleteBy          = "usage_last_delete_by"
+	appSettingBindChallengeWindowSeconds = "bind_challenge_window_seconds"
+	appSettingBindTrialCPUQuotaPercent   = "bind_trial_cpu_quota_percent"
+	appSettingBindTrialMemoryLimitGB     = "bind_trial_memory_limit_gb"
+	appSettingBindTrialGPUBlocked        = "bind_trial_gpu_blocked"
+	appSettingBindSingleActivePerBilling = "bind_single_active_challenge_per_billing"
+	appSettingBindAllFailureCooldownMin  = "bind_all_failure_cooldown_minutes"
+	appSettingBindFirstCooldownMinutes   = "bind_first_cooldown_minutes"
+	appSettingBindRepeatCooldownMinutes  = "bind_repeat_cooldown_minutes"
+	appSettingBindContentionFreezeMinute = "bind_contention_freeze_minutes"
 )
 
 var (
@@ -42,6 +59,12 @@ var (
 	errRegisterCaptchaExpired         = errors.New("register_captcha_expired")
 	errRegisterCaptchaUsed            = errors.New("register_captcha_used")
 	errProvisionMessageDestroyed      = errors.New("provision_message_destroyed")
+	errNodeBindCooldownActive         = errors.New("node_bind_cooldown_active")
+	errNodeBindTargetFrozen           = errors.New("node_bind_target_frozen")
+	errNodeBindChallengeExpired       = errors.New("node_bind_challenge_expired")
+	errNodeBindChallengeNotFound      = errors.New("node_bind_challenge_not_found")
+	errNodeBindChallengeMismatch      = errors.New("node_bind_challenge_mismatch")
+	errNodeBindAlreadyBound           = errors.New("node_bind_already_bound")
 )
 
 type Store struct {
@@ -49,7 +72,8 @@ type Store struct {
 }
 
 func NewStore(cfg Config) (*Store, error) {
-	db, err := sql.Open("postgres", cfg.DatabaseDSN)
+	dsn := ensurePostgresURLTimezone(cfg.DatabaseDSN, beijingTZName)
+	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		return nil, err
 	}
@@ -65,6 +89,66 @@ func NewStore(cfg Config) (*Store, error) {
 		return nil, err
 	}
 	return &Store{db: db}, nil
+}
+
+func ensurePostgresURLTimezone(rawDSN string, tz string) string {
+	rawDSN = strings.TrimSpace(rawDSN)
+	if rawDSN == "" || tz == "" {
+		return rawDSN
+	}
+	// 本项目默认使用 URL DSN；若解析失败则保持原样，避免破坏非 URL 形态。
+	u, err := url.Parse(rawDSN)
+	if err != nil || u == nil {
+		return rawDSN
+	}
+	q := u.Query()
+	if strings.TrimSpace(q.Get("timezone")) != "" {
+		return rawDSN
+	}
+	q.Set("timezone", tz)
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+func defaultNodeBindSecurityPolicy() NodeBindSecurityPolicy {
+	return NodeBindSecurityPolicy{
+		ChallengeWindowSeconds:       300,
+		TrialCPUQuotaPercent:         20,
+		TrialMemoryLimitGB:           8,
+		TrialGPUBlocked:              true,
+		SingleActivePerBilling:       true,
+		AllFailureCooldownMinutes:    30,
+		FirstFailureCooldownMinutes:  30,
+		RepeatFailureCooldownMinutes: 180,
+		ContentionFreezeMinutes:      30,
+	}
+}
+
+func normalizeNodeBindSecurityPolicy(in NodeBindSecurityPolicy) NodeBindSecurityPolicy {
+	out := in
+	def := defaultNodeBindSecurityPolicy()
+	if out.ChallengeWindowSeconds < 60 || out.ChallengeWindowSeconds > 1800 {
+		out.ChallengeWindowSeconds = def.ChallengeWindowSeconds
+	}
+	if out.TrialCPUQuotaPercent < 1 || out.TrialCPUQuotaPercent > 100 {
+		out.TrialCPUQuotaPercent = def.TrialCPUQuotaPercent
+	}
+	if out.TrialMemoryLimitGB < 0.5 || out.TrialMemoryLimitGB > 1024 {
+		out.TrialMemoryLimitGB = def.TrialMemoryLimitGB
+	}
+	if out.AllFailureCooldownMinutes < 0 || out.AllFailureCooldownMinutes > 24*60 {
+		out.AllFailureCooldownMinutes = def.AllFailureCooldownMinutes
+	}
+	if out.FirstFailureCooldownMinutes < 1 || out.FirstFailureCooldownMinutes > 24*60 {
+		out.FirstFailureCooldownMinutes = def.FirstFailureCooldownMinutes
+	}
+	if out.RepeatFailureCooldownMinutes < 1 || out.RepeatFailureCooldownMinutes > 72*60 {
+		out.RepeatFailureCooldownMinutes = def.RepeatFailureCooldownMinutes
+	}
+	if out.ContentionFreezeMinutes < 1 || out.ContentionFreezeMinutes > 24*60 {
+		out.ContentionFreezeMinutes = def.ContentionFreezeMinutes
+	}
+	return out
 }
 
 func (s *Store) Close() error {
@@ -181,6 +265,142 @@ func dirExists(path string) bool {
 	return err == nil && info.IsDir()
 }
 
+func maxNonZeroTime(vals ...time.Time) time.Time {
+	var best time.Time
+	for _, v := range vals {
+		if v.IsZero() {
+			continue
+		}
+		if best.IsZero() || v.After(best) {
+			best = v
+		}
+	}
+	return best
+}
+
+// 数据库存储大量 TIMESTAMP（无时区）字段。读取后需要按“北京时间墙上时间”解释，
+// 不能做时刻换算（In），否则会出现 +8 小时偏移。
+func asBeijingWallTime(t time.Time) time.Time {
+	if t.IsZero() {
+		return t
+	}
+	y, m, d := t.Date()
+	hh, mm, ss := t.Clock()
+	return time.Date(y, m, d, hh, mm, ss, t.Nanosecond(), beijingLocation)
+}
+
+func normalizeNodeHeartbeatTimes(n *NodeStatus) {
+	if n == nil {
+		return
+	}
+	n.LastSeenAt = asBeijingWallTime(n.LastSeenAt)
+	n.LastReportTS = asBeijingWallTime(n.LastReportTS)
+	n.UpdatedAt = asBeijingWallTime(n.UpdatedAt)
+	best := maxNonZeroTime(n.LastSeenAt, n.LastReportTS, n.UpdatedAt)
+	if !best.IsZero() {
+		n.LastSeenAt = best
+	}
+}
+
+func normalizeNodeRuntimeSnapshotTimes(x *NodeRuntimeSnapshot) {
+	if x == nil {
+		return
+	}
+	x.ReportTS = asBeijingWallTime(x.ReportTS)
+}
+
+func normalizeNodeLocalUserTimes(u *NodeLocalUser) {
+	if u == nil {
+		return
+	}
+	if u.CPUQuotaUpdatedAt != nil {
+		t := asBeijingWallTime(*u.CPUQuotaUpdatedAt)
+		u.CPUQuotaUpdatedAt = &t
+	}
+	if u.MemoryLimitUpdatedAt != nil {
+		t := asBeijingWallTime(*u.MemoryLimitUpdatedAt)
+		u.MemoryLimitUpdatedAt = &t
+	}
+	if u.GPUVisibilityUpdatedAt != nil {
+		t := asBeijingWallTime(*u.GPUVisibilityUpdatedAt)
+		u.GPUVisibilityUpdatedAt = &t
+	}
+	if u.HomeCreatedAt != nil {
+		t := asBeijingWallTime(*u.HomeCreatedAt)
+		u.HomeCreatedAt = &t
+	}
+	if u.LastLoginAt != nil {
+		t := asBeijingWallTime(*u.LastLoginAt)
+		u.LastLoginAt = &t
+	}
+	u.UpdatedAt = asBeijingWallTime(u.UpdatedAt)
+}
+
+func normalizeNodeUserDiskQuotaTimes(q *NodeUserDiskQuota) {
+	if q == nil {
+		return
+	}
+	q.UpdatedAt = asBeijingWallTime(q.UpdatedAt)
+}
+
+func normalizeNodeUserCPULimitTimes(x *NodeUserCPULimit) {
+	if x == nil {
+		return
+	}
+	x.UpdatedAt = asBeijingWallTime(x.UpdatedAt)
+}
+
+func normalizeNodeUserMemoryLimitTimes(x *NodeUserMemoryLimit) {
+	if x == nil {
+		return
+	}
+	x.UpdatedAt = asBeijingWallTime(x.UpdatedAt)
+}
+
+func normalizeNodeUserGPUVisibilityTimes(x *NodeUserGPUVisibility) {
+	if x == nil {
+		return
+	}
+	x.UpdatedAt = asBeijingWallTime(x.UpdatedAt)
+}
+
+func normalizeNodeSecurityEventTimes(e *NodeSecurityEvent) {
+	if e == nil {
+		return
+	}
+	e.CreatedAt = asBeijingWallTime(e.CreatedAt)
+}
+
+func normalizeNodeSecurityEventSummaryTimes(x *NodeSecurityEventSummary) {
+	if x == nil {
+		return
+	}
+	x.FirstSeenAt = asBeijingWallTime(x.FirstSeenAt)
+	x.LastSeenAt = asBeijingWallTime(x.LastSeenAt)
+}
+
+func normalizeNodeSuspiciousUserTimes(u *NodeSuspiciousUser) {
+	if u == nil {
+		return
+	}
+	u.LastSeenAt = asBeijingWallTime(u.LastSeenAt)
+}
+
+func normalizePlatformUsageNodeDetailTimes(x *PlatformUsageNodeDetail) {
+	if x == nil {
+		return
+	}
+	x.LastSeenAt = asBeijingWallTime(x.LastSeenAt)
+	x.LastUsageAt = asBeijingWallTime(x.LastUsageAt)
+}
+
+func normalizeNodeMonthlyUserCostTimes(x *NodeMonthlyUserCost) {
+	if x == nil {
+		return
+	}
+	x.LastUsageAt = asBeijingWallTime(x.LastUsageAt)
+}
+
 func (s *Store) EnsureUserTx(ctx context.Context, tx *sql.Tx, username string, defaultBalance float64) (User, error) {
 	username = strings.TrimSpace(username)
 	if username == "" {
@@ -247,6 +467,24 @@ type BalanceUpdateResult struct {
 	User                 User
 }
 
+type rechargeReasonCtxKey struct{}
+
+func withRechargeReason(ctx context.Context, reason string) context.Context {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, rechargeReasonCtxKey{}, reason)
+}
+
+func rechargeReasonFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	v := strings.TrimSpace(fmt.Sprintf("%v", ctx.Value(rechargeReasonCtxKey{})))
+	return v
+}
+
 func (s *Store) insertRechargeRecordTx(ctx context.Context, tx *sql.Tx, username string, amount float64, method string, pointsScope string, nodeID string) error {
 	username = strings.TrimSpace(username)
 	method = strings.TrimSpace(method)
@@ -267,9 +505,10 @@ func (s *Store) insertRechargeRecordTx(ctx context.Context, tx *sql.Tx, username
 	if pointsScope != "node_exclusive" {
 		nodeID = ""
 	}
+	reason := rechargeReasonFromContext(ctx)
 	_, err := tx.ExecContext(ctx, `
-INSERT INTO recharge_records(username, amount, method, points_scope, node_id)
-VALUES($1, $2, $3, $4, NULLIF($5, ''))`, username, amount, method, pointsScope, nodeID)
+INSERT INTO recharge_records(username, amount, method, points_scope, node_id, reason)
+VALUES($1, $2, $3, $4, NULLIF($5, ''), $6)`, username, amount, method, pointsScope, nodeID, reason)
 	return err
 }
 
@@ -679,6 +918,75 @@ WHERE username=$1`, username, targetBalance, newStatus, newBlockedAt); err != ni
 	}, delta, nil
 }
 
+func (s *Store) SetCarryoverBalanceTx(ctx context.Context, tx *sql.Tx, username string, targetCarryover float64, method string, now time.Time, cfg Config) (BalanceUpdateResult, float64, error) {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return BalanceUpdateResult{}, 0, errors.New("username 不能为空")
+	}
+	method = strings.TrimSpace(method)
+	if method == "" {
+		return BalanceUpdateResult{}, 0, errors.New("method 不能为空")
+	}
+	if targetCarryover < 0 {
+		return BalanceUpdateResult{}, 0, errors.New("target_carryover 不能为负数")
+	}
+
+	_, err := s.EnsureUserTx(ctx, tx, username, cfg.DefaultBalance)
+	if err != nil {
+		return BalanceUpdateResult{}, 0, err
+	}
+
+	var balance float64
+	var carryoverBalance float64
+	var prevStatus string
+	var blockedAt *time.Time
+	if err := tx.QueryRowContext(ctx, `
+SELECT balance, carryover_balance, status, blocked_at
+FROM users
+WHERE username=$1
+FOR UPDATE`, username).Scan(&balance, &carryoverBalance, &prevStatus, &blockedAt); err != nil {
+		return BalanceUpdateResult{}, 0, err
+	}
+
+	delta := targetCarryover - carryoverBalance
+	usableBalance := balance + targetCarryover
+	prevUsableBalance := balance + carryoverBalance
+	newStatus := StatusForBalance(usableBalance, cfg.WarningThreshold, cfg.LimitedThreshold)
+	var newBlockedAt *time.Time
+	if newStatus == "blocked" {
+		newBlockedAt = blockedAt
+		if newBlockedAt == nil {
+			newBlockedAt = &now
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+UPDATE users
+SET carryover_balance=$2, status=$3, blocked_at=$4, last_charge_time=NOW()
+WHERE username=$1`, username, targetCarryover, newStatus, newBlockedAt); err != nil {
+		return BalanceUpdateResult{}, 0, err
+	}
+
+	if delta != 0 {
+		if err := s.insertRechargeRecordTx(ctx, tx, username, delta, method, "carryover", ""); err != nil {
+			return BalanceUpdateResult{}, 0, err
+		}
+	}
+
+	return BalanceUpdateResult{
+		PrevStatus:           prevStatus,
+		PrevEffectiveBalance: prevUsableBalance,
+		EffectiveBalance:     usableBalance,
+		User: User{
+			Username:         username,
+			Balance:          balance,
+			CarryoverBalance: targetCarryover,
+			Status:           newStatus,
+			BlockedAt:        newBlockedAt,
+		},
+	}, delta, nil
+}
+
 func (s *Store) SetGeneralAndCarryoverBalanceTx(
 	ctx context.Context,
 	tx *sql.Tx,
@@ -764,6 +1072,81 @@ WHERE username=$1`, username, targetGeneral, targetCarryover, newStatus, newBloc
 	}, generalDelta, carryoverDelta, nil
 }
 
+func (s *Store) SetNodeExclusiveBalanceTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	username string,
+	nodeID string,
+	targetBalance float64,
+	method string,
+	updatedBy string,
+	cfg Config,
+) (NodeExclusivePointsBalance, float64, error) {
+	username = strings.TrimSpace(username)
+	nodeID = strings.TrimSpace(nodeID)
+	method = strings.TrimSpace(method)
+	updatedBy = strings.TrimSpace(updatedBy)
+	if username == "" {
+		return NodeExclusivePointsBalance{}, 0, errors.New("username 不能为空")
+	}
+	if nodeID == "" {
+		return NodeExclusivePointsBalance{}, 0, errors.New("node_id 不能为空")
+	}
+	if method == "" {
+		return NodeExclusivePointsBalance{}, 0, errors.New("method 不能为空")
+	}
+	if targetBalance < 0 {
+		return NodeExclusivePointsBalance{}, 0, errors.New("target_balance 不能为负数")
+	}
+	if updatedBy == "" {
+		updatedBy = "admin"
+	}
+
+	if _, err := s.EnsureUserTx(ctx, tx, username, cfg.DefaultBalance); err != nil {
+		return NodeExclusivePointsBalance{}, 0, err
+	}
+	if err := s.ensureNodeExclusivePointsRowTx(ctx, tx, username, nodeID); err != nil {
+		return NodeExclusivePointsBalance{}, 0, err
+	}
+
+	var current float64
+	if err := tx.QueryRowContext(ctx, `
+SELECT balance
+FROM user_node_exclusive_points
+WHERE username=$1 AND node_id=$2
+FOR UPDATE`, username, nodeID).Scan(&current); err != nil {
+		return NodeExclusivePointsBalance{}, 0, err
+	}
+	delta := targetBalance - current
+
+	var out NodeExclusivePointsBalance
+	if delta == 0 {
+		if err := tx.QueryRowContext(ctx, `
+SELECT username, node_id, balance, updated_by, created_at, updated_at
+FROM user_node_exclusive_points
+WHERE username=$1 AND node_id=$2`,
+			username, nodeID,
+		).Scan(&out.Username, &out.NodeID, &out.Balance, &out.UpdatedBy, &out.CreatedAt, &out.UpdatedAt); err != nil {
+			return NodeExclusivePointsBalance{}, 0, err
+		}
+		return out, 0, nil
+	}
+
+	if err := tx.QueryRowContext(ctx, `
+UPDATE user_node_exclusive_points
+SET balance=$3, updated_by=$4, updated_at=NOW()
+WHERE username=$1 AND node_id=$2
+RETURNING username, node_id, balance, updated_by, created_at, updated_at`,
+		username, nodeID, targetBalance, updatedBy,
+	).Scan(&out.Username, &out.NodeID, &out.Balance, &out.UpdatedBy, &out.CreatedAt, &out.UpdatedAt); err != nil {
+		return NodeExclusivePointsBalance{}, 0, err
+	}
+	if err := s.insertRechargeRecordTx(ctx, tx, username, delta, method, "node_exclusive", nodeID); err != nil {
+		return NodeExclusivePointsBalance{}, 0, err
+	}
+	return out, delta, nil
+}
+
 func (s *Store) AdjustNodeExclusiveBalanceTx(
 	ctx context.Context,
 	tx *sql.Tx,
@@ -847,6 +1230,40 @@ func (s *Store) InsertUsageRecordTx(ctx context.Context, tx *sql.Tx, nodeID stri
 INSERT INTO usage_records(node_id, local_username, username, timestamp, pid, cpu_percent, memory_mb, gpu_count, command, gpu_usage, cost)
 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
 		nodeID, localUsername, proc.Username, ts, proc.PID, proc.CPUPercent, proc.MemoryMB, len(proc.GPUUsage), strings.TrimSpace(proc.Command), string(gpuJSON), cost)
+	return err
+}
+
+func (s *Store) InsertProcessKillRecord(
+	ctx context.Context,
+	nodeID string,
+	localUsername string,
+	billingUsername string,
+	actionType string,
+	reason string,
+	pids []int32,
+) error {
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	billingUsername = strings.TrimSpace(billingUsername)
+	actionType = strings.TrimSpace(actionType)
+	reason = strings.TrimSpace(reason)
+	if nodeID == "" {
+		return errors.New("node_id 不能为空")
+	}
+	if actionType == "" {
+		return errors.New("action_type 不能为空")
+	}
+	if pids == nil {
+		pids = []int32{}
+	}
+	pidsJSON, err := json.Marshal(pids)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `
+INSERT INTO process_kill_records(node_id, local_username, billing_username, action_type, reason, pids_json)
+VALUES($1,$2,$3,$4,$5,$6)`,
+		nodeID, localUsername, billingUsername, actionType, reason, string(pidsJSON))
 	return err
 }
 
@@ -1041,6 +1458,99 @@ LIMIT ` + addArg(limit)
 	return out, rows.Err()
 }
 
+func (s *Store) ListProcessKillRecordsAdmin(
+	ctx context.Context,
+	billingUsername string,
+	localUsername string,
+	unregisteredOnly bool,
+	limit int,
+) ([]ProcessKillRecord, error) {
+	billingUsername = strings.TrimSpace(billingUsername)
+	localUsername = strings.TrimSpace(localUsername)
+	if limit <= 0 || limit > 5000 {
+		limit = 200
+	}
+	conds := make([]string, 0, 3)
+	args := make([]any, 0, 6)
+	addArg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	if billingUsername != "" {
+		conds = append(conds, "pkr.billing_username="+addArg(billingUsername))
+	}
+	if localUsername != "" {
+		conds = append(conds, "pkr.local_username="+addArg(localUsername))
+	}
+	if unregisteredOnly {
+		conds = append(conds, `
+NOT (
+  pkr.billing_username <> ''
+  AND (
+    EXISTS(SELECT 1 FROM user_accounts ua2 WHERE ua2.username = pkr.billing_username)
+    OR EXISTS(SELECT 1 FROM admin_accounts aa2 WHERE aa2.username = pkr.billing_username)
+    OR EXISTS(SELECT 1 FROM power_users pu2 WHERE pu2.username = pkr.billing_username)
+  )
+)`)
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = "WHERE " + strings.Join(conds, " AND ")
+	}
+	query := `
+SELECT pkr.record_id,
+       pkr.node_id,
+       pkr.local_username,
+       pkr.billing_username,
+       (
+         pkr.billing_username <> ''
+         AND (
+           EXISTS(SELECT 1 FROM user_accounts ua WHERE ua.username = pkr.billing_username)
+           OR EXISTS(SELECT 1 FROM admin_accounts aa WHERE aa.username = pkr.billing_username)
+           OR EXISTS(SELECT 1 FROM power_users pu WHERE pu.username = pkr.billing_username)
+         )
+       ) AS registered,
+       pkr.action_type,
+       pkr.reason,
+       pkr.pids_json::text,
+       pkr.created_at
+FROM process_kill_records pkr
+` + where + `
+ORDER BY pkr.created_at DESC
+LIMIT ` + addArg(limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ProcessKillRecord
+	for rows.Next() {
+		var r ProcessKillRecord
+		var pidsJSON string
+		if err := rows.Scan(
+			&r.RecordID,
+			&r.NodeID,
+			&r.LocalUsername,
+			&r.BillingUsername,
+			&r.Registered,
+			&r.ActionType,
+			&r.Reason,
+			&pidsJSON,
+			&r.Timestamp,
+		); err != nil {
+			return nil, err
+		}
+		r.Timestamp = asBeijingWallTime(r.Timestamp)
+		if strings.TrimSpace(pidsJSON) == "" {
+			r.PIDs = []int32{}
+		} else if err := json.Unmarshal([]byte(pidsJSON), &r.PIDs); err != nil {
+			r.PIDs = []int32{}
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) UpsertUserNodeAccountTx(ctx context.Context, tx *sql.Tx, nodeID string, localUsername string, billingUsername string) error {
 	nodeID = strings.TrimSpace(nodeID)
 	localUsername = strings.TrimSpace(localUsername)
@@ -1096,6 +1606,44 @@ func (e *NodeAccountOwnershipConflictError) Error() string {
 		"节点 %s 的账号 %s 已绑定到平台账号 %s，禁止冒充绑定；如需调整请联系管理员处理",
 		nodeID, localUsername, existing,
 	)
+}
+
+type NodeBindCooldownError struct {
+	BillingUsername string
+	CooldownUntil   time.Time
+}
+
+func (e *NodeBindCooldownError) Error() string {
+	return fmt.Sprintf("平台账号 %s 处于绑定冷却期，结束时间 %s", strings.TrimSpace(e.BillingUsername), formatRFC3339InBeijing(e.CooldownUntil))
+}
+
+type NodeBindActiveChallengeError struct {
+	BillingUsername string
+	Challenge       UserNodeBindChallenge
+}
+
+func (e *NodeBindActiveChallengeError) Error() string {
+	billing := strings.TrimSpace(e.BillingUsername)
+	if billing == "" {
+		billing = strings.TrimSpace(e.Challenge.BillingUsername)
+	}
+	return fmt.Sprintf(
+		"平台账号 %s 已有进行中的绑定 challenge（%s/%s），到期时间 %s",
+		billing,
+		strings.TrimSpace(e.Challenge.NodeID),
+		strings.TrimSpace(e.Challenge.LocalUsername),
+		formatRFC3339InBeijing(e.Challenge.ExpiresAt),
+	)
+}
+
+type NodeBindTargetFrozenError struct {
+	NodeID        string
+	LocalUsername string
+	FreezeUntil   time.Time
+}
+
+func (e *NodeBindTargetFrozenError) Error() string {
+	return fmt.Sprintf("节点 %s 账号 %s 处于争抢冻结期，结束时间 %s", strings.TrimSpace(e.NodeID), strings.TrimSpace(e.LocalUsername), formatRFC3339InBeijing(e.FreezeUntil))
 }
 
 func isUserMappingSource(source string) bool {
@@ -1168,7 +1716,7 @@ func (s *Store) UpsertUserNodeAccountWithAudit(
 		if err != nil {
 			return err
 		}
-		if existed && oldBilling != billingUsername && isUserMappingSource(source) {
+		if existed && oldBilling != billingUsername {
 			return &NodeAccountOwnershipConflictError{
 				NodeID:          nodeID,
 				LocalUsername:   localUsername,
@@ -1219,32 +1767,62 @@ LIMIT $2`, billingUsername, limit)
 	return out, rows.Err()
 }
 
-func (s *Store) ListUserNodeAccounts(ctx context.Context, billingUsername string, limit int) ([]UserNodeAccount, error) {
+func (s *Store) ListUserNodeAccountsWithFilter(
+	ctx context.Context,
+	billingUsername string,
+	nodeID string,
+	localUsername string,
+	limit int,
+) ([]UserNodeAccount, error) {
 	billingUsername = strings.TrimSpace(billingUsername)
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
 	if limit <= 0 || limit > 20000 {
 		limit = 5000
 	}
-	if billingUsername == "" {
-		rows, err := s.db.QueryContext(ctx, `
+	conds := make([]string, 0, 3)
+	args := make([]any, 0, 4)
+	addArg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	if billingUsername != "" {
+		conds = append(conds, "billing_username="+addArg(billingUsername))
+	}
+	if nodeID != "" {
+		conds = append(conds, "node_id="+addArg(nodeID))
+	}
+	if localUsername != "" {
+		conds = append(conds, "local_username="+addArg(localUsername))
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = "WHERE " + strings.Join(conds, " AND ")
+	}
+	query := `
 SELECT node_id, local_username, billing_username, created_at, updated_at
 FROM user_node_accounts
+` + where + `
 ORDER BY billing_username, node_id, local_username
-LIMIT $1`, limit)
-		if err != nil {
+LIMIT ` + addArg(limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]UserNodeAccount, 0)
+	for rows.Next() {
+		var v UserNodeAccount
+		if err := rows.Scan(&v.NodeID, &v.LocalUsername, &v.BillingUsername, &v.CreatedAt, &v.UpdatedAt); err != nil {
 			return nil, err
 		}
-		defer rows.Close()
-		out := make([]UserNodeAccount, 0)
-		for rows.Next() {
-			var v UserNodeAccount
-			if err := rows.Scan(&v.NodeID, &v.LocalUsername, &v.BillingUsername, &v.CreatedAt, &v.UpdatedAt); err != nil {
-				return nil, err
-			}
-			out = append(out, v)
-		}
-		return out, rows.Err()
+		out = append(out, v)
 	}
-	return s.ListUserNodeAccountsByBilling(ctx, billingUsername, limit)
+	return out, rows.Err()
+}
+
+func (s *Store) ListUserNodeAccounts(ctx context.Context, billingUsername string, limit int) ([]UserNodeAccount, error) {
+	return s.ListUserNodeAccountsWithFilter(ctx, billingUsername, "", "", limit)
 }
 
 func (s *Store) ListUserNodeAccountMappingRisks(ctx context.Context, days int, minSwitches int, limit int) ([]UserNodeAccountMappingRisk, error) {
@@ -1372,8 +1950,10 @@ SELECT
 FROM joined j
 LEFT JOIN user_node_accounts una
   ON una.node_id = j.node_id AND una.local_username = j.local_username
-WHERE j.switch_count >= $2
-   OR j.distinct_billing_count >= 2
+LEFT JOIN user_node_account_risk_clears rc
+  ON rc.node_id = j.node_id AND rc.local_username = j.local_username
+WHERE (j.switch_count >= $2 OR j.distinct_billing_count >= 2)
+  AND (rc.cleared_at IS NULL OR j.last_changed_at IS NULL OR j.last_changed_at > rc.cleared_at)
 ORDER BY j.switch_count DESC, j.distinct_billing_count DESC, j.last_changed_at DESC
 LIMIT $3`, from, minSwitches, limit)
 	if err != nil {
@@ -1422,6 +2002,25 @@ LIMIT $3`, from, minSwitches, limit)
 		out = append(out, x)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) ClearUserNodeAccountMappingRisk(ctx context.Context, nodeID string, localUsername string, clearedBy string) error {
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	clearedBy = strings.TrimSpace(clearedBy)
+	if nodeID == "" || localUsername == "" {
+		return errors.New("node_id/local_username 不能为空")
+	}
+	if clearedBy == "" {
+		clearedBy = "admin"
+	}
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO user_node_account_risk_clears(node_id, local_username, cleared_by, cleared_at)
+VALUES($1,$2,$3,NOW())
+ON CONFLICT (node_id, local_username) DO UPDATE SET
+  cleared_by=EXCLUDED.cleared_by,
+  cleared_at=NOW()`, nodeID, localUsername, clearedBy)
+	return err
 }
 
 func (s *Store) InsertAccountProvisionLog(
@@ -1934,6 +2533,178 @@ WHERE node_id=$1 AND local_username=$2 AND billing_username=$3`, nodeID, localUs
 	})
 }
 
+func (s *Store) AdminForceUnbindUserNodeAccountWithRecord(
+	ctx context.Context,
+	nodeID string,
+	localUsername string,
+	billingUsername string,
+	operator string,
+	reason string,
+) (string, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	billingUsername = strings.TrimSpace(billingUsername)
+	operator = strings.TrimSpace(operator)
+	reason = strings.TrimSpace(reason)
+	if nodeID == "" || localUsername == "" {
+		return "", errors.New("node_id/local_username 不能为空")
+	}
+	if operator == "" {
+		operator = "admin"
+	}
+	if reason == "" {
+		reason = fmt.Sprintf("管理员 %s 强制解绑节点账号映射", operator)
+	}
+	var resolvedBilling string
+	if err := s.WithTx(ctx, func(tx *sql.Tx) error {
+		oldBilling, existed, err := s.getUserNodeAccountBillingTx(ctx, tx, nodeID, localUsername)
+		if err != nil {
+			return err
+		}
+		if !existed {
+			return sql.ErrNoRows
+		}
+		if billingUsername != "" && oldBilling != billingUsername {
+			return errors.New("映射校验失败：该节点账号不属于指定平台账号")
+		}
+		resolvedBilling = oldBilling
+		res, err := tx.ExecContext(ctx, `
+DELETE FROM user_node_accounts
+WHERE node_id=$1 AND local_username=$2 AND billing_username=$3`, nodeID, localUsername, oldBilling)
+		if err != nil {
+			return err
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			return sql.ErrNoRows
+		}
+		if err := s.insertUserNodeAccountAuditTx(
+			ctx, tx,
+			nodeID, localUsername,
+			oldBilling, "",
+			"mapping_delete",
+			operator, "admin_force_unbind", reason,
+		); err != nil {
+			return err
+		}
+		return s.insertAdminForcedUnbindRecordTx(
+			ctx, tx,
+			oldBilling,
+			nodeID,
+			localUsername,
+			reason,
+			operator,
+			time.Now(),
+		)
+	}); err != nil {
+		return "", err
+	}
+	return resolvedBilling, nil
+}
+
+func (s *Store) ListUserNodeUnbindRecords(
+	ctx context.Context,
+	billingUsername string,
+	nodeID string,
+	localUsername string,
+	status string,
+	sourceType string,
+	limit int,
+) ([]UserNodeUnbindRecord, error) {
+	billingUsername = strings.TrimSpace(billingUsername)
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	status = strings.TrimSpace(status)
+	sourceType = strings.TrimSpace(sourceType)
+	if limit <= 0 || limit > 5000 {
+		limit = 500
+	}
+	conds := make([]string, 0, 5)
+	args := make([]any, 0, 8)
+	addArg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	if billingUsername != "" {
+		conds = append(conds, "billing_username="+addArg(billingUsername))
+	}
+	if nodeID != "" {
+		conds = append(conds, "node_id="+addArg(nodeID))
+	}
+	if localUsername != "" {
+		conds = append(conds, "local_username="+addArg(localUsername))
+	}
+	if status != "" {
+		conds = append(conds, "status="+addArg(status))
+	}
+	if sourceType != "" {
+		conds = append(conds, "source_type="+addArg(sourceType))
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = "WHERE " + strings.Join(conds, " AND ")
+	}
+	query := `
+SELECT record_id, source_type, request_id, billing_username, node_id, local_username, status, reason,
+       initiated_by, reviewed_by, reviewed_at, executed_at, created_at, updated_at
+FROM user_node_unbind_records
+` + where + `
+ORDER BY created_at DESC, record_id DESC
+LIMIT ` + addArg(limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]UserNodeUnbindRecord, 0, limit)
+	for rows.Next() {
+		var x UserNodeUnbindRecord
+		var requestID sql.NullInt64
+		var reviewedBy sql.NullString
+		var reviewedAt sql.NullTime
+		var executedAt sql.NullTime
+		if err := rows.Scan(
+			&x.RecordID,
+			&x.SourceType,
+			&requestID,
+			&x.BillingUsername,
+			&x.NodeID,
+			&x.LocalUsername,
+			&x.Status,
+			&x.Reason,
+			&x.InitiatedBy,
+			&reviewedBy,
+			&reviewedAt,
+			&executedAt,
+			&x.CreatedAt,
+			&x.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		if requestID.Valid {
+			v := int(requestID.Int64)
+			x.RequestID = &v
+		}
+		if reviewedBy.Valid {
+			v := strings.TrimSpace(reviewedBy.String)
+			x.ReviewedBy = &v
+		}
+		if reviewedAt.Valid {
+			t := reviewedAt.Time
+			x.ReviewedAt = &t
+		}
+		if executedAt.Valid {
+			t := executedAt.Time
+			x.ExecutedAt = &t
+		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) UpdateUserNodeAccount(ctx context.Context, oldNodeID string, oldLocalUsername string, oldBillingUsername string, newNodeID string, newLocalUsername string, newBillingUsername string) error {
 	oldNodeID = strings.TrimSpace(oldNodeID)
 	oldLocalUsername = strings.TrimSpace(oldLocalUsername)
@@ -1998,7 +2769,7 @@ func (s *Store) UpdateUserNodeAccountWithAudit(
 		if err != nil {
 			return err
 		}
-		if newExisted && newOldBilling != newBillingUsername && isUserMappingSource(source) {
+		if newExisted && newOldBilling != newBillingUsername {
 			return &NodeAccountOwnershipConflictError{
 				NodeID:          newNodeID,
 				LocalUsername:   newLocalUsername,
@@ -2163,6 +2934,63 @@ func (s *Store) IsAdminAccount(ctx context.Context, username string) (bool, erro
 	return exists, nil
 }
 
+func (s *Store) IsNodeLocalMappedToAdmin(ctx context.Context, nodeID string, localUsername string) (bool, string, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	if nodeID == "" || localUsername == "" {
+		return false, "", errors.New("node_id/local_username 不能为空")
+	}
+	var adminUsername string
+	err := s.db.QueryRowContext(ctx, `
+SELECT una.billing_username
+FROM user_node_accounts una
+JOIN admin_accounts aa
+  ON aa.username=una.billing_username
+WHERE una.node_id=$1 AND una.local_username=$2
+LIMIT 1`, nodeID, localUsername).Scan(&adminUsername)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, "", nil
+	}
+	if err != nil {
+		return false, "", err
+	}
+	return true, strings.TrimSpace(adminUsername), nil
+}
+
+func (s *Store) ListNodeAdminMappedLocals(ctx context.Context, nodeID string, limit int) ([]string, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return nil, errors.New("node_id 不能为空")
+	}
+	if limit <= 0 || limit > 10000 {
+		limit = 1000
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT una.local_username
+FROM user_node_accounts una
+JOIN admin_accounts aa
+  ON aa.username=una.billing_username
+WHERE una.node_id=$1
+ORDER BY una.local_username
+LIMIT $2`, nodeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]string, 0)
+	for rows.Next() {
+		var local string
+		if err := rows.Scan(&local); err != nil {
+			return nil, err
+		}
+		local = strings.TrimSpace(local)
+		if local != "" {
+			out = append(out, local)
+		}
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) ListAdminUsernames(ctx context.Context) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT username FROM admin_accounts ORDER BY username`)
 	if err != nil {
@@ -2224,7 +3052,8 @@ func (s *Store) ListAllowedLocalUsersByNode(ctx context.Context, nodeID string, 
 	rows, err := s.db.QueryContext(ctx, `
 WITH policy AS (
   SELECT COALESCE(np.ssh_guard_enabled, FALSE) AS guard_enabled,
-         COALESCE(np.ssh_exclusive_enabled, FALSE) AS exclusive_enabled
+         COALESCE(np.ssh_exclusive_enabled, FALSE) AS exclusive_enabled,
+         COALESCE(np.ssh_exclusive_block_others, TRUE) AS exclusive_block_others
   FROM nodes n
   LEFT JOIN node_policies np ON np.node_id=n.node_id
   WHERE n.node_id=$1
@@ -2239,17 +3068,22 @@ SELECT DISTINCT local_username FROM (
   SELECT local_username
   FROM user_node_accounts
   WHERE node_id=$1
-    AND EXISTS (SELECT 1 FROM policy WHERE exclusive_enabled=false)
+    AND EXISTS (SELECT 1 FROM policy WHERE (exclusive_enabled=false OR exclusive_block_others=false))
   UNION ALL
   SELECT local_username
   FROM node_exclusive_users
   WHERE node_id=$1
-    AND EXISTS (SELECT 1 FROM policy WHERE exclusive_enabled=true)
+    AND EXISTS (SELECT 1 FROM policy WHERE exclusive_enabled=true AND exclusive_block_others=true)
   UNION ALL
   SELECT nlu.local_username
   FROM node_local_users nlu
   WHERE nlu.node_id=$1
-    AND EXISTS (SELECT 1 FROM policy WHERE guard_enabled=false AND exclusive_enabled=false)
+    AND EXISTS (SELECT 1 FROM policy WHERE guard_enabled=false AND (exclusive_enabled=false OR exclusive_block_others=false))
+  UNION ALL
+  SELECT local_username
+  FROM user_node_bind_temp_access
+  WHERE node_id=$1
+    AND expires_at > NOW()
   UNION ALL
   SELECT local_username
   FROM ssh_whitelist
@@ -3071,6 +3905,127 @@ WHERE node_id=$1 AND local_username=$2`, nodeID, localUsername)
 	return nil
 }
 
+func normalizeUnbindRecordSourceType(v string) string {
+	switch strings.TrimSpace(v) {
+	case "admin_forced":
+		return "admin_forced"
+	default:
+		return "user_request"
+	}
+}
+
+func normalizeUnbindRecordStatus(v string) string {
+	switch strings.TrimSpace(v) {
+	case "approved":
+		return "approved"
+	case "rejected":
+		return "rejected"
+	case "forced":
+		return "forced"
+	default:
+		return "pending"
+	}
+}
+
+func (s *Store) upsertUserNodeUnbindRecordByRequestTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	requestID int,
+	billingUsername string,
+	nodeID string,
+	localUsername string,
+	status string,
+	reason string,
+	initiatedBy string,
+	reviewedBy *string,
+	reviewedAt *time.Time,
+	executedAt *time.Time,
+) error {
+	if requestID <= 0 {
+		return errors.New("request_id 不合法")
+	}
+	billingUsername = strings.TrimSpace(billingUsername)
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	reason = strings.TrimSpace(reason)
+	initiatedBy = strings.TrimSpace(initiatedBy)
+	status = normalizeUnbindRecordStatus(status)
+	if billingUsername == "" || nodeID == "" || localUsername == "" {
+		return errors.New("billing_username/node_id/local_username 不能为空")
+	}
+	if initiatedBy == "" {
+		initiatedBy = billingUsername
+	}
+	var reviewedByArg any = nil
+	if reviewedBy != nil {
+		v := strings.TrimSpace(*reviewedBy)
+		if v != "" {
+			reviewedByArg = v
+		}
+	}
+	var reviewedAtArg any = nil
+	if reviewedAt != nil {
+		reviewedAtArg = *reviewedAt
+	}
+	var executedAtArg any = nil
+	if executedAt != nil {
+		executedAtArg = *executedAt
+	}
+	_, err := tx.ExecContext(ctx, `
+INSERT INTO user_node_unbind_records(
+  source_type, request_id, billing_username, node_id, local_username, status, reason,
+  initiated_by, reviewed_by, reviewed_at, executed_at, created_at, updated_at
+)
+VALUES('user_request',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW(),NOW())
+ON CONFLICT (request_id) DO UPDATE SET
+  billing_username=EXCLUDED.billing_username,
+  node_id=EXCLUDED.node_id,
+  local_username=EXCLUDED.local_username,
+  status=EXCLUDED.status,
+  reason=COALESCE(NULLIF(EXCLUDED.reason, ''), user_node_unbind_records.reason),
+  initiated_by=COALESCE(NULLIF(EXCLUDED.initiated_by, ''), user_node_unbind_records.initiated_by),
+  reviewed_by=COALESCE(EXCLUDED.reviewed_by, user_node_unbind_records.reviewed_by),
+  reviewed_at=COALESCE(EXCLUDED.reviewed_at, user_node_unbind_records.reviewed_at),
+  executed_at=COALESCE(EXCLUDED.executed_at, user_node_unbind_records.executed_at),
+  updated_at=NOW()`,
+		requestID, billingUsername, nodeID, localUsername, status, reason, initiatedBy,
+		reviewedByArg, reviewedAtArg, executedAtArg,
+	)
+	return err
+}
+
+func (s *Store) insertAdminForcedUnbindRecordTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	billingUsername string,
+	nodeID string,
+	localUsername string,
+	reason string,
+	operator string,
+	now time.Time,
+) error {
+	billingUsername = strings.TrimSpace(billingUsername)
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	reason = strings.TrimSpace(reason)
+	operator = strings.TrimSpace(operator)
+	if billingUsername == "" || nodeID == "" || localUsername == "" {
+		return errors.New("billing_username/node_id/local_username 不能为空")
+	}
+	if operator == "" {
+		operator = "admin"
+	}
+	_, err := tx.ExecContext(ctx, `
+INSERT INTO user_node_unbind_records(
+  source_type, request_id, billing_username, node_id, local_username, status, reason,
+  initiated_by, reviewed_by, reviewed_at, executed_at, created_at, updated_at
+)
+VALUES('admin_forced',NULL,$1,$2,$3,'forced',$4,$5,$5,$6,$6,NOW(),NOW())`,
+		billingUsername, nodeID, localUsername, reason, operator, now,
+	)
+	return err
+}
+
 func (s *Store) CreateUserRequestTx(
 	ctx context.Context,
 	tx *sql.Tx,
@@ -3086,13 +4041,13 @@ func (s *Store) CreateUserRequestTx(
 	localUsername = strings.TrimSpace(localUsername)
 	message = strings.TrimSpace(message)
 
-	if requestType != "bind" && requestType != "open" {
-		return 0, errors.New("request_type 仅支持 bind/open")
+	if requestType != "bind" && requestType != "open" && requestType != "unbind" {
+		return 0, errors.New("request_type 仅支持 bind/open/unbind")
 	}
 	if billingUsername == "" {
 		return 0, errors.New("billing_username 不能为空")
 	}
-	if requestType == "bind" && (nodeID == "" || localUsername == "") {
+	if (requestType == "bind" || requestType == "unbind") && (nodeID == "" || localUsername == "") {
 		return 0, errors.New("node_id/local_username 不能为空")
 	}
 	if requestType == "open" {
@@ -3142,13 +4097,59 @@ WHERE billing_username=$1
 			return 0, errors.New("你已有待审核的节点开通申请，请勿重复提交")
 		}
 	}
+	if requestType == "unbind" {
+		if utf8RuneCount := len([]rune(message)); utf8RuneCount < 10 {
+			return 0, errors.New("解绑申请理由至少 10 个字")
+		}
+		var exists bool
+		if err := tx.QueryRowContext(ctx, `
+SELECT EXISTS(
+  SELECT 1
+  FROM user_node_accounts
+  WHERE node_id=$1 AND local_username=$2 AND billing_username=$3
+)`, nodeID, localUsername, billingUsername).Scan(&exists); err != nil {
+			return 0, err
+		}
+		if !exists {
+			return 0, errors.New("当前映射不存在，无法申请解绑")
+		}
+		var blockedCount int
+		if err := tx.QueryRowContext(ctx, `
+SELECT COUNT(1)
+FROM user_requests
+WHERE request_type='unbind'
+  AND billing_username=$1
+  AND node_id=$2
+  AND local_username=$3
+  AND status IN ('pending','rejected')`, billingUsername, nodeID, localUsername).Scan(&blockedCount); err != nil {
+			return 0, err
+		}
+		if blockedCount > 0 {
+			return 0, errors.New("该映射已有未通过解绑申请（待审核或已驳回），不可重复提交")
+		}
+	}
 
 	var id int
 	err := tx.QueryRowContext(ctx, `
 INSERT INTO user_requests(request_type, billing_username, node_id, local_username, message, status)
 VALUES($1,$2,$3,$4,$5,'pending')
 RETURNING request_id`, requestType, billingUsername, nodeID, localUsername, message).Scan(&id)
-	return id, err
+	if err != nil {
+		return 0, err
+	}
+	if requestType == "unbind" {
+		if err := s.upsertUserNodeUnbindRecordByRequestTx(
+			ctx, tx, id,
+			billingUsername, nodeID, localUsername,
+			"pending",
+			message,
+			billingUsername,
+			nil, nil, nil,
+		); err != nil {
+			return 0, err
+		}
+	}
+	return id, nil
 }
 
 func (s *Store) ListUserRequestsByBilling(ctx context.Context, billingUsername string, limit int) ([]UserRequest, error) {
@@ -3255,6 +4256,7 @@ func (s *Store) ReviewUserRequestTx(
 	newStatus string,
 	reviewedBy string,
 	reviewedAt time.Time,
+	rejectReason string,
 ) (UserRequest, error) {
 	if requestID <= 0 {
 		return UserRequest{}, errors.New("request_id 不合法")
@@ -3267,6 +4269,7 @@ func (s *Store) ReviewUserRequestTx(
 	if reviewedBy == "" {
 		reviewedBy = "admin"
 	}
+	rejectReason = strings.TrimSpace(rejectReason)
 
 	// 锁住记录，避免并发重复审批
 	var r UserRequest
@@ -3283,8 +4286,11 @@ FOR UPDATE`, requestID).Scan(
 	); err != nil {
 		return UserRequest{}, err
 	}
-	if r.Status != "pending" {
+	if r.Status != "pending" && r.Status != "challenge_active" && r.Status != "verified" {
 		return UserRequest{}, errors.New("该申请已处理，不能重复审核")
+	}
+	if r.RequestType == "bind" && newStatus == "approved" && r.Status != "verified" {
+		return UserRequest{}, errors.New("绑定申请需先完成节点侧 challenge 校验，当前不能直接审批通过")
 	}
 
 	if _, err := tx.ExecContext(ctx, `
@@ -3293,10 +4299,80 @@ SET status=$2, reviewed_by=$3, reviewed_at=$4, updated_at=NOW()
 WHERE request_id=$1`, requestID, newStatus, reviewedBy, reviewedAt); err != nil {
 		return UserRequest{}, err
 	}
+	if r.RequestType == "unbind" && newStatus == "rejected" {
+		if rejectReason == "" {
+			return UserRequest{}, errors.New("拒绝解绑申请时必须填写理由")
+		}
+		rb := reviewedBy
+		if err := s.upsertUserNodeUnbindRecordByRequestTx(
+			ctx, tx, r.RequestID,
+			r.BillingUsername, r.NodeID, r.LocalUsername,
+			"rejected",
+			rejectReason,
+			r.BillingUsername,
+			&rb, &reviewedAt, nil,
+		); err != nil {
+			return UserRequest{}, err
+		}
+	}
 
 	// bind 申请在 approved 时，写入映射表，供计费与 SSH 校验使用
 	if newStatus == "approved" && r.RequestType == "bind" {
+		oldBilling, existed, err := s.getUserNodeAccountBillingTx(ctx, tx, r.NodeID, r.LocalUsername)
+		if err != nil {
+			return UserRequest{}, err
+		}
+		if existed && oldBilling != r.BillingUsername {
+			return UserRequest{}, &NodeAccountOwnershipConflictError{
+				NodeID:          r.NodeID,
+				LocalUsername:   r.LocalUsername,
+				ExistingBilling: oldBilling,
+				RequestedBy:     r.BillingUsername,
+			}
+		}
 		if err := s.UpsertUserNodeAccountTx(ctx, tx, r.NodeID, r.LocalUsername, r.BillingUsername); err != nil {
+			return UserRequest{}, err
+		}
+	}
+	if newStatus == "approved" && r.RequestType == "unbind" {
+		oldBilling, existed, err := s.getUserNodeAccountBillingTx(ctx, tx, r.NodeID, r.LocalUsername)
+		if err != nil {
+			return UserRequest{}, err
+		}
+		if !existed || oldBilling != r.BillingUsername {
+			return UserRequest{}, errors.New("解绑失败：当前映射不存在或归属已变化")
+		}
+		res, err := tx.ExecContext(ctx, `
+DELETE FROM user_node_accounts
+WHERE node_id=$1 AND local_username=$2 AND billing_username=$3`, r.NodeID, r.LocalUsername, r.BillingUsername)
+		if err != nil {
+			return UserRequest{}, err
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return UserRequest{}, err
+		}
+		if affected == 0 {
+			return UserRequest{}, sql.ErrNoRows
+		}
+		if err := s.insertUserNodeAccountAuditTx(
+			ctx, tx,
+			r.NodeID, r.LocalUsername,
+			r.BillingUsername, "",
+			"mapping_delete",
+			reviewedBy, "admin_request", "管理员审批通过解绑申请",
+		); err != nil {
+			return UserRequest{}, err
+		}
+		rb := reviewedBy
+		if err := s.upsertUserNodeUnbindRecordByRequestTx(
+			ctx, tx, r.RequestID,
+			r.BillingUsername, r.NodeID, r.LocalUsername,
+			"approved",
+			r.Message,
+			r.BillingUsername,
+			&rb, &reviewedAt, &reviewedAt,
+		); err != nil {
 			return UserRequest{}, err
 		}
 	}
@@ -3361,6 +4437,905 @@ WHERE request_id=$1`, requestID); err != nil {
 	return r, nil
 }
 
+func nullableTimePtr(v sql.NullTime) *time.Time {
+	if !v.Valid {
+		return nil
+	}
+	t := asBeijingWallTime(v.Time)
+	return &t
+}
+
+func scanUserNodeBindChallengeRow(
+	ch *UserNodeBindChallenge,
+	row interface {
+		Scan(dest ...any) error
+	},
+) error {
+	var claimedAt sql.NullTime
+	var verifiedAt sql.NullTime
+	var cooldownUntil sql.NullTime
+	if err := row.Scan(
+		&ch.ChallengeID,
+		&ch.RequestID,
+		&ch.BillingUsername,
+		&ch.NodeID,
+		&ch.LocalUsername,
+		&ch.ChallengeToken,
+		&ch.Status,
+		&ch.FailReason,
+		&ch.ExpiresAt,
+		&claimedAt,
+		&verifiedAt,
+		&cooldownUntil,
+		&ch.FailureProcessed,
+		&ch.CreatedAt,
+		&ch.UpdatedAt,
+	); err != nil {
+		return err
+	}
+	ch.ExpiresAt = asBeijingWallTime(ch.ExpiresAt)
+	ch.CreatedAt = asBeijingWallTime(ch.CreatedAt)
+	ch.UpdatedAt = asBeijingWallTime(ch.UpdatedAt)
+	ch.ClaimedAt = nullableTimePtr(claimedAt)
+	ch.VerifiedAt = nullableTimePtr(verifiedAt)
+	ch.CooldownUntil = nullableTimePtr(cooldownUntil)
+	return nil
+}
+
+func (s *Store) GetUserNodeBindCooldown(ctx context.Context, billingUsername string) (UserNodeBindCooldown, error) {
+	billingUsername = strings.TrimSpace(billingUsername)
+	if billingUsername == "" {
+		return UserNodeBindCooldown{}, errors.New("billing_username 不能为空")
+	}
+	var out UserNodeBindCooldown
+	out.BillingUsername = billingUsername
+	var cooldownUntil sql.NullTime
+	var lastFailedAt sql.NullTime
+	var lastSucceededAt sql.NullTime
+	err := s.db.QueryRowContext(ctx, `
+SELECT billing_username, failure_streak, cooldown_until, last_failed_at, last_succeeded_at, updated_at
+FROM user_node_bind_cooldowns
+WHERE billing_username=$1`, billingUsername).Scan(
+		&out.BillingUsername,
+		&out.FailureStreak,
+		&cooldownUntil,
+		&lastFailedAt,
+		&lastSucceededAt,
+		&out.UpdatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		out.UpdatedAt = nowInBeijing()
+		return out, nil
+	}
+	if err != nil {
+		return UserNodeBindCooldown{}, err
+	}
+	out.UpdatedAt = asBeijingWallTime(out.UpdatedAt)
+	out.CooldownUntil = nullableTimePtr(cooldownUntil)
+	out.LastFailedAt = nullableTimePtr(lastFailedAt)
+	out.LastSucceededAt = nullableTimePtr(lastSucceededAt)
+	return out, nil
+}
+
+func (s *Store) ListUserNodeBindCooldowns(ctx context.Context, activeOnly bool, limit int, now time.Time) ([]AdminUserNodeBindCooldownRow, error) {
+	if now.IsZero() {
+		now = nowInBeijing()
+	}
+	if limit <= 0 || limit > 5000 {
+		limit = 500
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT c.billing_username,
+       c.failure_streak,
+       c.cooldown_until,
+       c.last_failed_at,
+       c.last_succeeded_at,
+       c.updated_at,
+       ch.challenge_id,
+       ch.node_id,
+       ch.local_username,
+       ch.expires_at
+FROM user_node_bind_cooldowns c
+LEFT JOIN LATERAL (
+  SELECT challenge_id, node_id, local_username, expires_at
+  FROM user_node_bind_challenges
+  WHERE billing_username=c.billing_username
+    AND status='active'
+    AND expires_at>$1
+  ORDER BY created_at DESC
+  LIMIT 1
+) ch ON TRUE
+WHERE (NOT $2 OR (c.cooldown_until IS NOT NULL AND c.cooldown_until > $1))
+ORDER BY COALESCE(c.cooldown_until, to_timestamp(0)) DESC, c.failure_streak DESC, c.updated_at DESC
+LIMIT $3`, now, activeOnly, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]AdminUserNodeBindCooldownRow, 0, limit)
+	for rows.Next() {
+		var x AdminUserNodeBindCooldownRow
+		var cooldownUntil sql.NullTime
+		var lastFailedAt sql.NullTime
+		var lastSucceededAt sql.NullTime
+		var activeChallengeID sql.NullInt64
+		var activeNodeID sql.NullString
+		var activeLocal sql.NullString
+		var activeExpires sql.NullTime
+		if err := rows.Scan(
+			&x.BillingUsername,
+			&x.FailureStreak,
+			&cooldownUntil,
+			&lastFailedAt,
+			&lastSucceededAt,
+			&x.UpdatedAt,
+			&activeChallengeID,
+			&activeNodeID,
+			&activeLocal,
+			&activeExpires,
+		); err != nil {
+			return nil, err
+		}
+		x.UpdatedAt = asBeijingWallTime(x.UpdatedAt)
+		x.CooldownUntil = nullableTimePtr(cooldownUntil)
+		x.LastFailedAt = nullableTimePtr(lastFailedAt)
+		x.LastSucceededAt = nullableTimePtr(lastSucceededAt)
+		if x.CooldownUntil != nil && x.CooldownUntil.After(now) {
+			x.RemainingCooldownSeconds = int64(x.CooldownUntil.Sub(now).Seconds())
+		}
+		if activeChallengeID.Valid {
+			v := activeChallengeID.Int64
+			x.ActiveChallengeID = &v
+		}
+		if activeNodeID.Valid {
+			x.ActiveChallengeNodeID = strings.TrimSpace(activeNodeID.String)
+		}
+		if activeLocal.Valid {
+			x.ActiveChallengeLocalUser = strings.TrimSpace(activeLocal.String)
+		}
+		x.ActiveChallengeExpiresAt = nullableTimePtr(activeExpires)
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ClearUserNodeBindCooldown(ctx context.Context, billingUsername string, now time.Time) (UserNodeBindCooldown, error) {
+	billingUsername = strings.TrimSpace(billingUsername)
+	if billingUsername == "" {
+		return UserNodeBindCooldown{}, errors.New("billing_username 不能为空")
+	}
+	if now.IsZero() {
+		now = nowInBeijing()
+	}
+	if err := s.WithTx(ctx, func(tx *sql.Tx) error {
+		return s.clearNodeBindCooldownTx(ctx, tx, billingUsername, now)
+	}); err != nil {
+		return UserNodeBindCooldown{}, err
+	}
+	return s.GetUserNodeBindCooldown(ctx, billingUsername)
+}
+
+func (s *Store) applyNodeBindFailureCooldownTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	billingUsername string,
+	now time.Time,
+	policy NodeBindSecurityPolicy,
+) (UserNodeBindCooldown, error) {
+	billingUsername = strings.TrimSpace(billingUsername)
+	if billingUsername == "" {
+		return UserNodeBindCooldown{}, errors.New("billing_username 不能为空")
+	}
+	policy = normalizeNodeBindSecurityPolicy(policy)
+
+	var streak int
+	var cooldownUntil sql.NullTime
+	if err := tx.QueryRowContext(ctx, `
+SELECT failure_streak, cooldown_until
+FROM user_node_bind_cooldowns
+WHERE billing_username=$1
+FOR UPDATE`, billingUsername).Scan(&streak, &cooldownUntil); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return UserNodeBindCooldown{}, err
+	}
+	streak++
+	cdMinutes := policy.AllFailureCooldownMinutes
+	if cdMinutes <= 0 {
+		cdMinutes = policy.RepeatFailureCooldownMinutes
+		if streak <= 1 {
+			cdMinutes = policy.FirstFailureCooldownMinutes
+		}
+	}
+	if cdMinutes <= 0 {
+		cdMinutes = 30
+	}
+	until := now.Add(time.Duration(cdMinutes) * time.Minute)
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO user_node_bind_cooldowns(
+  billing_username, failure_streak, cooldown_until, last_failed_at, updated_at
+)
+VALUES($1,$2,$3,$4,$4)
+ON CONFLICT (billing_username) DO UPDATE
+SET failure_streak=EXCLUDED.failure_streak,
+    cooldown_until=EXCLUDED.cooldown_until,
+    last_failed_at=EXCLUDED.last_failed_at,
+    updated_at=EXCLUDED.updated_at`,
+		billingUsername, streak, until, now,
+	); err != nil {
+		return UserNodeBindCooldown{}, err
+	}
+	out := UserNodeBindCooldown{
+		BillingUsername: billingUsername,
+		FailureStreak:   streak,
+		CooldownUntil:   &until,
+		LastFailedAt:    &now,
+		UpdatedAt:       now,
+	}
+	return out, nil
+}
+
+func (s *Store) applyNodeBindCooldownUntilTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	billingUsername string,
+	until time.Time,
+	now time.Time,
+) (UserNodeBindCooldown, error) {
+	billingUsername = strings.TrimSpace(billingUsername)
+	if billingUsername == "" {
+		return UserNodeBindCooldown{}, errors.New("billing_username 不能为空")
+	}
+	if now.IsZero() {
+		now = nowInBeijing()
+	}
+	if until.IsZero() || until.Before(now) {
+		until = now
+	}
+
+	var streak int
+	var existingUntil sql.NullTime
+	if err := tx.QueryRowContext(ctx, `
+SELECT failure_streak, cooldown_until
+FROM user_node_bind_cooldowns
+WHERE billing_username=$1
+FOR UPDATE`, billingUsername).Scan(&streak, &existingUntil); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return UserNodeBindCooldown{}, err
+	}
+	streak++
+	if existingUntil.Valid && existingUntil.Time.After(until) {
+		until = existingUntil.Time
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO user_node_bind_cooldowns(
+  billing_username, failure_streak, cooldown_until, last_failed_at, updated_at
+)
+VALUES($1,$2,$3,$4,$4)
+ON CONFLICT (billing_username) DO UPDATE
+SET failure_streak=EXCLUDED.failure_streak,
+    cooldown_until=EXCLUDED.cooldown_until,
+    last_failed_at=EXCLUDED.last_failed_at,
+    updated_at=EXCLUDED.updated_at`,
+		billingUsername, streak, until, now,
+	); err != nil {
+		return UserNodeBindCooldown{}, err
+	}
+	out := UserNodeBindCooldown{
+		BillingUsername: billingUsername,
+		FailureStreak:   streak,
+		CooldownUntil:   &until,
+		LastFailedAt:    &now,
+		UpdatedAt:       now,
+	}
+	return out, nil
+}
+
+func (s *Store) clearNodeBindCooldownTx(ctx context.Context, tx *sql.Tx, billingUsername string, now time.Time) error {
+	billingUsername = strings.TrimSpace(billingUsername)
+	if billingUsername == "" {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `
+INSERT INTO user_node_bind_cooldowns(
+  billing_username, failure_streak, cooldown_until, last_succeeded_at, updated_at
+)
+VALUES($1,0,NULL,$2,$2)
+ON CONFLICT (billing_username) DO UPDATE
+SET failure_streak=0,
+    cooldown_until=NULL,
+    last_succeeded_at=EXCLUDED.last_succeeded_at,
+    updated_at=EXCLUDED.updated_at`,
+		billingUsername, now,
+	)
+	return err
+}
+
+func (s *Store) CreateUserBindChallengeTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	billingUsername string,
+	nodeID string,
+	localUsername string,
+	message string,
+	challengeToken string,
+	now time.Time,
+	policy NodeBindSecurityPolicy,
+) (UserNodeBindChallenge, error) {
+	billingUsername = strings.TrimSpace(billingUsername)
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	message = strings.TrimSpace(message)
+	challengeToken = strings.TrimSpace(challengeToken)
+	if billingUsername == "" || nodeID == "" || localUsername == "" || challengeToken == "" {
+		return UserNodeBindChallenge{}, errors.New("billing_username/node_id/local_username/challenge_token 不能为空")
+	}
+	policy = normalizeNodeBindSecurityPolicy(policy)
+	if now.IsZero() {
+		now = nowInBeijing()
+	}
+
+	var accountExists bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM user_accounts WHERE username=$1)`, billingUsername).Scan(&accountExists); err != nil {
+		return UserNodeBindChallenge{}, err
+	}
+	if !accountExists {
+		return UserNodeBindChallenge{}, errors.New("平台账号不存在")
+	}
+
+	oldBilling, existed, err := s.getUserNodeAccountBillingTx(ctx, tx, nodeID, localUsername)
+	if err != nil {
+		return UserNodeBindChallenge{}, err
+	}
+	if existed {
+		if oldBilling == billingUsername {
+			return UserNodeBindChallenge{}, errNodeBindAlreadyBound
+		}
+		return UserNodeBindChallenge{}, &NodeAccountOwnershipConflictError{
+			NodeID:          nodeID,
+			LocalUsername:   localUsername,
+			ExistingBilling: oldBilling,
+			RequestedBy:     billingUsername,
+		}
+	}
+
+	var freezeUntil sql.NullTime
+	if err := tx.QueryRowContext(ctx, `
+SELECT freeze_until
+FROM user_node_bind_freezes
+WHERE node_id=$1 AND local_username=$2
+FOR UPDATE`, nodeID, localUsername).Scan(&freezeUntil); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return UserNodeBindChallenge{}, err
+	}
+	if freezeUntil.Valid {
+		if freezeUntil.Time.After(now) {
+			return UserNodeBindChallenge{}, &NodeBindTargetFrozenError{
+				NodeID:        nodeID,
+				LocalUsername: localUsername,
+				FreezeUntil:   freezeUntil.Time,
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `
+DELETE FROM user_node_bind_freezes
+WHERE node_id=$1 AND local_username=$2`, nodeID, localUsername); err != nil {
+			return UserNodeBindChallenge{}, err
+		}
+	}
+
+	var failureStreak int
+	var cooldownUntil sql.NullTime
+	if err := tx.QueryRowContext(ctx, `
+SELECT failure_streak, cooldown_until
+FROM user_node_bind_cooldowns
+WHERE billing_username=$1
+FOR UPDATE`, billingUsername).Scan(&failureStreak, &cooldownUntil); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return UserNodeBindChallenge{}, err
+	}
+	if cooldownUntil.Valid && cooldownUntil.Time.After(now) {
+		return UserNodeBindChallenge{}, &NodeBindCooldownError{
+			BillingUsername: billingUsername,
+			CooldownUntil:   cooldownUntil.Time,
+		}
+	}
+
+	if policy.SingleActivePerBilling {
+		var activeByBilling UserNodeBindChallenge
+		activeErr := scanUserNodeBindChallengeRow(&activeByBilling, tx.QueryRowContext(ctx, `
+SELECT challenge_id, request_id, billing_username, node_id, local_username, challenge_token, status, fail_reason,
+       expires_at, claimed_at, verified_at, cooldown_until, failure_processed, created_at, updated_at
+FROM user_node_bind_challenges
+WHERE billing_username=$1
+  AND status='active'
+  AND expires_at>$2
+ORDER BY created_at DESC
+LIMIT 1
+FOR UPDATE`, billingUsername, now))
+		if activeErr == nil {
+			if activeByBilling.NodeID == nodeID && activeByBilling.LocalUsername == localUsername {
+				return activeByBilling, nil
+			}
+			return UserNodeBindChallenge{}, &NodeBindActiveChallengeError{
+				BillingUsername: billingUsername,
+				Challenge:       activeByBilling,
+			}
+		}
+		if !errors.Is(activeErr, sql.ErrNoRows) {
+			return UserNodeBindChallenge{}, activeErr
+		}
+	}
+
+	var existing UserNodeBindChallenge
+	err = scanUserNodeBindChallengeRow(&existing, tx.QueryRowContext(ctx, `
+SELECT challenge_id, request_id, billing_username, node_id, local_username, challenge_token, status, fail_reason,
+       expires_at, claimed_at, verified_at, cooldown_until, failure_processed, created_at, updated_at
+FROM user_node_bind_challenges
+WHERE billing_username=$1
+  AND node_id=$2
+  AND local_username=$3
+  AND status='active'
+  AND expires_at>$4
+ORDER BY created_at DESC
+LIMIT 1
+FOR UPDATE`, billingUsername, nodeID, localUsername, now))
+	if err == nil {
+		return existing, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return UserNodeBindChallenge{}, err
+	}
+
+	var hasOther bool
+	if err := tx.QueryRowContext(ctx, `
+SELECT EXISTS(
+  SELECT 1
+  FROM user_node_bind_challenges
+  WHERE node_id=$1
+    AND local_username=$2
+    AND billing_username<>$3
+    AND status='active'
+    AND expires_at>$4
+)`, nodeID, localUsername, billingUsername, now).Scan(&hasOther); err != nil {
+		return UserNodeBindChallenge{}, err
+	}
+	if hasOther {
+		freezeTo := now.Add(time.Duration(policy.ContentionFreezeMinutes) * time.Minute)
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO user_node_bind_freezes(node_id, local_username, freeze_until, reason, triggered_by, created_at, updated_at)
+VALUES($1,$2,$3,$4,$5,$6,$6)
+ON CONFLICT (node_id, local_username) DO UPDATE
+SET freeze_until=EXCLUDED.freeze_until,
+    reason=EXCLUDED.reason,
+    triggered_by=EXCLUDED.triggered_by,
+    updated_at=EXCLUDED.updated_at`,
+			nodeID, localUsername, freezeTo, "multiple_billing_contention", billingUsername, now,
+		); err != nil {
+			return UserNodeBindChallenge{}, err
+		}
+		reqIDs := make([]int, 0)
+		failedBillings := make(map[string]struct{})
+		rows, err := tx.QueryContext(ctx, `
+UPDATE user_node_bind_challenges
+SET status='failed',
+    fail_reason='contention_freeze',
+    cooldown_until=$3,
+    failure_processed=TRUE,
+    expires_at=CASE WHEN expires_at > $4 THEN $4 ELSE expires_at END,
+    updated_at=$4
+WHERE node_id=$1
+  AND local_username=$2
+  AND status='active'
+RETURNING request_id, billing_username`, nodeID, localUsername, freezeTo, now)
+		if err != nil {
+			return UserNodeBindChallenge{}, err
+		}
+		for rows.Next() {
+			var requestID int
+			var failedBilling string
+			if err := rows.Scan(&requestID, &failedBilling); err != nil {
+				_ = rows.Close()
+				return UserNodeBindChallenge{}, err
+			}
+			if requestID > 0 {
+				reqIDs = append(reqIDs, requestID)
+			}
+			failedBilling = strings.TrimSpace(failedBilling)
+			if failedBilling != "" {
+				failedBillings[failedBilling] = struct{}{}
+			}
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return UserNodeBindChallenge{}, err
+		}
+		_ = rows.Close()
+		if len(reqIDs) > 0 {
+			if _, err := tx.ExecContext(ctx, `
+UPDATE user_requests
+SET status='rejected', reviewed_by='system', reviewed_at=$2, updated_at=$2
+WHERE request_id = ANY($1)
+  AND status IN ('pending','challenge_active','verified')`, pq.Array(reqIDs), now); err != nil {
+				return UserNodeBindChallenge{}, err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `
+DELETE FROM user_node_bind_temp_access
+WHERE node_id=$1 AND local_username=$2`, nodeID, localUsername); err != nil {
+			return UserNodeBindChallenge{}, err
+		}
+		failedBillings[billingUsername] = struct{}{}
+		for failedBilling := range failedBillings {
+			if _, err := s.applyNodeBindCooldownUntilTx(ctx, tx, failedBilling, freezeTo, now); err != nil {
+				return UserNodeBindChallenge{}, err
+			}
+		}
+		return UserNodeBindChallenge{}, &NodeBindTargetFrozenError{
+			NodeID:        nodeID,
+			LocalUsername: localUsername,
+			FreezeUntil:   freezeTo,
+		}
+	}
+
+	expiresAt := now.Add(time.Duration(policy.ChallengeWindowSeconds) * time.Second)
+	requestID := 0
+	if err := tx.QueryRowContext(ctx, `
+INSERT INTO user_requests(request_type, billing_username, node_id, local_username, message, status)
+VALUES('bind',$1,$2,$3,$4,'pending')
+RETURNING request_id`, billingUsername, nodeID, localUsername, message).Scan(&requestID); err != nil {
+		return UserNodeBindChallenge{}, err
+	}
+
+	var out UserNodeBindChallenge
+	if err := scanUserNodeBindChallengeRow(&out, tx.QueryRowContext(ctx, `
+INSERT INTO user_node_bind_challenges(
+  request_id, billing_username, node_id, local_username, challenge_token, status, expires_at, created_at, updated_at
+)
+VALUES($1,$2,$3,$4,$5,'active',$6,$7,$7)
+RETURNING challenge_id, request_id, billing_username, node_id, local_username, challenge_token, status, fail_reason,
+          expires_at, claimed_at, verified_at, cooldown_until, failure_processed, created_at, updated_at`,
+		requestID, billingUsername, nodeID, localUsername, challengeToken, expiresAt, now,
+	)); err != nil {
+		return UserNodeBindChallenge{}, err
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO user_node_bind_temp_access(node_id, local_username, billing_username, challenge_id, expires_at, created_at, updated_at)
+VALUES($1,$2,$3,$4,$5,$6,$6)
+ON CONFLICT (node_id, local_username) DO UPDATE
+SET billing_username=EXCLUDED.billing_username,
+    challenge_id=EXCLUDED.challenge_id,
+    expires_at=EXCLUDED.expires_at,
+    updated_at=EXCLUDED.updated_at`,
+		nodeID, localUsername, billingUsername, out.ChallengeID, expiresAt, now,
+	); err != nil {
+		return UserNodeBindChallenge{}, err
+	}
+	return out, nil
+}
+
+func (s *Store) ClaimUserBindChallengeTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	challengeToken string,
+	nodeID string,
+	localUsername string,
+	now time.Time,
+) (UserNodeBindChallenge, error) {
+	challengeToken = strings.TrimSpace(challengeToken)
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	if challengeToken == "" {
+		return UserNodeBindChallenge{}, errNodeBindChallengeNotFound
+	}
+	if now.IsZero() {
+		now = nowInBeijing()
+	}
+	var ch UserNodeBindChallenge
+	if err := scanUserNodeBindChallengeRow(&ch, tx.QueryRowContext(ctx, `
+SELECT challenge_id, request_id, billing_username, node_id, local_username, challenge_token, status, fail_reason,
+       expires_at, claimed_at, verified_at, cooldown_until, failure_processed, created_at, updated_at
+FROM user_node_bind_challenges
+WHERE challenge_token=$1
+FOR UPDATE`, challengeToken)); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return UserNodeBindChallenge{}, errNodeBindChallengeNotFound
+		}
+		return UserNodeBindChallenge{}, err
+	}
+	if nodeID != "" && ch.NodeID != nodeID {
+		return UserNodeBindChallenge{}, errNodeBindChallengeMismatch
+	}
+	if localUsername != "" && ch.LocalUsername != localUsername {
+		return UserNodeBindChallenge{}, errNodeBindChallengeMismatch
+	}
+	if ch.Status != "active" {
+		if ch.Status == "expired" || ch.Status == "failed" || ch.Status == "cancelled" {
+			return UserNodeBindChallenge{}, errNodeBindChallengeExpired
+		}
+		if ch.Status == "approved" {
+			return ch, nil
+		}
+		return UserNodeBindChallenge{}, errors.New("challenge 状态不合法")
+	}
+	if !ch.ExpiresAt.After(now) {
+		return UserNodeBindChallenge{}, errNodeBindChallengeExpired
+	}
+
+	var freezeUntil sql.NullTime
+	if err := tx.QueryRowContext(ctx, `
+SELECT freeze_until
+FROM user_node_bind_freezes
+WHERE node_id=$1 AND local_username=$2
+FOR UPDATE`, ch.NodeID, ch.LocalUsername).Scan(&freezeUntil); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return UserNodeBindChallenge{}, err
+	}
+	if freezeUntil.Valid && freezeUntil.Time.After(now) {
+		return UserNodeBindChallenge{}, &NodeBindTargetFrozenError{
+			NodeID:        ch.NodeID,
+			LocalUsername: ch.LocalUsername,
+			FreezeUntil:   freezeUntil.Time,
+		}
+	}
+
+	oldBilling, existed, err := s.getUserNodeAccountBillingTx(ctx, tx, ch.NodeID, ch.LocalUsername)
+	if err != nil {
+		return UserNodeBindChallenge{}, err
+	}
+	if existed && oldBilling != ch.BillingUsername {
+		return UserNodeBindChallenge{}, &NodeAccountOwnershipConflictError{
+			NodeID:          ch.NodeID,
+			LocalUsername:   ch.LocalUsername,
+			ExistingBilling: oldBilling,
+			RequestedBy:     ch.BillingUsername,
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+UPDATE user_node_bind_challenges
+SET status='verified',
+    claimed_at=$2,
+    verified_at=$2,
+    updated_at=$2
+WHERE challenge_id=$1`, ch.ChallengeID, now); err != nil {
+		return UserNodeBindChallenge{}, err
+	}
+	if ch.RequestID > 0 {
+		if _, err := tx.ExecContext(ctx, `
+UPDATE user_requests
+SET status='verified', updated_at=$2
+WHERE request_id=$1
+  AND status IN ('pending','challenge_active')`, ch.RequestID, now); err != nil {
+			return UserNodeBindChallenge{}, err
+		}
+	}
+
+	if !existed {
+		if err := s.UpsertUserNodeAccountTx(ctx, tx, ch.NodeID, ch.LocalUsername, ch.BillingUsername); err != nil {
+			return UserNodeBindChallenge{}, err
+		}
+		if err := s.insertUserNodeAccountAuditTx(
+			ctx, tx,
+			ch.NodeID, ch.LocalUsername,
+			"", ch.BillingUsername,
+			"mapping_create",
+			ch.BillingUsername, "user_claim", "用户完成 challenge 校验，自动生效映射",
+		); err != nil {
+			return UserNodeBindChallenge{}, err
+		}
+	}
+
+	if ch.RequestID > 0 {
+		if _, err := tx.ExecContext(ctx, `
+UPDATE user_requests
+SET status='approved', reviewed_by='self-verify', reviewed_at=$2, updated_at=$2
+WHERE request_id=$1`, ch.RequestID, now); err != nil {
+			return UserNodeBindChallenge{}, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE user_node_bind_challenges
+SET status='approved', updated_at=$2
+WHERE challenge_id=$1`, ch.ChallengeID, now); err != nil {
+		return UserNodeBindChallenge{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+DELETE FROM user_node_bind_temp_access
+WHERE node_id=$1 AND local_username=$2`, ch.NodeID, ch.LocalUsername); err != nil {
+		return UserNodeBindChallenge{}, err
+	}
+	if err := s.clearNodeBindCooldownTx(ctx, tx, ch.BillingUsername, now); err != nil {
+		return UserNodeBindChallenge{}, err
+	}
+
+	return s.GetUserBindChallengeByIDTx(ctx, tx, ch.ChallengeID)
+}
+
+func (s *Store) GetUserBindChallengeByIDTx(ctx context.Context, tx *sql.Tx, challengeID int64) (UserNodeBindChallenge, error) {
+	if challengeID <= 0 {
+		return UserNodeBindChallenge{}, errors.New("challenge_id 不合法")
+	}
+	var ch UserNodeBindChallenge
+	if err := scanUserNodeBindChallengeRow(&ch, tx.QueryRowContext(ctx, `
+SELECT challenge_id, request_id, billing_username, node_id, local_username, challenge_token, status, fail_reason,
+       expires_at, claimed_at, verified_at, cooldown_until, failure_processed, created_at, updated_at
+FROM user_node_bind_challenges
+WHERE challenge_id=$1`, challengeID)); err != nil {
+		return UserNodeBindChallenge{}, err
+	}
+	return ch, nil
+}
+
+func (s *Store) GetLatestActiveUserBindChallenge(ctx context.Context, billingUsername string, now time.Time) (UserNodeBindChallenge, bool, error) {
+	billingUsername = strings.TrimSpace(billingUsername)
+	if billingUsername == "" {
+		return UserNodeBindChallenge{}, false, errors.New("billing_username 不能为空")
+	}
+	if now.IsZero() {
+		now = nowInBeijing()
+	}
+	var ch UserNodeBindChallenge
+	if err := scanUserNodeBindChallengeRow(&ch, s.db.QueryRowContext(ctx, `
+SELECT challenge_id, request_id, billing_username, node_id, local_username, challenge_token, status, fail_reason,
+       expires_at, claimed_at, verified_at, cooldown_until, failure_processed, created_at, updated_at
+FROM user_node_bind_challenges
+WHERE billing_username=$1
+  AND status='active'
+  AND expires_at>$2
+ORDER BY created_at DESC
+LIMIT 1`, billingUsername, now)); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return UserNodeBindChallenge{}, false, nil
+		}
+		return UserNodeBindChallenge{}, false, err
+	}
+	return ch, true, nil
+}
+
+func (s *Store) ResolveTemporaryBindAccess(ctx context.Context, nodeID string, localUsername string, now time.Time) (string, bool, *time.Time, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	if nodeID == "" || localUsername == "" {
+		return "", false, nil, errors.New("node_id/local_username 不能为空")
+	}
+	if now.IsZero() {
+		now = nowInBeijing()
+	}
+	var billing string
+	var expiresAt time.Time
+	err := s.db.QueryRowContext(ctx, `
+SELECT ta.billing_username, ta.expires_at
+FROM user_node_bind_temp_access ta
+JOIN user_node_bind_challenges ch ON ch.challenge_id=ta.challenge_id
+WHERE ta.node_id=$1
+  AND ta.local_username=$2
+  AND ta.expires_at>$3
+  AND ch.status='active'`, nodeID, localUsername, now).Scan(&billing, &expiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil, nil
+	}
+	if err != nil {
+		return "", false, nil, err
+	}
+	expiresAt = asBeijingWallTime(expiresAt)
+	return strings.TrimSpace(billing), true, &expiresAt, nil
+}
+
+func (s *Store) PullNodeBindFailureActions(ctx context.Context, nodeID string, now time.Time, policy NodeBindSecurityPolicy) ([]UserNodeBindChallenge, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return nil, errors.New("node_id 不能为空")
+	}
+	policy = normalizeNodeBindSecurityPolicy(policy)
+	if now.IsZero() {
+		now = nowInBeijing()
+	}
+	out := make([]UserNodeBindChallenge, 0)
+	if err := s.WithTx(ctx, func(tx *sql.Tx) error {
+		expiredRows, err := tx.QueryContext(ctx, `
+SELECT challenge_id, request_id, billing_username, node_id, local_username, challenge_token, status, fail_reason,
+       expires_at, claimed_at, verified_at, cooldown_until, failure_processed, created_at, updated_at
+FROM user_node_bind_challenges
+WHERE node_id=$1
+  AND status='active'
+  AND expires_at <= $2
+FOR UPDATE`, nodeID, now)
+		if err != nil {
+			return err
+		}
+		expired := make([]UserNodeBindChallenge, 0)
+		for expiredRows.Next() {
+			var ch UserNodeBindChallenge
+			if err := scanUserNodeBindChallengeRow(&ch, expiredRows); err != nil {
+				_ = expiredRows.Close()
+				return err
+			}
+			expired = append(expired, ch)
+		}
+		if err := expiredRows.Err(); err != nil {
+			_ = expiredRows.Close()
+			return err
+		}
+		_ = expiredRows.Close()
+
+		for _, ch := range expired {
+			cooldown, err := s.applyNodeBindFailureCooldownTx(ctx, tx, ch.BillingUsername, now, policy)
+			if err != nil {
+				return err
+			}
+			cooldownUntil := now
+			if cooldown.CooldownUntil != nil {
+				cooldownUntil = *cooldown.CooldownUntil
+			}
+			if _, err := tx.ExecContext(ctx, `
+UPDATE user_node_bind_challenges
+SET status='expired',
+    fail_reason='challenge_expired',
+    cooldown_until=$2,
+    updated_at=$3
+WHERE challenge_id=$1`, ch.ChallengeID, cooldownUntil, now); err != nil {
+				return err
+			}
+			if ch.RequestID > 0 {
+				if _, err := tx.ExecContext(ctx, `
+UPDATE user_requests
+SET status='rejected', reviewed_by='system', reviewed_at=$2, updated_at=$2
+WHERE request_id=$1
+  AND status IN ('pending','challenge_active','verified')`, ch.RequestID, now); err != nil {
+					return err
+				}
+			}
+			if _, err := tx.ExecContext(ctx, `
+DELETE FROM user_node_bind_temp_access
+WHERE node_id=$1 AND local_username=$2`, ch.NodeID, ch.LocalUsername); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `
+DELETE FROM user_node_bind_temp_access
+WHERE node_id=$1
+  AND expires_at <= $2`, nodeID, now); err != nil {
+			return err
+		}
+
+		rows, err := tx.QueryContext(ctx, `
+SELECT challenge_id, request_id, billing_username, node_id, local_username, challenge_token, status, fail_reason,
+       expires_at, claimed_at, verified_at, cooldown_until, failure_processed, created_at, updated_at
+FROM user_node_bind_challenges
+WHERE node_id=$1
+  AND status IN ('failed','expired')
+  AND failure_processed=FALSE
+ORDER BY created_at ASC
+FOR UPDATE`, nodeID)
+		if err != nil {
+			return err
+		}
+		ids := make([]int64, 0)
+		for rows.Next() {
+			var ch UserNodeBindChallenge
+			if err := scanUserNodeBindChallengeRow(&ch, rows); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			out = append(out, ch)
+			ids = append(ids, ch.ChallengeID)
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		_ = rows.Close()
+		if len(ids) == 0 {
+			return nil
+		}
+		if _, err := tx.ExecContext(ctx, `
+UPDATE user_node_bind_challenges
+SET failure_processed=TRUE, updated_at=$2
+WHERE challenge_id = ANY($1)`, pq.Array(ids), now); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (s *Store) UpsertNodeStatusTx(
 	ctx context.Context,
 	tx *sql.Tx,
@@ -3375,6 +5350,7 @@ func (s *Store) UpsertNodeStatusTx(
 	gpuCount int,
 	osVersion string,
 	kernelVersion string,
+	agentVersion string,
 	nodeIP string,
 	nodeMAC string,
 	diskTotalGB float64,
@@ -3405,6 +5381,7 @@ func (s *Store) UpsertNodeStatusTx(
 	gpuModel = strings.TrimSpace(gpuModel)
 	osVersion = strings.TrimSpace(osVersion)
 	kernelVersion = strings.TrimSpace(kernelVersion)
+	agentVersion = strings.TrimSpace(agentVersion)
 	nodeIP = strings.TrimSpace(nodeIP)
 	nodeMAC = strings.TrimSpace(nodeMAC)
 	if cpuCount < 0 {
@@ -3450,11 +5427,11 @@ FOR UPDATE`, nodeID).Scan(&prevRx, &prevTx, &prevMonth, &prevRxMBMonth, &prevTxM
 	_, err := tx.ExecContext(ctx, `
 INSERT INTO nodes(
   node_id, last_seen_at, last_report_id, last_report_ts, interval_seconds,
-  cpu_model, cpu_count, gpu_model, gpu_count, os_version, kernel_version, node_ip, node_mac, disk_total_gb, disk_used_gb, home_total_gb, home_used_gb, mnt_total_gb, mnt_used_gb,
+  cpu_model, cpu_count, gpu_model, gpu_count, os_version, kernel_version, agent_version, node_ip, node_mac, disk_total_gb, disk_used_gb, home_total_gb, home_used_gb, mnt_total_gb, mnt_used_gb,
   net_rx_bytes, net_tx_bytes, net_rx_mb_month, net_tx_mb_month, traffic_month,
-  gpu_process_count, cpu_process_count, usage_records_count, ssh_active_count, disk_quota_installed, disk_quota_mounts, cost_total, updated_at
+	  gpu_process_count, cpu_process_count, usage_records_count, ssh_active_count, disk_quota_installed, disk_quota_mounts, cost_total, updated_at
 )
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,NOW())
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)
 ON CONFLICT (node_id) DO UPDATE SET
   last_seen_at=EXCLUDED.last_seen_at,
   last_report_id=EXCLUDED.last_report_id,
@@ -3466,6 +5443,7 @@ ON CONFLICT (node_id) DO UPDATE SET
   gpu_count=EXCLUDED.gpu_count,
   os_version=EXCLUDED.os_version,
   kernel_version=EXCLUDED.kernel_version,
+  agent_version=EXCLUDED.agent_version,
   node_ip=EXCLUDED.node_ip,
   node_mac=EXCLUDED.node_mac,
   disk_total_gb=EXCLUDED.disk_total_gb,
@@ -3485,13 +5463,13 @@ ON CONFLICT (node_id) DO UPDATE SET
   ssh_active_count=EXCLUDED.ssh_active_count,
   disk_quota_installed=EXCLUDED.disk_quota_installed,
   disk_quota_mounts=EXCLUDED.disk_quota_mounts,
-  cost_total=EXCLUDED.cost_total,
-  updated_at=NOW()
-`, nodeID, lastSeenAt, reportID, reportTS, intervalSeconds,
-		cpuModel, cpuCount, gpuModel, gpuCount, osVersion, kernelVersion, nodeIP, nodeMAC,
+	  cost_total=EXCLUDED.cost_total,
+	  updated_at=EXCLUDED.updated_at
+		`, nodeID, lastSeenAt, reportID, reportTS, intervalSeconds,
+		cpuModel, cpuCount, gpuModel, gpuCount, osVersion, kernelVersion, agentVersion, nodeIP, nodeMAC,
 		diskTotalGB, diskUsedGB, homeTotalGB, homeUsedGB, mntTotalGB, mntUsedGB,
 		int64(netRxBytes), int64(netTxBytes), rxMBMonth, txMBMonth, month,
-		gpuProcCount, cpuProcCount, usageRecordsCount, sshActiveCount, diskQuotaInstalled, pq.Array(cleanQuotaMounts), costTotal)
+		gpuProcCount, cpuProcCount, usageRecordsCount, sshActiveCount, diskQuotaInstalled, pq.Array(cleanQuotaMounts), costTotal, inBeijing(lastSeenAt))
 	return err
 }
 
@@ -3501,7 +5479,7 @@ func (s *Store) ListNodes(ctx context.Context, limit int) ([]NodeStatus, error) 
 	}
 	rows, err := s.db.QueryContext(ctx, `
 SELECT n.node_id, n.last_seen_at, n.last_report_id, n.last_report_ts, n.interval_seconds,
-       n.cpu_model, n.cpu_count, n.gpu_model, n.gpu_count, n.os_version, n.kernel_version, n.node_ip, n.node_mac, n.disk_total_gb, n.disk_used_gb, n.home_total_gb, n.home_used_gb, n.mnt_total_gb, n.mnt_used_gb,
+       n.cpu_model, n.cpu_count, n.gpu_model, n.gpu_count, n.os_version, n.kernel_version, n.agent_version, n.node_ip, n.node_mac, n.disk_total_gb, n.disk_used_gb, n.home_total_gb, n.home_used_gb, n.mnt_total_gb, n.mnt_used_gb,
        n.net_rx_mb_month, n.net_tx_mb_month,
        n.gpu_process_count, n.cpu_process_count, n.usage_records_count, n.ssh_active_count, n.disk_quota_installed,
        COALESCE(
@@ -3581,6 +5559,7 @@ LIMIT $1`, limit)
 			&n.GPUCount,
 			&n.OSVersion,
 			&n.KernelVersion,
+			&n.AgentVersion,
 			&n.NodeIP,
 			&n.NodeMAC,
 			&n.DiskTotalGB,
@@ -3667,6 +5646,7 @@ LIMIT $1`, limit)
 		} else {
 			n.NodeModelPriceOverrides = nil
 		}
+		normalizeNodeHeartbeatTimes(&n)
 		out = append(out, n)
 	}
 	return out, rows.Err()
@@ -3690,7 +5670,7 @@ func (s *Store) GetNodeStatus(ctx context.Context, nodeID string) (NodeStatus, e
 	var nodeModelPricesRaw []byte
 	err := s.db.QueryRowContext(ctx, `
 SELECT n.node_id, n.last_seen_at, n.last_report_id, n.last_report_ts, n.interval_seconds,
-       n.cpu_model, n.cpu_count, n.gpu_model, n.gpu_count, n.os_version, n.kernel_version, n.node_ip, n.node_mac, n.disk_total_gb, n.disk_used_gb, n.home_total_gb, n.home_used_gb, n.mnt_total_gb, n.mnt_used_gb,
+       n.cpu_model, n.cpu_count, n.gpu_model, n.gpu_count, n.os_version, n.kernel_version, n.agent_version, n.node_ip, n.node_mac, n.disk_total_gb, n.disk_used_gb, n.home_total_gb, n.home_used_gb, n.mnt_total_gb, n.mnt_used_gb,
        n.net_rx_mb_month, n.net_tx_mb_month,
        n.gpu_process_count, n.cpu_process_count, n.usage_records_count, n.ssh_active_count, n.disk_quota_installed,
        COALESCE(
@@ -3731,6 +5711,7 @@ WHERE n.node_id=$1`, nodeID).Scan(
 		&n.GPUCount,
 		&n.OSVersion,
 		&n.KernelVersion,
+		&n.AgentVersion,
 		&n.NodeIP,
 		&n.NodeMAC,
 		&n.DiskTotalGB,
@@ -3816,6 +5797,7 @@ WHERE n.node_id=$1`, nodeID).Scan(
 	} else {
 		n.NodeModelPriceOverrides = nil
 	}
+	normalizeNodeHeartbeatTimes(&n)
 	return n, nil
 }
 
@@ -3858,20 +5840,27 @@ ON CONFLICT (node_id) DO UPDATE SET
 }
 
 func (s *Store) GetNodeSSHExclusivePolicy(ctx context.Context, nodeID string) (bool, error) {
+	enabled, _, err := s.GetNodeSSHExclusiveConfig(ctx, nodeID)
+	return enabled, err
+}
+
+func (s *Store) GetNodeSSHExclusiveConfig(ctx context.Context, nodeID string) (bool, bool, error) {
 	nodeID = strings.TrimSpace(nodeID)
 	if nodeID == "" {
-		return false, errors.New("node_id 不能为空")
+		return false, true, errors.New("node_id 不能为空")
 	}
 	var enabled bool
+	var blockOthers bool
 	err := s.db.QueryRowContext(ctx, `
-SELECT COALESCE(np.ssh_exclusive_enabled, FALSE)
+SELECT COALESCE(np.ssh_exclusive_enabled, FALSE),
+       COALESCE(np.ssh_exclusive_block_others, TRUE)
 FROM nodes n
 LEFT JOIN node_policies np ON np.node_id=n.node_id
-WHERE n.node_id=$1`, nodeID).Scan(&enabled)
+WHERE n.node_id=$1`, nodeID).Scan(&enabled, &blockOthers)
 	if err != nil {
-		return false, err
+		return false, true, err
 	}
-	return enabled, nil
+	return enabled, blockOthers, nil
 }
 
 func (s *Store) GetNodePointsInterceptPolicy(ctx context.Context, nodeID string) (NodePointsInterceptPolicy, error) {
@@ -4094,72 +6083,84 @@ ON CONFLICT (node_id) DO UPDATE SET
 	return err
 }
 
-func (s *Store) GetNodePricePolicy(ctx context.Context, nodeID string) (*float64, map[string]float64, error) {
+func (s *Store) GetNodePricePolicy(ctx context.Context, nodeID string) (*float64, *float64, map[string]float64, error) {
 	nodeID = strings.TrimSpace(nodeID)
 	if nodeID == "" {
-		return nil, nil, errors.New("node_id 不能为空")
+		return nil, nil, nil, errors.New("node_id 不能为空")
 	}
-	var p sql.NullFloat64
+	var gpuPrice sql.NullFloat64
+	var cpuPrice sql.NullFloat64
 	var modelRaw []byte
 	err := s.db.QueryRowContext(ctx, `
-SELECT np.node_price_per_minute, COALESCE(np.node_model_price_overrides, '{}'::jsonb)
+SELECT np.node_price_per_minute, np.node_cpu_price_per_core_minute, COALESCE(np.node_model_price_overrides, '{}'::jsonb)
 FROM nodes n
 LEFT JOIN node_policies np ON np.node_id=n.node_id
-WHERE n.node_id=$1`, nodeID).Scan(&p, &modelRaw)
+WHERE n.node_id=$1`, nodeID).Scan(&gpuPrice, &cpuPrice, &modelRaw)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	overrides, err := parseNodeModelPriceOverridesRaw(modelRaw)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	var price *float64
-	if p.Valid {
-		v := p.Float64
-		price = &v
+	var gpuOut *float64
+	if gpuPrice.Valid {
+		v := gpuPrice.Float64
+		gpuOut = &v
 	}
-	return price, overrides, nil
+	var cpuOut *float64
+	if cpuPrice.Valid {
+		v := cpuPrice.Float64
+		cpuOut = &v
+	}
+	return gpuOut, cpuOut, overrides, nil
 }
 
-func (s *Store) GetNodePricePolicyTx(ctx context.Context, tx *sql.Tx, nodeID string) (*float64, map[string]float64, error) {
+func (s *Store) GetNodePricePolicyTx(ctx context.Context, tx *sql.Tx, nodeID string) (*float64, *float64, map[string]float64, error) {
 	nodeID = strings.TrimSpace(nodeID)
 	if nodeID == "" {
-		return nil, nil, errors.New("node_id 不能为空")
+		return nil, nil, nil, errors.New("node_id 不能为空")
 	}
-	var p sql.NullFloat64
+	var gpuPrice sql.NullFloat64
+	var cpuPrice sql.NullFloat64
 	var modelRaw []byte
 	if err := tx.QueryRowContext(ctx, `
-SELECT node_price_per_minute, COALESCE(node_model_price_overrides, '{}'::jsonb)
+SELECT node_price_per_minute, node_cpu_price_per_core_minute, COALESCE(node_model_price_overrides, '{}'::jsonb)
 FROM node_policies
-WHERE node_id=$1`, nodeID).Scan(&p, &modelRaw); err != nil {
+WHERE node_id=$1`, nodeID).Scan(&gpuPrice, &cpuPrice, &modelRaw); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil, nil
+			return nil, nil, nil, nil
 		}
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	overrides, err := parseNodeModelPriceOverridesRaw(modelRaw)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	var price *float64
-	if p.Valid {
-		v := p.Float64
-		price = &v
+	var gpuOut *float64
+	if gpuPrice.Valid {
+		v := gpuPrice.Float64
+		gpuOut = &v
 	}
-	return price, overrides, nil
+	var cpuOut *float64
+	if cpuPrice.Valid {
+		v := cpuPrice.Float64
+		cpuOut = &v
+	}
+	return gpuOut, cpuOut, overrides, nil
 }
 
 func (s *Store) GetNodePriceOverride(ctx context.Context, nodeID string) (*float64, error) {
-	price, _, err := s.GetNodePricePolicy(ctx, nodeID)
+	price, _, _, err := s.GetNodePricePolicy(ctx, nodeID)
 	return price, err
 }
 
 func (s *Store) GetNodePriceOverrideTx(ctx context.Context, tx *sql.Tx, nodeID string) (*float64, error) {
-	price, _, err := s.GetNodePricePolicyTx(ctx, tx, nodeID)
+	price, _, _, err := s.GetNodePricePolicyTx(ctx, tx, nodeID)
 	return price, err
 }
 
-func (s *Store) UpsertNodePricePolicy(ctx context.Context, nodeID string, pricePerMinute *float64, modelOverrides map[string]float64, updatedBy string) error {
+func (s *Store) UpsertNodePricePolicy(ctx context.Context, nodeID string, pricePerMinute *float64, cpuPricePerCoreMinute *float64, modelOverrides map[string]float64, updatedBy string) error {
 	nodeID = strings.TrimSpace(nodeID)
 	updatedBy = strings.TrimSpace(updatedBy)
 	if nodeID == "" {
@@ -4175,6 +6176,13 @@ func (s *Store) UpsertNodePricePolicy(ctx context.Context, nodeID string, priceP
 		}
 		price = *pricePerMinute
 	}
+	var cpuPrice any = nil
+	if cpuPricePerCoreMinute != nil {
+		if *cpuPricePerCoreMinute < 0 {
+			return errors.New("cpu_price_per_core_minute 不能为负数")
+		}
+		cpuPrice = *cpuPricePerCoreMinute
+	}
 	normOverrides, err := normalizeNodeModelPriceOverrides(modelOverrides)
 	if err != nil {
 		return err
@@ -4184,20 +6192,21 @@ func (s *Store) UpsertNodePricePolicy(ctx context.Context, nodeID string, priceP
 		return err
 	}
 	_, err = s.db.ExecContext(ctx, `
-INSERT INTO node_policies(node_id, node_price_per_minute, node_model_price_overrides, updated_by, updated_at)
-VALUES($1,$2,$3::jsonb,$4,NOW())
+INSERT INTO node_policies(node_id, node_price_per_minute, node_cpu_price_per_core_minute, node_model_price_overrides, updated_by, updated_at)
+VALUES($1,$2,$3,$4::jsonb,$5,NOW())
 ON CONFLICT (node_id) DO UPDATE SET
   node_price_per_minute=EXCLUDED.node_price_per_minute,
+  node_cpu_price_per_core_minute=EXCLUDED.node_cpu_price_per_core_minute,
   node_model_price_overrides=EXCLUDED.node_model_price_overrides,
   updated_by=EXCLUDED.updated_by,
   updated_at=NOW()`,
-		nodeID, price, string(overridesJSON), updatedBy,
+		nodeID, price, cpuPrice, string(overridesJSON), updatedBy,
 	)
 	return err
 }
 
 func (s *Store) UpsertNodePriceOverride(ctx context.Context, nodeID string, pricePerMinute *float64, updatedBy string) error {
-	return s.UpsertNodePricePolicy(ctx, nodeID, pricePerMinute, nil, updatedBy)
+	return s.UpsertNodePricePolicy(ctx, nodeID, pricePerMinute, nil, nil, updatedBy)
 }
 
 func parseNodeModelPriceOverridesRaw(raw []byte) (map[string]float64, error) {
@@ -4267,12 +6276,14 @@ func normalizePointsInterceptPolicyInput(
 }
 
 func normalizeImplicitPointsInterceptEnabled(enabled bool, threshold *float64, limited *float64, blocked *float64, memoryLimit *float64) bool {
-	// 兼容历史数据：早期 node_policies 在未显式配置积分拦截时也会落 default=false。
-	// 若策略参数均为空，则按“未配置”处理，默认开启积分拦截。
-	if enabled {
-		return true
-	}
-	return threshold == nil && limited == nil && blocked == nil && memoryLimit == nil
+	_ = threshold
+	_ = limited
+	_ = blocked
+	_ = memoryLimit
+	// 以数据库显式配置为准。
+	// 历史默认值修复由迁移脚本处理，运行期不再把 false 隐式改回 true，
+	// 避免“管理员关闭后又被自动视为开启”的状态回弹。
+	return enabled
 }
 
 func (s *Store) UpsertNodePointsInterceptPolicy(
@@ -4381,7 +6392,102 @@ SELECT EXISTS(
 	return ok, nil
 }
 
-func (s *Store) ReplaceNodeExclusiveUsers(ctx context.Context, nodeID string, enabled bool, users []string, updatedBy string) error {
+func normalizeNodeExclusiveGPUAssignments(assignments []NodeExclusiveGPUAssignment) ([]NodeExclusiveGPUAssignment, error) {
+	perUser := map[string]map[int]struct{}{}
+	ownerByGPU := map[int]string{}
+	for _, item := range assignments {
+		u := strings.TrimSpace(item.LocalUsername)
+		if u == "" {
+			continue
+		}
+		if _, ok := perUser[u]; !ok {
+			perUser[u] = map[int]struct{}{}
+		}
+		for _, idx := range item.GPUIndices {
+			if idx < 0 {
+				return nil, fmt.Errorf("gpu_index 不能为负数：user=%s index=%d", u, idx)
+			}
+			if prevOwner, ok := ownerByGPU[idx]; ok && prevOwner != u {
+				return nil, fmt.Errorf("GPU %d 已被用户 %s 占用，不能重复分配给 %s", idx, prevOwner, u)
+			}
+			ownerByGPU[idx] = u
+			perUser[u][idx] = struct{}{}
+		}
+	}
+	users := make([]string, 0, len(perUser))
+	for u := range perUser {
+		users = append(users, u)
+	}
+	sort.Strings(users)
+	out := make([]NodeExclusiveGPUAssignment, 0, len(users))
+	for _, u := range users {
+		idxSet := perUser[u]
+		idxs := make([]int, 0, len(idxSet))
+		for idx := range idxSet {
+			idxs = append(idxs, idx)
+		}
+		sort.Ints(idxs)
+		out = append(out, NodeExclusiveGPUAssignment{
+			LocalUsername: u,
+			GPUIndices:    idxs,
+		})
+	}
+	return out, nil
+}
+
+func (s *Store) ListNodeExclusiveGPUAssignments(ctx context.Context, nodeID string, limit int) ([]NodeExclusiveGPUAssignment, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return nil, errors.New("node_id 不能为空")
+	}
+	if limit <= 0 || limit > 200000 {
+		limit = 10000
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT local_username, gpu_index
+FROM node_exclusive_gpu_users
+WHERE node_id=$1
+ORDER BY local_username, gpu_index
+LIMIT $2`, nodeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	perUser := map[string][]int{}
+	order := make([]string, 0)
+	seenUser := map[string]struct{}{}
+	for rows.Next() {
+		var u string
+		var idx int
+		if err := rows.Scan(&u, &idx); err != nil {
+			return nil, err
+		}
+		u = strings.TrimSpace(u)
+		if u == "" {
+			continue
+		}
+		if _, ok := seenUser[u]; !ok {
+			seenUser[u] = struct{}{}
+			order = append(order, u)
+		}
+		perUser[u] = append(perUser[u], idx)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]NodeExclusiveGPUAssignment, 0, len(order))
+	for _, u := range order {
+		idxs := perUser[u]
+		sort.Ints(idxs)
+		out = append(out, NodeExclusiveGPUAssignment{
+			LocalUsername: u,
+			GPUIndices:    idxs,
+		})
+	}
+	return out, nil
+}
+
+func (s *Store) ReplaceNodeExclusiveUsers(ctx context.Context, nodeID string, enabled bool, blockOtherSSH bool, users []string, gpuAssignments []NodeExclusiveGPUAssignment, updatedBy string) error {
 	nodeID = strings.TrimSpace(nodeID)
 	updatedBy = strings.TrimSpace(updatedBy)
 	if nodeID == "" {
@@ -4391,17 +6497,34 @@ func (s *Store) ReplaceNodeExclusiveUsers(ctx context.Context, nodeID string, en
 		updatedBy = "admin"
 	}
 	cleanUsers := uniqTrim(users)
+	cleanGPUAssignments, err := normalizeNodeExclusiveGPUAssignments(gpuAssignments)
+	if err != nil {
+		return err
+	}
+	allowedUser := make(map[string]struct{}, len(cleanUsers))
+	for _, u := range cleanUsers {
+		allowedUser[u] = struct{}{}
+	}
+	for _, item := range cleanGPUAssignments {
+		if _, ok := allowedUser[item.LocalUsername]; !ok {
+			return fmt.Errorf("GPU 分配用户 %s 不在独享用户列表中", item.LocalUsername)
+		}
+	}
 	return s.WithTx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `
-INSERT INTO node_policies(node_id, ssh_exclusive_enabled, updated_by, updated_at)
-VALUES($1,$2,$3,NOW())
+INSERT INTO node_policies(node_id, ssh_exclusive_enabled, ssh_exclusive_block_others, updated_by, updated_at)
+VALUES($1,$2,$3,$4,NOW())
 ON CONFLICT (node_id) DO UPDATE SET
   ssh_exclusive_enabled=EXCLUDED.ssh_exclusive_enabled,
+  ssh_exclusive_block_others=EXCLUDED.ssh_exclusive_block_others,
   updated_by=EXCLUDED.updated_by,
-  updated_at=NOW()`, nodeID, enabled, updatedBy); err != nil {
+  updated_at=NOW()`, nodeID, enabled, blockOtherSSH, updatedBy); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM node_exclusive_users WHERE node_id=$1`, nodeID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM node_exclusive_gpu_users WHERE node_id=$1`, nodeID); err != nil {
 			return err
 		}
 		for _, u := range cleanUsers {
@@ -4409,6 +6532,15 @@ ON CONFLICT (node_id) DO UPDATE SET
 INSERT INTO node_exclusive_users(node_id, local_username, updated_by, updated_at)
 VALUES($1,$2,$3,NOW())`, nodeID, u, updatedBy); err != nil {
 				return err
+			}
+		}
+		for _, item := range cleanGPUAssignments {
+			for _, idx := range item.GPUIndices {
+				if _, err := tx.ExecContext(ctx, `
+INSERT INTO node_exclusive_gpu_users(node_id, local_username, gpu_index, updated_by, updated_at)
+VALUES($1,$2,$3,$4,NOW())`, nodeID, item.LocalUsername, idx, updatedBy); err != nil {
+					return err
+				}
 			}
 		}
 		return nil
@@ -4673,9 +6805,46 @@ WHERE node_id=$1`
 		); err != nil {
 			return nil, err
 		}
+		normalizeNodeUserDiskQuotaTimes(&q)
 		out = append(out, q)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) GetNodeUserDiskQuota(
+	ctx context.Context,
+	nodeID string,
+	localUsername string,
+	mountpoint string,
+) (*NodeUserDiskQuota, bool, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	mountpoint = strings.TrimSpace(mountpoint)
+	if nodeID == "" || localUsername == "" || mountpoint == "" {
+		return nil, false, errors.New("node_id/local_username/mountpoint 不能为空")
+	}
+	var q NodeUserDiskQuota
+	if err := s.db.QueryRowContext(ctx, `
+SELECT node_id, local_username, mountpoint, used_mb, soft_mb, hard_mb, updated_at
+FROM node_user_disk_quotas
+WHERE node_id=$1 AND local_username=$2 AND mountpoint=$3`,
+		nodeID, localUsername, mountpoint,
+	).Scan(
+		&q.NodeID,
+		&q.LocalUsername,
+		&q.Mountpoint,
+		&q.UsedMB,
+		&q.SoftMB,
+		&q.HardMB,
+		&q.UpdatedAt,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	normalizeNodeUserDiskQuotaTimes(&q)
+	return &q, true, nil
 }
 
 func (s *Store) ListNodeLocalUsersWithPlatformMapping(ctx context.Context, nodeID string, limit int) ([]NodeLocalUser, error) {
@@ -4696,6 +6865,17 @@ SELECT nlu.node_id,
          OR EXISTS(SELECT 1 FROM admin_accounts aa WHERE aa.username=una.billing_username)
          OR EXISTS(SELECT 1 FROM power_users pu WHERE pu.username=una.billing_username)
        ) AS platform_exists,
+       (adm.username IS NOT NULL) AS admin_mapping,
+       COALESCE(adm.username, '') AS admin_username,
+       nul.cpu_quota_percent,
+       COALESCE(nul.reason, '') AS cpu_quota_reason,
+       nul.updated_at AS cpu_quota_updated_at,
+       nml.memory_limit_gb,
+       COALESCE(nml.reason, '') AS memory_limit_reason,
+       nml.updated_at AS memory_limit_updated_at,
+       nugv.gpu_indices,
+       COALESCE(nugv.reason, '') AS gpu_visibility_reason,
+       nugv.updated_at AS gpu_visibility_updated_at,
        nlu.home_created_at,
        nlu.last_login_at,
        nlu.home_used_gb,
@@ -4706,6 +6886,25 @@ FROM node_local_users nlu
 LEFT JOIN user_node_accounts una
   ON una.node_id=nlu.node_id
  AND una.local_username=nlu.local_username
+LEFT JOIN admin_accounts adm
+  ON adm.username=una.billing_username
+LEFT JOIN node_user_cpu_limits nul
+  ON nul.node_id=nlu.node_id
+ AND nul.local_username=nlu.local_username
+LEFT JOIN node_user_memory_limits nml
+  ON nml.node_id=nlu.node_id
+ AND nml.local_username=nlu.local_username
+LEFT JOIN (
+  SELECT node_id,
+         local_username,
+         array_agg(gpu_index ORDER BY gpu_index)::BIGINT[] AS gpu_indices,
+         (array_agg(reason ORDER BY updated_at DESC, gpu_index ASC))[1] AS reason,
+         MAX(updated_at) AS updated_at
+  FROM node_user_gpu_visibility
+  GROUP BY node_id, local_username
+) nugv
+  ON nugv.node_id=nlu.node_id
+ AND nugv.local_username=nlu.local_username
 WHERE nlu.node_id=$1
 ORDER BY nlu.local_username
 LIMIT $2`, nodeID, limit)
@@ -4716,12 +6915,29 @@ LIMIT $2`, nodeID, limit)
 	out := make([]NodeLocalUser, 0)
 	for rows.Next() {
 		var u NodeLocalUser
+		var cpuQuotaPercent sql.NullFloat64
+		var cpuQuotaUpdatedAt sql.NullTime
+		var memoryLimitGB sql.NullFloat64
+		var memoryLimitUpdatedAt sql.NullTime
+		var gpuVisibleIndicesRaw pq.Int64Array
+		var gpuVisibilityUpdatedAt sql.NullTime
 		if err := rows.Scan(
 			&u.NodeID,
 			&u.LocalUsername,
 			&u.PlatformUsername,
 			&u.MappingExists,
 			&u.PlatformExists,
+			&u.AdminMapping,
+			&u.AdminUsername,
+			&cpuQuotaPercent,
+			&u.CPUQuotaReason,
+			&cpuQuotaUpdatedAt,
+			&memoryLimitGB,
+			&u.MemoryLimitReason,
+			&memoryLimitUpdatedAt,
+			&gpuVisibleIndicesRaw,
+			&u.GPUVisibilityReason,
+			&gpuVisibilityUpdatedAt,
 			&u.HomeCreatedAt,
 			&u.LastLoginAt,
 			&u.HomeUsedGB,
@@ -4731,7 +6947,712 @@ LIMIT $2`, nodeID, limit)
 		); err != nil {
 			return nil, err
 		}
+		if cpuQuotaPercent.Valid {
+			v := cpuQuotaPercent.Float64
+			u.CPUQuotaPercent = &v
+		}
+		if cpuQuotaUpdatedAt.Valid {
+			t := cpuQuotaUpdatedAt.Time
+			u.CPUQuotaUpdatedAt = &t
+		}
+		if memoryLimitGB.Valid {
+			v := memoryLimitGB.Float64
+			u.MemoryLimitGB = &v
+		}
+		if memoryLimitUpdatedAt.Valid {
+			t := memoryLimitUpdatedAt.Time
+			u.MemoryLimitUpdatedAt = &t
+		}
+		if len(gpuVisibleIndicesRaw) > 0 {
+			u.GPUVisibleIndices = make([]int, 0, len(gpuVisibleIndicesRaw))
+			for _, idx := range gpuVisibleIndicesRaw {
+				if idx >= 0 {
+					u.GPUVisibleIndices = append(u.GPUVisibleIndices, int(idx))
+				}
+			}
+			sort.Ints(u.GPUVisibleIndices)
+		}
+		if gpuVisibilityUpdatedAt.Valid {
+			t := gpuVisibilityUpdatedAt.Time
+			u.GPUVisibilityUpdatedAt = &t
+		}
+		normalizeNodeLocalUserTimes(&u)
 		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) UpsertNodeUserCPULimit(
+	ctx context.Context,
+	nodeID string,
+	localUsername string,
+	cpuQuotaPercent float64,
+	reason string,
+	updatedBy string,
+) (NodeUserCPULimit, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	reason = strings.TrimSpace(reason)
+	updatedBy = strings.TrimSpace(updatedBy)
+	if nodeID == "" || localUsername == "" {
+		return NodeUserCPULimit{}, errors.New("node_id/local_username 不能为空")
+	}
+	if cpuQuotaPercent <= 0 || cpuQuotaPercent > 100 {
+		return NodeUserCPULimit{}, errors.New("cpu_quota_percent 必须在 (0, 100] 范围内")
+	}
+	if updatedBy == "" {
+		updatedBy = "admin"
+	}
+	if _, err := s.db.ExecContext(ctx, `
+INSERT INTO node_user_cpu_limits(node_id, local_username, cpu_quota_percent, reason, updated_by, updated_at)
+VALUES($1,$2,$3,$4,$5,NOW())
+ON CONFLICT (node_id, local_username) DO UPDATE
+SET cpu_quota_percent=EXCLUDED.cpu_quota_percent,
+    reason=EXCLUDED.reason,
+    updated_by=EXCLUDED.updated_by,
+    updated_at=NOW()`, nodeID, localUsername, cpuQuotaPercent, reason, updatedBy); err != nil {
+		return NodeUserCPULimit{}, err
+	}
+	row, ok, err := s.GetNodeUserCPULimit(ctx, nodeID, localUsername)
+	if err != nil {
+		return NodeUserCPULimit{}, err
+	}
+	if !ok || row == nil {
+		return NodeUserCPULimit{}, sql.ErrNoRows
+	}
+	return *row, nil
+}
+
+func (s *Store) DeleteNodeUserCPULimit(ctx context.Context, nodeID string, localUsername string) error {
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	if nodeID == "" || localUsername == "" {
+		return errors.New("node_id/local_username 不能为空")
+	}
+	res, err := s.db.ExecContext(ctx, `
+DELETE FROM node_user_cpu_limits
+WHERE node_id=$1 AND local_username=$2`, nodeID, localUsername)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected <= 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) GetNodeUserCPULimit(ctx context.Context, nodeID string, localUsername string) (*NodeUserCPULimit, bool, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	if nodeID == "" || localUsername == "" {
+		return nil, false, errors.New("node_id/local_username 不能为空")
+	}
+	var out NodeUserCPULimit
+	if err := s.db.QueryRowContext(ctx, `
+SELECT l.node_id,
+       l.local_username,
+       COALESCE(una.billing_username, '') AS billing_username,
+       (una.billing_username IS NOT NULL) AS mapping_exists,
+       (
+         EXISTS(SELECT 1 FROM user_accounts ua WHERE ua.username=una.billing_username)
+         OR EXISTS(SELECT 1 FROM admin_accounts aa WHERE aa.username=una.billing_username)
+         OR EXISTS(SELECT 1 FROM power_users pu WHERE pu.username=una.billing_username)
+       ) AS platform_exists,
+       l.cpu_quota_percent,
+       COALESCE(l.reason, '') AS reason,
+       l.updated_by,
+       l.updated_at
+FROM node_user_cpu_limits l
+LEFT JOIN user_node_accounts una
+  ON una.node_id=l.node_id
+ AND una.local_username=l.local_username
+WHERE l.node_id=$1 AND l.local_username=$2`, nodeID, localUsername).Scan(
+		&out.NodeID,
+		&out.LocalUsername,
+		&out.BillingUsername,
+		&out.MappingExists,
+		&out.PlatformExists,
+		&out.CPUQuotaPercent,
+		&out.Reason,
+		&out.UpdatedBy,
+		&out.UpdatedAt,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	normalizeNodeUserCPULimitTimes(&out)
+	return &out, true, nil
+}
+
+func (s *Store) ListNodeUserCPULimitsByNodeTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	nodeID string,
+	limit int,
+) ([]NodeUserCPULimit, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return nil, errors.New("node_id 不能为空")
+	}
+	if limit <= 0 || limit > 10000 {
+		limit = 5000
+	}
+	rows, err := tx.QueryContext(ctx, `
+SELECT node_id, local_username, cpu_quota_percent, COALESCE(reason, '') AS reason, updated_by, updated_at
+FROM node_user_cpu_limits
+WHERE node_id=$1
+ORDER BY updated_at DESC, local_username ASC
+LIMIT $2`, nodeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]NodeUserCPULimit, 0)
+	for rows.Next() {
+		var x NodeUserCPULimit
+		if err := rows.Scan(
+			&x.NodeID,
+			&x.LocalUsername,
+			&x.CPUQuotaPercent,
+			&x.Reason,
+			&x.UpdatedBy,
+			&x.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		normalizeNodeUserCPULimitTimes(&x)
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListNodeUserCPULimits(
+	ctx context.Context,
+	nodeID string,
+	billingUsername string,
+	limit int,
+) ([]NodeUserCPULimit, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	billingUsername = strings.TrimSpace(billingUsername)
+	if limit <= 0 || limit > 10000 {
+		limit = 1000
+	}
+	conds := make([]string, 0, 2)
+	args := make([]any, 0, 4)
+	addArg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	if nodeID != "" {
+		conds = append(conds, "l.node_id="+addArg(nodeID))
+	}
+	if billingUsername != "" {
+		conds = append(conds, "una.billing_username="+addArg(billingUsername))
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = "WHERE " + strings.Join(conds, " AND ")
+	}
+	query := `
+SELECT l.node_id,
+       l.local_username,
+       COALESCE(una.billing_username, '') AS billing_username,
+       (una.billing_username IS NOT NULL) AS mapping_exists,
+       (
+         EXISTS(SELECT 1 FROM user_accounts ua WHERE ua.username=una.billing_username)
+         OR EXISTS(SELECT 1 FROM admin_accounts aa WHERE aa.username=una.billing_username)
+         OR EXISTS(SELECT 1 FROM power_users pu WHERE pu.username=una.billing_username)
+       ) AS platform_exists,
+       l.cpu_quota_percent,
+       COALESCE(l.reason, '') AS reason,
+       l.updated_by,
+       l.updated_at
+FROM node_user_cpu_limits l
+LEFT JOIN user_node_accounts una
+  ON una.node_id=l.node_id
+ AND una.local_username=l.local_username
+` + where + `
+ORDER BY l.updated_at DESC, l.node_id ASC, l.local_username ASC
+LIMIT ` + addArg(limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]NodeUserCPULimit, 0)
+	for rows.Next() {
+		var x NodeUserCPULimit
+		if err := rows.Scan(
+			&x.NodeID,
+			&x.LocalUsername,
+			&x.BillingUsername,
+			&x.MappingExists,
+			&x.PlatformExists,
+			&x.CPUQuotaPercent,
+			&x.Reason,
+			&x.UpdatedBy,
+			&x.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		normalizeNodeUserCPULimitTimes(&x)
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) UpsertNodeUserMemoryLimit(
+	ctx context.Context,
+	nodeID string,
+	localUsername string,
+	memoryLimitGB float64,
+	reason string,
+	updatedBy string,
+) (NodeUserMemoryLimit, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	reason = strings.TrimSpace(reason)
+	updatedBy = strings.TrimSpace(updatedBy)
+	if nodeID == "" || localUsername == "" {
+		return NodeUserMemoryLimit{}, errors.New("node_id/local_username 不能为空")
+	}
+	if memoryLimitGB <= 0 {
+		return NodeUserMemoryLimit{}, errors.New("memory_limit_gb 必须大于 0")
+	}
+	if updatedBy == "" {
+		updatedBy = "admin"
+	}
+	if _, err := s.db.ExecContext(ctx, `
+INSERT INTO node_user_memory_limits(node_id, local_username, memory_limit_gb, reason, updated_by, updated_at)
+VALUES($1,$2,$3,$4,$5,NOW())
+ON CONFLICT (node_id, local_username) DO UPDATE
+SET memory_limit_gb=EXCLUDED.memory_limit_gb,
+    reason=EXCLUDED.reason,
+    updated_by=EXCLUDED.updated_by,
+    updated_at=NOW()`, nodeID, localUsername, memoryLimitGB, reason, updatedBy); err != nil {
+		return NodeUserMemoryLimit{}, err
+	}
+	row, ok, err := s.GetNodeUserMemoryLimit(ctx, nodeID, localUsername)
+	if err != nil {
+		return NodeUserMemoryLimit{}, err
+	}
+	if !ok || row == nil {
+		return NodeUserMemoryLimit{}, sql.ErrNoRows
+	}
+	return *row, nil
+}
+
+func (s *Store) DeleteNodeUserMemoryLimit(ctx context.Context, nodeID string, localUsername string) error {
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	if nodeID == "" || localUsername == "" {
+		return errors.New("node_id/local_username 不能为空")
+	}
+	res, err := s.db.ExecContext(ctx, `
+DELETE FROM node_user_memory_limits
+WHERE node_id=$1 AND local_username=$2`, nodeID, localUsername)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected <= 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) GetNodeUserMemoryLimit(ctx context.Context, nodeID string, localUsername string) (*NodeUserMemoryLimit, bool, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	if nodeID == "" || localUsername == "" {
+		return nil, false, errors.New("node_id/local_username 不能为空")
+	}
+	var out NodeUserMemoryLimit
+	if err := s.db.QueryRowContext(ctx, `
+SELECT l.node_id,
+       l.local_username,
+       COALESCE(una.billing_username, '') AS billing_username,
+       (una.billing_username IS NOT NULL) AS mapping_exists,
+       (
+         EXISTS(SELECT 1 FROM user_accounts ua WHERE ua.username=una.billing_username)
+         OR EXISTS(SELECT 1 FROM admin_accounts aa WHERE aa.username=una.billing_username)
+         OR EXISTS(SELECT 1 FROM power_users pu WHERE pu.username=una.billing_username)
+       ) AS platform_exists,
+       l.memory_limit_gb,
+       COALESCE(l.reason, '') AS reason,
+       l.updated_by,
+       l.updated_at
+FROM node_user_memory_limits l
+LEFT JOIN user_node_accounts una
+  ON una.node_id=l.node_id
+ AND una.local_username=l.local_username
+WHERE l.node_id=$1 AND l.local_username=$2`, nodeID, localUsername).Scan(
+		&out.NodeID,
+		&out.LocalUsername,
+		&out.BillingUsername,
+		&out.MappingExists,
+		&out.PlatformExists,
+		&out.MemoryLimitGB,
+		&out.Reason,
+		&out.UpdatedBy,
+		&out.UpdatedAt,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	normalizeNodeUserMemoryLimitTimes(&out)
+	return &out, true, nil
+}
+
+func (s *Store) ListNodeUserMemoryLimitsByNodeTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	nodeID string,
+	limit int,
+) ([]NodeUserMemoryLimit, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return nil, errors.New("node_id 不能为空")
+	}
+	if limit <= 0 || limit > 10000 {
+		limit = 5000
+	}
+	rows, err := tx.QueryContext(ctx, `
+SELECT node_id, local_username, memory_limit_gb, COALESCE(reason, '') AS reason, updated_by, updated_at
+FROM node_user_memory_limits
+WHERE node_id=$1
+ORDER BY updated_at DESC, local_username ASC
+LIMIT $2`, nodeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]NodeUserMemoryLimit, 0)
+	for rows.Next() {
+		var x NodeUserMemoryLimit
+		if err := rows.Scan(
+			&x.NodeID,
+			&x.LocalUsername,
+			&x.MemoryLimitGB,
+			&x.Reason,
+			&x.UpdatedBy,
+			&x.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		normalizeNodeUserMemoryLimitTimes(&x)
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListNodeUserMemoryLimits(
+	ctx context.Context,
+	nodeID string,
+	billingUsername string,
+	limit int,
+) ([]NodeUserMemoryLimit, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	billingUsername = strings.TrimSpace(billingUsername)
+	if limit <= 0 || limit > 10000 {
+		limit = 1000
+	}
+	conds := make([]string, 0, 2)
+	args := make([]any, 0, 4)
+	addArg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	if nodeID != "" {
+		conds = append(conds, "l.node_id="+addArg(nodeID))
+	}
+	if billingUsername != "" {
+		conds = append(conds, "una.billing_username="+addArg(billingUsername))
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = "WHERE " + strings.Join(conds, " AND ")
+	}
+	query := `
+SELECT l.node_id,
+       l.local_username,
+       COALESCE(una.billing_username, '') AS billing_username,
+       (una.billing_username IS NOT NULL) AS mapping_exists,
+       (
+         EXISTS(SELECT 1 FROM user_accounts ua WHERE ua.username=una.billing_username)
+         OR EXISTS(SELECT 1 FROM admin_accounts aa WHERE aa.username=una.billing_username)
+         OR EXISTS(SELECT 1 FROM power_users pu WHERE pu.username=una.billing_username)
+       ) AS platform_exists,
+       l.memory_limit_gb,
+       COALESCE(l.reason, '') AS reason,
+       l.updated_by,
+       l.updated_at
+FROM node_user_memory_limits l
+LEFT JOIN user_node_accounts una
+  ON una.node_id=l.node_id
+ AND una.local_username=l.local_username
+` + where + `
+ORDER BY l.updated_at DESC, l.node_id ASC, l.local_username ASC
+LIMIT ` + addArg(limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]NodeUserMemoryLimit, 0)
+	for rows.Next() {
+		var x NodeUserMemoryLimit
+		if err := rows.Scan(
+			&x.NodeID,
+			&x.LocalUsername,
+			&x.BillingUsername,
+			&x.MappingExists,
+			&x.PlatformExists,
+			&x.MemoryLimitGB,
+			&x.Reason,
+			&x.UpdatedBy,
+			&x.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		normalizeNodeUserMemoryLimitTimes(&x)
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
+func normalizeNodeUserGPUIndices(indices []int) ([]int, error) {
+	set := make(map[int]struct{}, len(indices))
+	for _, idx := range indices {
+		if idx < 0 {
+			return nil, fmt.Errorf("gpu_index 不能为负数：%d", idx)
+		}
+		set[idx] = struct{}{}
+	}
+	out := make([]int, 0, len(set))
+	for idx := range set {
+		out = append(out, idx)
+	}
+	sort.Ints(out)
+	return out, nil
+}
+
+func (s *Store) UpsertNodeUserGPUVisibility(
+	ctx context.Context,
+	nodeID string,
+	localUsername string,
+	gpuIndices []int,
+	reason string,
+	updatedBy string,
+) (NodeUserGPUVisibility, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	reason = strings.TrimSpace(reason)
+	updatedBy = strings.TrimSpace(updatedBy)
+	if nodeID == "" || localUsername == "" {
+		return NodeUserGPUVisibility{}, errors.New("node_id/local_username 不能为空")
+	}
+	if updatedBy == "" {
+		updatedBy = "admin"
+	}
+	normalized, err := normalizeNodeUserGPUIndices(gpuIndices)
+	if err != nil {
+		return NodeUserGPUVisibility{}, err
+	}
+	if len(normalized) == 0 {
+		return NodeUserGPUVisibility{}, errors.New("gpu_indices 至少包含一个 GPU 编号")
+	}
+	if err := s.WithTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `
+DELETE FROM node_user_gpu_visibility
+WHERE node_id=$1 AND local_username=$2`, nodeID, localUsername); err != nil {
+			return err
+		}
+		for _, idx := range normalized {
+			if _, err := tx.ExecContext(ctx, `
+INSERT INTO node_user_gpu_visibility(node_id, local_username, gpu_index, reason, updated_by, updated_at)
+VALUES($1,$2,$3,$4,$5,NOW())`, nodeID, localUsername, idx, reason, updatedBy); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return NodeUserGPUVisibility{}, err
+	}
+	row, ok, err := s.GetNodeUserGPUVisibility(ctx, nodeID, localUsername)
+	if err != nil {
+		return NodeUserGPUVisibility{}, err
+	}
+	if !ok || row == nil {
+		return NodeUserGPUVisibility{}, sql.ErrNoRows
+	}
+	return *row, nil
+}
+
+func (s *Store) DeleteNodeUserGPUVisibility(ctx context.Context, nodeID string, localUsername string) error {
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	if nodeID == "" || localUsername == "" {
+		return errors.New("node_id/local_username 不能为空")
+	}
+	res, err := s.db.ExecContext(ctx, `
+DELETE FROM node_user_gpu_visibility
+WHERE node_id=$1 AND local_username=$2`, nodeID, localUsername)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected <= 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) GetNodeUserGPUVisibility(ctx context.Context, nodeID string, localUsername string) (*NodeUserGPUVisibility, bool, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	if nodeID == "" || localUsername == "" {
+		return nil, false, errors.New("node_id/local_username 不能为空")
+	}
+	var out NodeUserGPUVisibility
+	var gpuIndicesRaw pq.Int64Array
+	if err := s.db.QueryRowContext(ctx, `
+SELECT l.node_id,
+       l.local_username,
+       COALESCE(una.billing_username, '') AS billing_username,
+       (una.billing_username IS NOT NULL) AS mapping_exists,
+       (
+         EXISTS(SELECT 1 FROM user_accounts ua WHERE ua.username=una.billing_username)
+         OR EXISTS(SELECT 1 FROM admin_accounts aa WHERE aa.username=una.billing_username)
+         OR EXISTS(SELECT 1 FROM power_users pu WHERE pu.username=una.billing_username)
+       ) AS platform_exists,
+       (adm.username IS NOT NULL) AS admin_mapping,
+       COALESCE(adm.username, '') AS admin_username,
+       array_agg(l.gpu_index ORDER BY l.gpu_index)::BIGINT[] AS gpu_indices,
+       (array_agg(l.reason ORDER BY l.updated_at DESC, l.gpu_index ASC))[1] AS reason,
+       (array_agg(l.updated_by ORDER BY l.updated_at DESC, l.gpu_index ASC))[1] AS updated_by,
+       MAX(l.updated_at) AS updated_at
+FROM node_user_gpu_visibility l
+LEFT JOIN user_node_accounts una
+  ON una.node_id=l.node_id
+ AND una.local_username=l.local_username
+LEFT JOIN admin_accounts adm
+  ON adm.username=una.billing_username
+WHERE l.node_id=$1 AND l.local_username=$2
+GROUP BY l.node_id, l.local_username, una.billing_username, adm.username`, nodeID, localUsername).Scan(
+		&out.NodeID,
+		&out.LocalUsername,
+		&out.BillingUsername,
+		&out.MappingExists,
+		&out.PlatformExists,
+		&out.AdminMapping,
+		&out.AdminUsername,
+		&gpuIndicesRaw,
+		&out.Reason,
+		&out.UpdatedBy,
+		&out.UpdatedAt,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	out.GPUIndices = make([]int, 0, len(gpuIndicesRaw))
+	for _, idx := range gpuIndicesRaw {
+		if idx >= 0 {
+			out.GPUIndices = append(out.GPUIndices, int(idx))
+		}
+	}
+	sort.Ints(out.GPUIndices)
+	normalizeNodeUserGPUVisibilityTimes(&out)
+	return &out, true, nil
+}
+
+func (s *Store) ListNodeUserGPUVisibilityByNodeTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	nodeID string,
+	limit int,
+) ([]NodeUserGPUVisibility, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return nil, errors.New("node_id 不能为空")
+	}
+	if limit <= 0 || limit > 10000 {
+		limit = 5000
+	}
+	rows, err := tx.QueryContext(ctx, `
+SELECT l.node_id,
+       l.local_username,
+       COALESCE(una.billing_username, '') AS billing_username,
+       (una.billing_username IS NOT NULL) AS mapping_exists,
+       (
+         EXISTS(SELECT 1 FROM user_accounts ua WHERE ua.username=una.billing_username)
+         OR EXISTS(SELECT 1 FROM admin_accounts aa WHERE aa.username=una.billing_username)
+         OR EXISTS(SELECT 1 FROM power_users pu WHERE pu.username=una.billing_username)
+       ) AS platform_exists,
+       (adm.username IS NOT NULL) AS admin_mapping,
+       COALESCE(adm.username, '') AS admin_username,
+       array_agg(l.gpu_index ORDER BY l.gpu_index)::BIGINT[] AS gpu_indices,
+       (array_agg(l.reason ORDER BY l.updated_at DESC, l.gpu_index ASC))[1] AS reason,
+       (array_agg(l.updated_by ORDER BY l.updated_at DESC, l.gpu_index ASC))[1] AS updated_by,
+       MAX(l.updated_at) AS updated_at
+FROM node_user_gpu_visibility l
+LEFT JOIN user_node_accounts una
+  ON una.node_id=l.node_id
+ AND una.local_username=l.local_username
+LEFT JOIN admin_accounts adm
+  ON adm.username=una.billing_username
+WHERE l.node_id=$1
+GROUP BY l.node_id, l.local_username, una.billing_username, adm.username
+ORDER BY l.local_username
+LIMIT $2`, nodeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]NodeUserGPUVisibility, 0)
+	for rows.Next() {
+		var x NodeUserGPUVisibility
+		var gpuIndicesRaw pq.Int64Array
+		if err := rows.Scan(
+			&x.NodeID,
+			&x.LocalUsername,
+			&x.BillingUsername,
+			&x.MappingExists,
+			&x.PlatformExists,
+			&x.AdminMapping,
+			&x.AdminUsername,
+			&gpuIndicesRaw,
+			&x.Reason,
+			&x.UpdatedBy,
+			&x.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		x.GPUIndices = make([]int, 0, len(gpuIndicesRaw))
+		for _, idx := range gpuIndicesRaw {
+			if idx >= 0 {
+				x.GPUIndices = append(x.GPUIndices, int(idx))
+			}
+		}
+		sort.Ints(x.GPUIndices)
+		normalizeNodeUserGPUVisibilityTimes(&x)
+		out = append(out, x)
 	}
 	return out, rows.Err()
 }
@@ -4848,6 +7769,7 @@ WHERE node_id=$1`
 		); err != nil {
 			return nil, err
 		}
+		normalizeNodeSecurityEventTimes(&e)
 		out = append(out, e)
 	}
 	return out, rows.Err()
@@ -4921,6 +7843,7 @@ LIMIT $` + strconv.Itoa(len(args)+1)
 		); err != nil {
 			return nil, err
 		}
+		normalizeNodeSecurityEventSummaryTimes(&x)
 		out = append(out, x)
 	}
 	return out, rows.Err()
@@ -4977,6 +7900,7 @@ LIMIT $3`, nodeID, days, limit)
 		if err := rows.Scan(&u.NodeID, &u.Username, &u.HitCount, &u.LastSeenAt, &u.ReasonHints, &u.Phenomena, &u.MiningSuspected); err != nil {
 			return nil, err
 		}
+		normalizeNodeSuspiciousUserTimes(&u)
 		out = append(out, u)
 	}
 	return out, rows.Err()
@@ -5034,6 +7958,7 @@ LIMIT $4`, nodeID, from, to, limit)
 		if err := rows.Scan(&u.NodeID, &u.Username, &u.HitCount, &u.LastSeenAt, &u.ReasonHints, &u.Phenomena, &u.MiningSuspected); err != nil {
 			return nil, err
 		}
+		normalizeNodeSuspiciousUserTimes(&u)
 		out = append(out, u)
 	}
 	return out, rows.Err()
@@ -5158,6 +8083,7 @@ LIMIT $4`, nodeID, from, to, limit)
 		if strings.TrimSpace(sshUsersRaw) != "" {
 			_ = json.Unmarshal([]byte(sshUsersRaw), &x.SSHUsers)
 		}
+		normalizeNodeRuntimeSnapshotTimes(&x)
 		out = append(out, x)
 	}
 	return out, rows.Err()
@@ -5210,7 +8136,7 @@ func (s *Store) VerifyAdminPassword(ctx context.Context, username string, passwo
 	return true, nil
 }
 
-func (s *Store) CreatePowerUser(ctx context.Context, username string, password string, canViewBoard bool, canViewNodes bool, canManageNodes bool, canReview bool, createdBy string) error {
+func (s *Store) CreatePowerUser(ctx context.Context, username string, password string, canViewBoard bool, canViewNodes bool, canManageNodes bool, canManagePoints bool, canReview bool, createdBy string) error {
 	username = strings.TrimSpace(username)
 	createdBy = strings.TrimSpace(createdBy)
 	if username == "" {
@@ -5265,8 +8191,8 @@ SELECT EXISTS(
 		return err
 	}
 	_, err = s.db.ExecContext(ctx, `
-INSERT INTO power_users(username, password_hash, can_view_board, can_view_nodes, can_manage_nodes, can_review_requests, created_by, updated_by)
-VALUES($1,$2,$3,$4,$5,$6,$7,$7)`, username, string(hash), canViewBoard, canViewNodes, canManageNodes, canReview, createdBy)
+INSERT INTO power_users(username, password_hash, can_view_board, can_view_nodes, can_manage_nodes, can_manage_points, can_review_requests, created_by, updated_by)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$8)`, username, string(hash), canViewBoard, canViewNodes, canManageNodes, canManagePoints, canReview, createdBy)
 	if err != nil {
 		return err
 	}
@@ -5281,10 +8207,10 @@ func (s *Store) VerifyPowerUserPassword(ctx context.Context, username string, pa
 	var hash string
 	var out PowerUser
 	err := s.db.QueryRowContext(ctx, `
-SELECT password_hash, username, can_view_board, can_view_nodes, can_manage_nodes, can_review_requests, created_by, updated_by, last_login_at, created_at, updated_at
+SELECT password_hash, username, can_view_board, can_view_nodes, can_manage_nodes, COALESCE(can_manage_points,false), can_review_requests, created_by, updated_by, last_login_at, created_at, updated_at
 FROM power_users
 WHERE username=$1`, username).Scan(
-		&hash, &out.Username, &out.CanViewBoard, &out.CanViewNodes, &out.CanManageNodes, &out.CanReviewRequests, &out.CreatedBy, &out.UpdatedBy, &out.LastLoginAt, &out.CreatedAt, &out.UpdatedAt,
+		&hash, &out.Username, &out.CanViewBoard, &out.CanViewNodes, &out.CanManageNodes, &out.CanManagePoints, &out.CanReviewRequests, &out.CreatedBy, &out.UpdatedBy, &out.LastLoginAt, &out.CreatedAt, &out.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -5309,6 +8235,7 @@ SELECT pu.username,
        pu.can_view_board,
        pu.can_view_nodes,
        pu.can_manage_nodes,
+       COALESCE(pu.can_manage_points,false) AS can_manage_points,
        pu.can_review_requests,
        pu.created_by,
        pu.updated_by,
@@ -5325,7 +8252,7 @@ LIMIT $1`, limit)
 	out := make([]PowerUser, 0)
 	for rows.Next() {
 		var p PowerUser
-		if err := rows.Scan(&p.Username, &p.IsPlatformUser, &p.CanViewBoard, &p.CanViewNodes, &p.CanManageNodes, &p.CanReviewRequests, &p.CreatedBy, &p.UpdatedBy, &p.LastLoginAt, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.Username, &p.IsPlatformUser, &p.CanViewBoard, &p.CanViewNodes, &p.CanManageNodes, &p.CanManagePoints, &p.CanReviewRequests, &p.CreatedBy, &p.UpdatedBy, &p.LastLoginAt, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -5333,7 +8260,7 @@ LIMIT $1`, limit)
 	return out, rows.Err()
 }
 
-func (s *Store) PromotePlatformUserToPowerUser(ctx context.Context, username string, canViewBoard bool, canViewNodes bool, canManageNodes bool, canReview bool, updatedBy string) error {
+func (s *Store) PromotePlatformUserToPowerUser(ctx context.Context, username string, canViewBoard bool, canViewNodes bool, canManageNodes bool, canManagePoints bool, canReview bool, updatedBy string) error {
 	username = strings.TrimSpace(username)
 	updatedBy = strings.TrimSpace(updatedBy)
 	if username == "" {
@@ -5361,16 +8288,17 @@ func (s *Store) PromotePlatformUserToPowerUser(ctx context.Context, username str
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `
-INSERT INTO power_users(username, password_hash, can_view_board, can_view_nodes, can_manage_nodes, can_review_requests, created_by, updated_by)
-VALUES($1,$2,$3,$4,$5,$6,$7,$7)
+INSERT INTO power_users(username, password_hash, can_view_board, can_view_nodes, can_manage_nodes, can_manage_points, can_review_requests, created_by, updated_by)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$8)
 ON CONFLICT (username) DO UPDATE SET
   password_hash=EXCLUDED.password_hash,
   can_view_board=EXCLUDED.can_view_board,
   can_view_nodes=EXCLUDED.can_view_nodes,
   can_manage_nodes=EXCLUDED.can_manage_nodes,
+  can_manage_points=EXCLUDED.can_manage_points,
   can_review_requests=EXCLUDED.can_review_requests,
   updated_by=EXCLUDED.updated_by,
-  updated_at=NOW()`, username, pwdHash, canViewBoard, canViewNodes, canManageNodes, canReview, updatedBy); err != nil {
+  updated_at=NOW()`, username, pwdHash, canViewBoard, canViewNodes, canManageNodes, canManagePoints, canReview, updatedBy); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `
@@ -5410,7 +8338,7 @@ WHERE username=$1`, username); err != nil {
 	})
 }
 
-func (s *Store) UpdatePowerUserPermissions(ctx context.Context, username string, canViewBoard bool, canViewNodes bool, canManageNodes bool, canReview bool, updatedBy string) error {
+func (s *Store) UpdatePowerUserPermissions(ctx context.Context, username string, canViewBoard bool, canViewNodes bool, canManageNodes bool, canManagePoints bool, canReview bool, updatedBy string) error {
 	username = strings.TrimSpace(username)
 	updatedBy = strings.TrimSpace(updatedBy)
 	if username == "" {
@@ -5424,8 +8352,8 @@ func (s *Store) UpdatePowerUserPermissions(ctx context.Context, username string,
 	}
 	res, err := s.db.ExecContext(ctx, `
 UPDATE power_users
-SET can_view_board=$2, can_view_nodes=$3, can_manage_nodes=$4, can_review_requests=$5, updated_by=$6, updated_at=NOW()
-WHERE username=$1`, username, canViewBoard, canViewNodes, canManageNodes, canReview, updatedBy)
+SET can_view_board=$2, can_view_nodes=$3, can_manage_nodes=$4, can_manage_points=$5, can_review_requests=$6, updated_by=$7, updated_at=NOW()
+WHERE username=$1`, username, canViewBoard, canViewNodes, canManageNodes, canManagePoints, canReview, updatedBy)
 	if err != nil {
 		return err
 	}
@@ -5449,16 +8377,17 @@ func (s *Store) ResolveSessionRolePerms(ctx context.Context, username string) (s
 		return "", 0, false, err
 	}
 	if exists {
-		return "admin", uint32(permViewBoard | permViewNodes | permManageNodes | permReviewRequests), true, nil
+		return "admin", uint32(permViewBoard | permViewNodes | permManageNodes | permReviewRequests | permManagePoints), true, nil
 	}
 	var canViewBoard bool
 	var canViewNodes bool
 	var canManageNodes bool
+	var canManagePoints bool
 	var canReview bool
 	err := s.db.QueryRowContext(ctx, `
-SELECT can_view_board, can_view_nodes, COALESCE(can_manage_nodes,false), can_review_requests
+SELECT can_view_board, can_view_nodes, COALESCE(can_manage_nodes,false), COALESCE(can_manage_points,false), can_review_requests
 FROM power_users
-WHERE username=$1`, username).Scan(&canViewBoard, &canViewNodes, &canManageNodes, &canReview)
+WHERE username=$1`, username).Scan(&canViewBoard, &canViewNodes, &canManageNodes, &canManagePoints, &canReview)
 	if err == nil {
 		perms := uint32(0)
 		if canViewBoard {
@@ -5469,6 +8398,9 @@ WHERE username=$1`, username).Scan(&canViewBoard, &canViewNodes, &canManageNodes
 		}
 		if canManageNodes {
 			perms |= permManageNodes
+		}
+		if canManagePoints {
+			perms |= permManagePoints
 		}
 		if canReview {
 			perms |= permReviewRequests
@@ -5504,6 +8436,33 @@ func (s *Store) DeletePowerUser(ctx context.Context, username string) error {
 		return sql.ErrNoRows
 	}
 	return nil
+}
+
+func (s *Store) resolveInitialGeneralBalanceTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	username string,
+	studentID string,
+	fallback float64,
+) (float64, error) {
+	username = strings.TrimSpace(username)
+	studentID = strings.TrimSpace(studentID)
+	if username == "" {
+		return fallback, errors.New("username 不能为空")
+	}
+	cfg, err := s.LoadMonthlyPointsConfigTx(ctx, tx)
+	if err != nil {
+		return fallback, err
+	}
+	initial := monthlyBasePointsByStudentID(studentID, cfg)
+	specialMap, err := s.LoadSpecialMonthlyPointsMapTx(ctx, tx)
+	if err != nil {
+		return fallback, err
+	}
+	if v, ok := specialMap[username]; ok {
+		initial = v
+	}
+	return initial, nil
 }
 
 func (s *Store) CreateUserAccountTx(ctx context.Context, tx *sql.Tx, in UserAccount, password string, defaultBalance float64) error {
@@ -5570,7 +8529,11 @@ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'user')`,
 		in.Username, in.Email, string(hash), in.RealName, in.StudentID, in.Advisor, in.ExpectedGraduationYear, in.ExpectedGraduationMonth, in.Phone); err != nil {
 		return err
 	}
-	_, err = s.EnsureUserTx(ctx, tx, in.Username, defaultBalance)
+	initialBalance, err := s.resolveInitialGeneralBalanceTx(ctx, tx, in.Username, in.StudentID, defaultBalance)
+	if err != nil {
+		return err
+	}
+	_, err = s.EnsureUserTx(ctx, tx, in.Username, initialBalance)
 	return err
 }
 
@@ -5953,13 +8916,17 @@ INSERT INTO registration_requests(
 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending')
 RETURNING request_id, username, email, password_hash, real_name, student_id, advisor,
           expected_graduation_year, expected_graduation_month, phone, status,
-          reviewed_by, reviewed_at, reject_reason, created_at, updated_at`,
+          reviewed_by, reviewed_at, reject_reason,
+          reject_notify_mail_checked, reject_notify_mail_sent, reject_notify_mail_error,
+          created_at, updated_at`,
 		v.Username, v.Email, v.PasswordHash, v.RealName, v.StudentID, v.Advisor,
 		v.ExpectedGraduationYear, v.ExpectedGraduationMonth, v.Phone,
 	).Scan(
 		&v.RequestID, &v.Username, &v.Email, &v.PasswordHash, &v.RealName, &v.StudentID, &v.Advisor,
 		&v.ExpectedGraduationYear, &v.ExpectedGraduationMonth, &v.Phone, &v.Status,
-		&reviewedBy, &reviewedAt, &v.RejectReason, &v.CreatedAt, &v.UpdatedAt,
+		&reviewedBy, &reviewedAt, &v.RejectReason,
+		&v.RejectNotifyMailChecked, &v.RejectNotifyMailSent, &v.RejectNotifyMailError,
+		&v.CreatedAt, &v.UpdatedAt,
 	)
 	if err != nil {
 		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
@@ -6389,13 +9356,17 @@ INSERT INTO registration_requests(
 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending')
 RETURNING request_id, username, email, password_hash, real_name, student_id, advisor,
           expected_graduation_year, expected_graduation_month, phone, status,
-          reviewed_by, reviewed_at, reject_reason, created_at, updated_at`,
+          reviewed_by, reviewed_at, reject_reason,
+          reject_notify_mail_checked, reject_notify_mail_sent, reject_notify_mail_error,
+          created_at, updated_at`,
 		in.Username, in.Email, string(hash), in.RealName, in.StudentID, in.Advisor,
 		in.ExpectedGraduationYear, in.ExpectedGraduationMonth, in.Phone,
 	).Scan(
 		&out.RequestID, &out.Username, &out.Email, &out.PasswordHash, &out.RealName, &out.StudentID, &out.Advisor,
 		&out.ExpectedGraduationYear, &out.ExpectedGraduationMonth, &out.Phone, &out.Status,
-		&reviewedBy, &reviewedAt, &out.RejectReason, &out.CreatedAt, &out.UpdatedAt,
+		&reviewedBy, &reviewedAt, &out.RejectReason,
+		&out.RejectNotifyMailChecked, &out.RejectNotifyMailSent, &out.RejectNotifyMailError,
+		&out.CreatedAt, &out.UpdatedAt,
 	)
 	if err != nil {
 		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
@@ -6429,7 +9400,9 @@ func (s *Store) ListRegistrationRequestsAdmin(ctx context.Context, status string
 	query := `
 SELECT request_id, username, email, password_hash, real_name, student_id, advisor,
        expected_graduation_year, expected_graduation_month, phone, status,
-       reviewed_by, reviewed_at, reject_reason, created_at, updated_at
+       reviewed_by, reviewed_at, reject_reason,
+       reject_notify_mail_checked, reject_notify_mail_sent, reject_notify_mail_error,
+       created_at, updated_at
 FROM registration_requests`
 	args := make([]any, 0, 2)
 	if status != "" {
@@ -6457,7 +9430,9 @@ FROM registration_requests`
 		if err := rows.Scan(
 			&r.RequestID, &r.Username, &r.Email, &r.PasswordHash, &r.RealName, &r.StudentID, &r.Advisor,
 			&r.ExpectedGraduationYear, &r.ExpectedGraduationMonth, &r.Phone, &r.Status,
-			&reviewedBy, &reviewedAt, &r.RejectReason, &r.CreatedAt, &r.UpdatedAt,
+			&reviewedBy, &reviewedAt, &r.RejectReason,
+			&r.RejectNotifyMailChecked, &r.RejectNotifyMailSent, &r.RejectNotifyMailError,
+			&r.CreatedAt, &r.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -6522,7 +9497,11 @@ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'user')`,
 	); err != nil {
 		return err
 	}
-	_, err := s.EnsureUserTx(ctx, tx, in.Username, defaultBalance)
+	initialBalance, err := s.resolveInitialGeneralBalanceTx(ctx, tx, in.Username, in.StudentID, defaultBalance)
+	if err != nil {
+		return err
+	}
+	_, err = s.EnsureUserTx(ctx, tx, in.Username, initialBalance)
 	return err
 }
 
@@ -6545,6 +9524,9 @@ func (s *Store) ReviewRegistrationRequestTx(
 	if newStatus != "approved" && newStatus != "rejected" {
 		return RegistrationRequest{}, errors.New("status 仅支持 approved/rejected")
 	}
+	if newStatus == "rejected" && rejectReason == "" {
+		return RegistrationRequest{}, errors.New("退回理由不能为空")
+	}
 	if reviewedBy == "" {
 		reviewedBy = "admin"
 	}
@@ -6554,13 +9536,17 @@ func (s *Store) ReviewRegistrationRequestTx(
 	if err := tx.QueryRowContext(ctx, `
 SELECT request_id, username, email, password_hash, real_name, student_id, advisor,
        expected_graduation_year, expected_graduation_month, phone, status,
-       reviewed_by, reviewed_at, reject_reason, created_at, updated_at
+       reviewed_by, reviewed_at, reject_reason,
+       reject_notify_mail_checked, reject_notify_mail_sent, reject_notify_mail_error,
+       created_at, updated_at
 FROM registration_requests
 WHERE request_id=$1
 FOR UPDATE`, requestID).Scan(
 		&r.RequestID, &r.Username, &r.Email, &r.PasswordHash, &r.RealName, &r.StudentID, &r.Advisor,
 		&r.ExpectedGraduationYear, &r.ExpectedGraduationMonth, &r.Phone, &r.Status,
-		&reviewedByPrev, &reviewedAtPrev, &r.RejectReason, &r.CreatedAt, &r.UpdatedAt,
+		&reviewedByPrev, &reviewedAtPrev, &r.RejectReason,
+		&r.RejectNotifyMailChecked, &r.RejectNotifyMailSent, &r.RejectNotifyMailError,
+		&r.CreatedAt, &r.UpdatedAt,
 	); err != nil {
 		return RegistrationRequest{}, err
 	}
@@ -6575,16 +9561,52 @@ FOR UPDATE`, requestID).Scan(
 	}
 	if _, err := tx.ExecContext(ctx, `
 UPDATE registration_requests
-SET status=$2, reviewed_by=$3, reviewed_at=$4, reject_reason=$5, updated_at=NOW()
-WHERE request_id=$1`, requestID, newStatus, reviewedBy, reviewedAt, rejectReason); err != nil {
+SET status=$2,
+    reviewed_by=$3,
+    reviewed_at=$4,
+    reject_reason=$5,
+    reject_notify_mail_checked=$6,
+    reject_notify_mail_sent=$7,
+    reject_notify_mail_error=$8,
+    updated_at=NOW()
+WHERE request_id=$1`, requestID, newStatus, reviewedBy, reviewedAt, rejectReason, false, false, ""); err != nil {
 		return RegistrationRequest{}, err
 	}
 	r.Status = newStatus
 	r.ReviewedBy = &reviewedBy
 	r.ReviewedAt = &reviewedAt
 	r.RejectReason = rejectReason
+	r.RejectNotifyMailChecked = false
+	r.RejectNotifyMailSent = false
+	r.RejectNotifyMailError = ""
 	r.UpdatedAt = reviewedAt
 	return r, nil
+}
+
+func (s *Store) SetRegistrationRejectNotifyMailResult(ctx context.Context, requestID int, sent bool, mailError string) error {
+	if requestID <= 0 {
+		return errors.New("request_id 不合法")
+	}
+	mailError = strings.TrimSpace(mailError)
+	res, err := s.db.ExecContext(ctx, `
+UPDATE registration_requests
+SET reject_notify_mail_checked=TRUE,
+    reject_notify_mail_sent=$2,
+    reject_notify_mail_error=$3,
+    updated_at=NOW()
+WHERE request_id=$1
+  AND status='rejected'`, requestID, sent, mailError)
+	if err != nil {
+		return err
+	}
+	aff, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if aff == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (s *Store) VerifyUserPassword(ctx context.Context, username string, password string) (bool, error) {
@@ -7418,6 +10440,223 @@ WHERE username=$1`, username, string(newHash))
 UPDATE power_users
 SET password_hash=$2, updated_at=NOW()
 WHERE username=$1`, username, string(newHash))
+	return nil
+}
+
+func parseAppSettingTime(v string) *time.Time {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return nil
+	}
+	t, err := parseTimeFlexible(v)
+	if err != nil {
+		return nil
+	}
+	return &t
+}
+
+func (s *Store) GetUsageRetentionSettings(ctx context.Context) (UsageRetentionSettings, error) {
+	out := UsageRetentionSettings{
+		RetentionDays: 0,
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT key, value FROM app_settings WHERE key = ANY($1)`, pq.Array([]string{
+		appSettingUsageRetentionDays,
+		appSettingUsageLastDeleteAt,
+		appSettingUsageLastDeleteFrom,
+		appSettingUsageLastDeleteTo,
+		appSettingUsageLastDeleteCount,
+		appSettingUsageLastDeleteMode,
+		appSettingUsageLastDeleteBy,
+	}))
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			return out, err
+		}
+		value = strings.TrimSpace(value)
+		switch key {
+		case appSettingUsageRetentionDays:
+			if n, convErr := strconv.Atoi(value); convErr == nil && n >= 0 {
+				out.RetentionDays = n
+			}
+		case appSettingUsageLastDeleteAt:
+			out.LastDeletedAt = parseAppSettingTime(value)
+		case appSettingUsageLastDeleteFrom:
+			out.LastDeletedFrom = parseAppSettingTime(value)
+		case appSettingUsageLastDeleteTo:
+			out.LastDeletedTo = parseAppSettingTime(value)
+		case appSettingUsageLastDeleteCount:
+			if n, convErr := strconv.ParseInt(value, 10, 64); convErr == nil && n >= 0 {
+				out.LastDeletedRecords = n
+			}
+		case appSettingUsageLastDeleteMode:
+			out.LastDeletedMode = value
+		case appSettingUsageLastDeleteBy:
+			out.LastDeletedBy = value
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func (s *Store) UpsertUsageRetentionDays(ctx context.Context, retentionDays int) error {
+	if retentionDays < 0 || retentionDays > 3650 {
+		return errors.New("retention_days 需在 0-3650 天之间")
+	}
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO app_settings(key, value, updated_at)
+VALUES($1, $2, NOW())
+ON CONFLICT (key) DO UPDATE
+SET value=EXCLUDED.value, updated_at=NOW()`,
+		appSettingUsageRetentionDays,
+		strconv.Itoa(retentionDays),
+	)
+	return err
+}
+
+func (s *Store) RecordUsageDeleteRun(
+	ctx context.Context,
+	runAt time.Time,
+	from *time.Time,
+	to *time.Time,
+	deletedRecords int64,
+	mode string,
+	operator string,
+) error {
+	if deletedRecords < 0 {
+		deletedRecords = 0
+	}
+	mode = strings.TrimSpace(mode)
+	if mode == "" {
+		mode = "manual"
+	}
+	operator = strings.TrimSpace(operator)
+	if operator == "" {
+		operator = "system"
+	}
+	items := map[string]string{
+		appSettingUsageLastDeleteAt:    formatRFC3339InBeijing(runAt),
+		appSettingUsageLastDeleteCount: strconv.FormatInt(deletedRecords, 10),
+		appSettingUsageLastDeleteMode:  mode,
+		appSettingUsageLastDeleteBy:    operator,
+	}
+	if from != nil && !from.IsZero() {
+		items[appSettingUsageLastDeleteFrom] = formatRFC3339InBeijing(*from)
+	} else {
+		items[appSettingUsageLastDeleteFrom] = ""
+	}
+	if to != nil && !to.IsZero() {
+		items[appSettingUsageLastDeleteTo] = formatRFC3339InBeijing(*to)
+	} else {
+		items[appSettingUsageLastDeleteTo] = ""
+	}
+	for key, value := range items {
+		if _, err := s.db.ExecContext(ctx, `
+INSERT INTO app_settings(key, value, updated_at)
+VALUES($1, $2, NOW())
+ON CONFLICT (key) DO UPDATE
+SET value=EXCLUDED.value, updated_at=NOW()`, key, value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) GetNodeBindSecurityPolicy(ctx context.Context) (NodeBindSecurityPolicy, error) {
+	out := defaultNodeBindSecurityPolicy()
+	keys := []string{
+		appSettingBindChallengeWindowSeconds,
+		appSettingBindTrialCPUQuotaPercent,
+		appSettingBindTrialMemoryLimitGB,
+		appSettingBindTrialGPUBlocked,
+		appSettingBindSingleActivePerBilling,
+		appSettingBindAllFailureCooldownMin,
+		appSettingBindFirstCooldownMinutes,
+		appSettingBindRepeatCooldownMinutes,
+		appSettingBindContentionFreezeMinute,
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT key, value FROM app_settings WHERE key = ANY($1)`, pq.Array(keys))
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			return out, err
+		}
+		value = strings.TrimSpace(value)
+		switch key {
+		case appSettingBindChallengeWindowSeconds:
+			if n, convErr := strconv.Atoi(value); convErr == nil {
+				out.ChallengeWindowSeconds = n
+			}
+		case appSettingBindTrialCPUQuotaPercent:
+			if f, convErr := strconv.ParseFloat(value, 64); convErr == nil {
+				out.TrialCPUQuotaPercent = f
+			}
+		case appSettingBindTrialMemoryLimitGB:
+			if f, convErr := strconv.ParseFloat(value, 64); convErr == nil {
+				out.TrialMemoryLimitGB = f
+			}
+		case appSettingBindTrialGPUBlocked:
+			v := strings.ToLower(value)
+			out.TrialGPUBlocked = (v == "1" || v == "true" || v == "yes" || v == "on")
+		case appSettingBindSingleActivePerBilling:
+			v := strings.ToLower(value)
+			out.SingleActivePerBilling = (v == "1" || v == "true" || v == "yes" || v == "on")
+		case appSettingBindAllFailureCooldownMin:
+			if n, convErr := strconv.Atoi(value); convErr == nil {
+				out.AllFailureCooldownMinutes = n
+			}
+		case appSettingBindFirstCooldownMinutes:
+			if n, convErr := strconv.Atoi(value); convErr == nil {
+				out.FirstFailureCooldownMinutes = n
+			}
+		case appSettingBindRepeatCooldownMinutes:
+			if n, convErr := strconv.Atoi(value); convErr == nil {
+				out.RepeatFailureCooldownMinutes = n
+			}
+		case appSettingBindContentionFreezeMinute:
+			if n, convErr := strconv.Atoi(value); convErr == nil {
+				out.ContentionFreezeMinutes = n
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
+	return normalizeNodeBindSecurityPolicy(out), nil
+}
+
+func (s *Store) UpsertNodeBindSecurityPolicy(ctx context.Context, policy NodeBindSecurityPolicy) error {
+	p := normalizeNodeBindSecurityPolicy(policy)
+	items := map[string]string{
+		appSettingBindChallengeWindowSeconds: strconv.Itoa(p.ChallengeWindowSeconds),
+		appSettingBindTrialCPUQuotaPercent:   strconv.FormatFloat(p.TrialCPUQuotaPercent, 'f', -1, 64),
+		appSettingBindTrialMemoryLimitGB:     strconv.FormatFloat(p.TrialMemoryLimitGB, 'f', -1, 64),
+		appSettingBindTrialGPUBlocked:        strconv.FormatBool(p.TrialGPUBlocked),
+		appSettingBindSingleActivePerBilling: strconv.FormatBool(p.SingleActivePerBilling),
+		appSettingBindAllFailureCooldownMin:  strconv.Itoa(p.AllFailureCooldownMinutes),
+		appSettingBindFirstCooldownMinutes:   strconv.Itoa(p.FirstFailureCooldownMinutes),
+		appSettingBindRepeatCooldownMinutes:  strconv.Itoa(p.RepeatFailureCooldownMinutes),
+		appSettingBindContentionFreezeMinute: strconv.Itoa(p.ContentionFreezeMinutes),
+	}
+	for key, value := range items {
+		if _, err := s.db.ExecContext(ctx, `
+INSERT INTO app_settings(key, value, updated_at)
+VALUES($1,$2,NOW())
+ON CONFLICT (key) DO UPDATE
+SET value=EXCLUDED.value, updated_at=NOW()`, key, value); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -8473,7 +11712,7 @@ func (s *Store) UpsertMonthlyPointsResetRunTx(ctx context.Context, tx *sql.Tx, m
 	}
 	_, err := tx.ExecContext(ctx, `
 INSERT INTO monthly_points_reset_runs(month_key, run_at, run_by, total_users, changed_users, forced)
-VALUES($1, NOW(), $2, $3, $4, $5)
+VALUES($1, timezone('Asia/Shanghai', now()), $2, $3, $4, $5)
 ON CONFLICT (month_key) DO UPDATE SET
   run_at=EXCLUDED.run_at,
   run_by=EXCLUDED.run_by,
@@ -8499,6 +11738,7 @@ WHERE month_key=$1`, monthKey).Scan(&out.MonthKey, &out.RunAt, &out.RunBy, &out.
 		}
 		return MonthlyPointsResetRun{}, false, err
 	}
+	out.RunAt = asBeijingWallTime(out.RunAt)
 	return out, true, nil
 }
 
@@ -8515,6 +11755,7 @@ LIMIT 1`).Scan(&out.MonthKey, &out.RunAt, &out.RunBy, &out.TotalUsers, &out.Chan
 		}
 		return MonthlyPointsResetRun{}, false, err
 	}
+	out.RunAt = asBeijingWallTime(out.RunAt)
 	return out, true, nil
 }
 
@@ -8860,11 +12101,13 @@ WITH platform_users AS (
 resolved AS (
   SELECT
     COALESCE(pu_ur.username, pu_map.username) AS platform_username,
+    GREATEST(COALESCE(n.interval_seconds, 1), 1) AS interval_seconds,
     ur.gpu_usage,
     ur.cpu_percent,
-    ur.memory_mb,
     ur.cost
   FROM usage_records ur
+  LEFT JOIN nodes n
+    ON n.node_id = ur.node_id
   LEFT JOIN user_node_accounts una
     ON una.node_id = ur.node_id
    AND una.local_username = COALESCE(NULLIF(ur.local_username, ''), ur.username)
@@ -8885,23 +12128,25 @@ resolved AS (
 agg AS (
 SELECT platform_username,
        COUNT(1) AS usage_records,
-       COALESCE(SUM(CASE WHEN jsonb_array_length(gpu_usage) > 0 THEN 1 ELSE 0 END), 0) AS gpu_records,
-       COALESCE(SUM(CASE WHEN jsonb_array_length(gpu_usage) = 0 THEN 1 ELSE 0 END), 0) AS cpu_records,
-       COALESCE(SUM(cpu_percent), 0) AS total_cpu_percent,
-       COALESCE(SUM(memory_mb), 0) AS total_memory_mb,
+       COALESCE(SUM(CASE WHEN cpu_percent > 0 THEN interval_seconds ELSE 0 END), 0) AS cpu_usage_seconds,
+       COALESCE(SUM(CASE WHEN jsonb_array_length(gpu_usage) > 0 THEN interval_seconds ELSE 0 END), 0) AS gpu_usage_seconds,
+       COALESCE(AVG(cpu_percent), 0) AS cpu_util_percent,
+       COALESCE(AVG(CASE WHEN jsonb_array_length(gpu_usage) > 0 THEN 100.0 ELSE 0.0 END), 0) AS gpu_util_percent,
        COALESCE(SUM(cost), 0) AS total_cost
 FROM resolved
 GROUP BY platform_username
 )
 SELECT pu.username AS platform_username,
        COALESCE(a.usage_records, 0) AS usage_records,
-       COALESCE(a.gpu_records, 0) AS gpu_records,
-       COALESCE(a.cpu_records, 0) AS cpu_records,
-       COALESCE(a.total_cpu_percent, 0) AS total_cpu_percent,
-       COALESCE(a.total_memory_mb, 0) AS total_memory_mb,
-       COALESCE(a.total_cost, 0) AS total_cost
+       COALESCE(a.cpu_usage_seconds, 0) AS cpu_usage_seconds,
+       COALESCE(a.gpu_usage_seconds, 0) AS gpu_usage_seconds,
+       COALESCE(a.cpu_util_percent, 0) AS cpu_util_percent,
+       COALESCE(a.gpu_util_percent, 0) AS gpu_util_percent,
+       COALESCE(a.total_cost, 0) AS total_cost,
+       COALESCE(u.balance, 0) AS general_balance
 FROM platform_users pu
 LEFT JOIN agg a ON a.platform_username = pu.username
+LEFT JOIN users u ON u.username = pu.username
 ORDER BY COALESCE(a.total_cost, 0) DESC, pu.username ASC
 LIMIT $3`
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -8913,8 +12158,10 @@ LIMIT $3`
 	for rows.Next() {
 		var x PlatformUsageUserSummary
 		if err := rows.Scan(
-			&x.PlatformUsername, &x.UsageRecords, &x.GPUProcessCount, &x.CPUProcessCount,
-			&x.TotalCPUPercent, &x.TotalMemoryMB, &x.TotalCost,
+			&x.PlatformUsername, &x.UsageRecords,
+			&x.CPUUsageSeconds, &x.GPUUsageSeconds,
+			&x.CPUUtilPercent, &x.GPUUtilPercent,
+			&x.TotalCost, &x.GeneralBalance,
 		); err != nil {
 			return nil, err
 		}
@@ -8945,6 +12192,7 @@ resolved AS (
     ur.timestamp,
     ur.cpu_percent,
     ur.memory_mb,
+    ur.gpu_count,
     ur.cost,
     COALESCE(pu_ur.username, pu_map.username) AS platform_username
   FROM usage_records ur
@@ -8974,6 +12222,8 @@ SELECT r.node_id,
        COUNT(1) AS usage_records,
        COALESCE(SUM(r.cpu_percent), 0) AS total_cpu_percent,
        COALESCE(SUM(r.memory_mb), 0) AS total_memory_mb,
+       COALESCE(SUM(CASE WHEN COALESCE(r.gpu_count, 0) > 0 THEN 0 ELSE r.cost END), 0) AS cpu_cost,
+       COALESCE(SUM(CASE WHEN COALESCE(r.gpu_count, 0) > 0 THEN r.cost ELSE 0 END), 0) AS gpu_cost,
        COALESCE(SUM(r.cost), 0) AS total_cost,
        MAX(r.timestamp) AS last_usage_at
 FROM resolved r
@@ -8993,10 +12243,11 @@ LIMIT $4`
 		var x PlatformUsageNodeDetail
 		if err := rows.Scan(
 			&x.NodeID, &x.CPUModel, &x.CPUCount, &x.GPUModel, &x.GPUCount, &x.LastSeenAt,
-			&x.UsageRecords, &x.TotalCPUPercent, &x.TotalMemoryMB, &x.TotalCost, &x.LastUsageAt,
+			&x.UsageRecords, &x.TotalCPUPercent, &x.TotalMemoryMB, &x.CPUCost, &x.GPUCost, &x.TotalCost, &x.LastUsageAt,
 		); err != nil {
 			return nil, err
 		}
+		normalizePlatformUsageNodeDetailTimes(&x)
 		out = append(out, x)
 	}
 	return out, rows.Err()
@@ -9054,6 +12305,7 @@ LIMIT $4`, nodeID, from, to, limit)
 		if err := rows.Scan(&x.NodeID, &x.PlatformUsername, &x.UsageRecords, &x.TotalCost, &x.LastUsageAt); err != nil {
 			return nil, err
 		}
+		normalizeNodeMonthlyUserCostTimes(&x)
 		out = append(out, x)
 	}
 	return out, rows.Err()
@@ -9171,14 +12423,15 @@ SELECT
   recharge_id,
   username,
   CASE
-    WHEN method IN ('points_batch_plus', 'points_batch_minus', 'points_batch_grant') THEN '全部用户'
-    WHEN method IN ('points_batch_filtered_plus', 'points_batch_filtered_minus') THEN '筛选用户组'
+    WHEN method IN ('points_batch_plus', 'points_batch_minus', 'points_batch_grant', 'points_batch_carry_plus', 'points_batch_carry_minus', 'points_batch_node_plus', 'points_batch_node_minus') THEN '全部用户'
+    WHEN method IN ('points_batch_filtered_plus', 'points_batch_filtered_minus', 'points_batch_filtered_carry_plus', 'points_batch_filtered_carry_minus', 'points_batch_filtered_node_plus', 'points_batch_filtered_node_minus', 'points_batch_filtered_set', 'points_batch_filtered_set_carry', 'points_batch_filtered_set_node') THEN '筛选用户组'
     ELSE username
   END AS target_account,
   amount,
   method,
   COALESCE(points_scope, 'general'),
   COALESCE(node_id, ''),
+  COALESCE(reason, ''),
   created_at
 FROM recharge_records
 WHERE ($1 = '' OR username ILIKE '%' || $1 || '%')
@@ -9193,17 +12446,99 @@ LIMIT $3`, username, method, limit)
 	out := make([]PointsOperationRecord, 0)
 	for rows.Next() {
 		var x PointsOperationRecord
-		if err := rows.Scan(&x.RechargeID, &x.Username, &x.TargetAccount, &x.Amount, &x.Method, &x.PointsScope, &x.NodeID, &x.CreatedAt); err != nil {
+		if err := rows.Scan(&x.RechargeID, &x.Username, &x.TargetAccount, &x.Amount, &x.Method, &x.PointsScope, &x.NodeID, &x.Reason, &x.CreatedAt); err != nil {
 			return nil, err
 		}
+		x.CreatedAt = asBeijingWallTime(x.CreatedAt)
 		out = append(out, x)
 	}
 	return out, rows.Err()
 }
 
+func (s *Store) ListUserPointsIncreaseRecords(ctx context.Context, username string, limit int) ([]PointsOperationRecord, error) {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return nil, errors.New("username 不能为空")
+	}
+	if limit <= 0 || limit > 10000 {
+		limit = 200
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT
+  recharge_id,
+  username,
+  amount,
+  method,
+  COALESCE(points_scope, 'general'),
+  COALESCE(node_id, ''),
+  COALESCE(reason, ''),
+  created_at
+FROM recharge_records
+WHERE username=$1
+  AND (amount > 0 OR method IN ('monthly_reset', 'monthly_carryover_reset'))
+ORDER BY created_at DESC, recharge_id DESC
+LIMIT $2`, username, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]PointsOperationRecord, 0)
+	for rows.Next() {
+		var x PointsOperationRecord
+		if err := rows.Scan(&x.RechargeID, &x.Username, &x.Amount, &x.Method, &x.PointsScope, &x.NodeID, &x.Reason, &x.CreatedAt); err != nil {
+			return nil, err
+		}
+		x.TargetAccount = x.Username
+		x.CreatedAt = asBeijingWallTime(x.CreatedAt)
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
+func buildUsageAdminConds(
+	billingUsername string,
+	localUsername string,
+	unregisteredOnly bool,
+	addArg func(any) string,
+) []string {
+	conds := make([]string, 0, 5)
+	billingUsername = strings.TrimSpace(billingUsername)
+	localUsername = strings.TrimSpace(localUsername)
+	if billingUsername != "" {
+		conds = append(conds, "ur.username="+addArg(billingUsername))
+	}
+	if localUsername != "" {
+		conds = append(conds, "ur.local_username="+addArg(localUsername))
+	}
+	if unregisteredOnly {
+		conds = append(conds, `
+NOT (
+  EXISTS(SELECT 1 FROM user_accounts ua2 WHERE ua2.username = ur.username)
+  OR EXISTS(SELECT 1 FROM admin_accounts aa2 WHERE aa2.username = ur.username)
+  OR EXISTS(SELECT 1 FROM power_users pu2 WHERE pu2.username = ur.username)
+)`)
+	}
+	return conds
+}
+
+func buildUsageCSVEstimateExpr() string {
+	// 估算 CSV 文本体积：字符串列长度 + 数值/分隔符固定开销。
+	return `
+COALESCE(SUM(
+  LENGTH(COALESCE(ur.node_id, '')) +
+  LENGTH(COALESCE(ur.username, '')) +
+  LENGTH(COALESCE(ur.local_username, '')) +
+  LENGTH(COALESCE(ur.gpu_usage::text, '')) +
+  96
+), 0)::BIGINT`
+}
+
 func (s *Store) queryUsageRows(
 	ctx context.Context,
-	username string,
+	billingUsername string,
+	localUsername string,
+	unregisteredOnly bool,
 	hasFrom bool,
 	from time.Time,
 	hasTo bool,
@@ -9221,14 +12556,12 @@ func (s *Store) queryUsageRows(
 		return fmt.Sprintf("$%d", len(args))
 	}
 
-	if strings.TrimSpace(username) != "" {
-		conds = append(conds, "username="+argN(username))
-	}
+	conds = append(conds, buildUsageAdminConds(billingUsername, localUsername, unregisteredOnly, argN)...)
 	if hasFrom {
-		conds = append(conds, "timestamp>="+argN(from))
+		conds = append(conds, "ur.timestamp>="+argN(from))
 	}
 	if hasTo {
-		conds = append(conds, "timestamp<="+argN(to))
+		conds = append(conds, "ur.timestamp<="+argN(to))
 	}
 
 	where := ""
@@ -9237,13 +12570,154 @@ func (s *Store) queryUsageRows(
 	}
 
 	query := fmt.Sprintf(`
-SELECT node_id, username, timestamp, cpu_percent, memory_mb, gpu_usage::text, cost
-     , local_username
-FROM usage_records
+SELECT ur.node_id, ur.username, ur.timestamp, ur.cpu_percent, ur.memory_mb, ur.gpu_usage::text, ur.cost
+     , ur.local_username
+FROM usage_records ur
 %s
-ORDER BY timestamp ASC
+ORDER BY ur.timestamp ASC
 LIMIT %s
 `, where, argN(limit))
 
 	return s.db.QueryContext(ctx, query, args...)
+}
+
+type usageDateStat struct {
+	Date              string
+	RecordCount       int64
+	EstimatedCSVBytes int64
+}
+
+func (s *Store) ListUsageDateStats(
+	ctx context.Context,
+	billingUsername string,
+	localUsername string,
+	unregisteredOnly bool,
+	hasFrom bool,
+	from time.Time,
+	hasTo bool,
+	to time.Time,
+	limit int,
+) ([]usageDateStat, error) {
+	if limit <= 0 || limit > 4000 {
+		limit = 4000
+	}
+	args := make([]any, 0, 8)
+	addArg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	conds := buildUsageAdminConds(billingUsername, localUsername, unregisteredOnly, addArg)
+	if hasFrom {
+		conds = append(conds, "ur.timestamp>="+addArg(from))
+	}
+	if hasTo {
+		conds = append(conds, "ur.timestamp<="+addArg(to))
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = "WHERE " + strings.Join(conds, " AND ")
+	}
+	query := `
+SELECT TO_CHAR(ur.timestamp::date, 'YYYY-MM-DD') AS day_key,
+       COUNT(1) AS record_count,
+       ` + buildUsageCSVEstimateExpr() + ` AS estimated_csv_bytes
+FROM usage_records ur
+` + where + `
+GROUP BY day_key
+ORDER BY day_key DESC
+LIMIT ` + addArg(limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]usageDateStat, 0)
+	for rows.Next() {
+		var x usageDateStat
+		if err := rows.Scan(&x.Date, &x.RecordCount, &x.EstimatedCSVBytes); err != nil {
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) EstimateUsageRange(
+	ctx context.Context,
+	billingUsername string,
+	localUsername string,
+	unregisteredOnly bool,
+	hasFrom bool,
+	from time.Time,
+	hasTo bool,
+	to time.Time,
+) (int64, int64, int64, error) {
+	args := make([]any, 0, 8)
+	addArg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	conds := buildUsageAdminConds(billingUsername, localUsername, unregisteredOnly, addArg)
+	if hasFrom {
+		conds = append(conds, "ur.timestamp>="+addArg(from))
+	}
+	if hasTo {
+		conds = append(conds, "ur.timestamp<="+addArg(to))
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = "WHERE " + strings.Join(conds, " AND ")
+	}
+	var records int64
+	var estimatedCSVBytes int64
+	var estimatedDBBytes int64
+	query := `
+SELECT COUNT(1),
+       ` + buildUsageCSVEstimateExpr() + `,
+       COALESCE(SUM(pg_column_size(ur)), 0)::BIGINT
+FROM usage_records ur
+` + where
+	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&records, &estimatedCSVBytes, &estimatedDBBytes); err != nil {
+		return 0, 0, 0, err
+	}
+	return records, estimatedCSVBytes, estimatedDBBytes, nil
+}
+
+func (s *Store) DeleteUsageRange(
+	ctx context.Context,
+	billingUsername string,
+	localUsername string,
+	unregisteredOnly bool,
+	hasFrom bool,
+	from time.Time,
+	hasTo bool,
+	to time.Time,
+) (int64, error) {
+	args := make([]any, 0, 8)
+	addArg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	conds := buildUsageAdminConds(billingUsername, localUsername, unregisteredOnly, addArg)
+	if hasFrom {
+		conds = append(conds, "timestamp>="+addArg(from))
+	}
+	if hasTo {
+		conds = append(conds, "timestamp<="+addArg(to))
+	}
+	if len(conds) == 0 {
+		return 0, errors.New("删除范围为空，至少需要日期范围")
+	}
+	query := `
+WITH deleted AS (
+  DELETE FROM usage_records ur
+  WHERE ` + strings.Join(conds, " AND ") + `
+  RETURNING 1
+)
+SELECT COUNT(1) FROM deleted`
+	var deleted int64
+	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&deleted); err != nil {
+		return 0, err
+	}
+	return deleted, nil
 }

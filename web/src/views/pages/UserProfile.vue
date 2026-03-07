@@ -82,7 +82,7 @@
         <el-table-column prop="old_student_id" label="原学号" width="130" />
         <el-table-column prop="new_student_id" label="新学号" width="130" />
         <el-table-column prop="reason" label="备注" min-width="200" />
-        <el-table-column prop="created_at" label="提交时间" width="180" />
+        <el-table-column prop="created_at" label="提交时间" width="180" :formatter="tableTimeFormatter" />
       </el-table>
     </el-card>
   </div>
@@ -93,6 +93,7 @@ import { reactive, ref } from "vue";
 import { ApiClient, type ProfileChangeRequest } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
+import { formatServerDateTime } from "../../lib/time";
 
 function toYYYYMM(year: number, month: number): string {
   return `${year}-${String(month).padStart(2, "0")}`;
@@ -125,6 +126,10 @@ const form = reactive({
   phone: "",
   change_reason: "",
 });
+
+function tableTimeFormatter(_: unknown, __: unknown, cellValue: unknown): string {
+  return formatServerDateTime(String(cellValue ?? ""));
+}
 
 function client() {
   return new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });

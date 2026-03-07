@@ -131,6 +131,10 @@
           <el-button :loading="dueLoading" @click="loadGraduationDueUsers">查询毕业到期用户</el-button>
           <el-button :loading="sendLoading" type="primary" @click="sendSelectedDueUsers">发送已选中</el-button>
           <el-button :loading="sendLoading" type="warning" @click="sendAllDueUsers">发送全部到期用户</el-button>
+          <el-button :loading="dueDeleteLoading" type="danger" @click="deleteSelectedDueUsers">
+            <el-icon><Check /></el-icon>
+            <span style="margin-left: 4px">勾选删除账号</span>
+          </el-button>
         </div>
       </div>
       <el-table :data="dueRows" stripe height="320" @selection-change="onDueSelectionChange" empty-text="暂无数据">
@@ -220,7 +224,7 @@
           <el-table-column label="更新时间" min-width="180">
             <template #default="{ row }">{{ fmtTime(row.updated_at) }}</template>
           </el-table-column>
-          <el-table-column label="操作" width="120">
+          <el-table-column label="操作" min-width="300">
             <template #default="{ row: acc }">
               <el-button
                 v-if="!isNodeAccountBlack(acc?.node_id, acc?.local_username)"
@@ -234,7 +238,40 @@
                 type="success"
                 @click="enableNodeAccountMapping(acc)"
               >解除禁用</el-button>
+              <el-button
+                size="small"
+                type="warning"
+                plain
+                @click="submitProfileUnbindRequest(acc)"
+              >代提解绑</el-button>
+              <el-button
+                size="small"
+                type="danger"
+                plain
+                @click="forceUnbindNodeAccountMapping(acc)"
+              >强制解绑</el-button>
             </template>
+          </el-table-column>
+        </el-table>
+        <div class="section-title-wrap mt10">
+          <span class="section-icon tone-dup"><el-icon><List /></el-icon></span>
+          <div class="title">解绑记录</div>
+        </div>
+        <el-table :data="profileUnbindRecords" stripe max-height="220" empty-text="暂无解绑记录">
+          <el-table-column label="来源" width="120">
+            <template #default="{ row }">{{ unbindSourceText(row.source_type) }}</template>
+          </el-table-column>
+          <el-table-column prop="node_id" label="节点编号" width="140" />
+          <el-table-column prop="local_username" label="节点账号" width="140" />
+          <el-table-column label="状态" width="120">
+            <template #default="{ row }">
+              <el-tag size="small" :type="unbindStatusTagType(row.status)">{{ unbindStatusText(row.status) }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="initiated_by" label="发起人" width="120" />
+          <el-table-column prop="reason" label="理由" min-width="220" show-overflow-tooltip />
+          <el-table-column label="更新时间" min-width="180">
+            <template #default="{ row }">{{ fmtTime(row.updated_at) }}</template>
           </el-table-column>
         </el-table>
       </template>
@@ -288,11 +325,11 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { ApiClient, type AdminUserDetail, type DeletedUserAccount, type GraduationDueUser, type UserProfile } from "../../lib/api";
+import { ApiClient, type AdminUserDetail, type DeletedUserAccount, type GraduationDueUser, type UserNodeUnbindRecord, type UserProfile } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
 import { formatServerDateTime } from "../../lib/time";
-import { Bell, Connection, Delete, List, UserFilled, WarningFilled } from "@element-plus/icons-vue";
+import { Bell, Check, Connection, Delete, List, UserFilled, WarningFilled } from "@element-plus/icons-vue";
 
 const loading = ref(false);
 const error = ref("");
@@ -323,6 +360,7 @@ const rechargeBalanceLoading = ref(false);
 const rechargeBalanceError = ref("");
 const dueLoading = ref(false);
 const sendLoading = ref(false);
+const dueDeleteLoading = ref(false);
 const profileVisible = ref(false);
 const profileLoading = ref(false);
 const profileError = ref("");
@@ -344,6 +382,7 @@ const profileData = ref<{
   status: string;
   node_accounts: Array<{ node_id: string; local_username: string; updated_at: string }>;
 } | null>(null);
+const profileUnbindRecords = ref<UserNodeUnbindRecord[]>([]);
 const duplicatesVisible = ref(false);
 const duplicatesLoading = ref(false);
 const duplicateActiveRows = ref<UserProfile[]>([]);
@@ -443,6 +482,26 @@ function fmtTime(v: string): string {
   return formatServerDateTime(v);
 }
 
+function unbindSourceText(sourceType: string): string {
+  return String(sourceType || "").trim() === "admin_forced" ? "管理员强制" : "用户申请";
+}
+
+function unbindStatusText(status: string): string {
+  const s = String(status || "").trim();
+  if (s === "forced") return "已强制解绑";
+  if (s === "approved") return "已审批解绑";
+  if (s === "rejected") return "已驳回";
+  return "待审批";
+}
+
+function unbindStatusTagType(status: string): "success" | "danger" | "warning" | "info" {
+  const s = String(status || "").trim();
+  if (s === "approved") return "success";
+  if (s === "forced") return "danger";
+  if (s === "rejected") return "info";
+  return "warning";
+}
+
 async function reload() {
   loading.value = true;
   error.value = "";
@@ -525,17 +584,144 @@ function openRecharge(row: AdminUserDetail) {
 }
 
 async function openProfile(username: string) {
+  const u = String(username || "").trim();
+  if (!u) return;
   profileVisible.value = true;
   profileLoading.value = true;
   profileError.value = "";
   profileData.value = null;
+  profileUnbindRecords.value = [];
   try {
-    const r = await client().adminPlatformUserDetail(username);
-    profileData.value = r.user;
+    const [detail, unbindRecordsResp] = await Promise.all([
+      client().adminPlatformUserDetail(u),
+      (async () => {
+        try {
+          return await client().adminUnbindRecords({ billing_username: u, limit: 200 });
+        } catch (e: any) {
+          if (e?.status === 404) {
+            return { records: [] as UserNodeUnbindRecord[] };
+          }
+          throw e;
+        }
+      })(),
+    ]);
+    profileData.value = detail.user;
+    profileUnbindRecords.value = unbindRecordsResp.records ?? [];
   } catch (e: any) {
     profileError.value = e?.message ?? String(e);
   } finally {
     profileLoading.value = false;
+  }
+}
+
+async function submitProfileUnbindRequest(acc: { node_id: string; local_username: string }) {
+  const billing = String(profileData.value?.username || "").trim();
+  const nodeID = String(acc?.node_id || "").trim();
+  const local = String(acc?.local_username || "").trim();
+  if (!billing || !nodeID || !local) {
+    error.value = "提交解绑申请失败：映射信息不完整";
+    return;
+  }
+  let reason = "";
+  try {
+    const promptRes = await ElMessageBox.prompt(
+      `请填写代提交解绑申请理由（至少 10 个字）：\n平台账号：${billing}\n节点编号：${nodeID}\n节点账号：${local}`,
+      "代提交解绑申请",
+      {
+        type: "warning",
+        confirmButtonText: "下一步",
+        cancelButtonText: "取消",
+        inputPlaceholder: "例如：管理员核查确认停用该映射",
+      },
+    );
+    reason = String((promptRes as any)?.value || "").trim();
+    if (reason.length < 10) {
+      ElMessage.warning("解绑理由至少 10 个字");
+      return;
+    }
+  } catch {
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确认代平台账号 ${billing} 提交解绑申请吗？\n节点编号：${nodeID}\n节点账号：${local}`,
+      "二次确认",
+      { type: "warning", confirmButtonText: "确认提交", cancelButtonText: "取消" },
+    );
+  } catch {
+    return;
+  }
+  try {
+    await client().adminCreateUnbindRequest({
+      billing_username: billing,
+      node_id: nodeID,
+      local_username: local,
+      reason,
+    });
+    success.value = `已代提交解绑申请：${nodeID}/${local}`;
+    await openProfile(billing);
+  } catch (e: any) {
+    error.value = e?.message ?? String(e);
+  }
+}
+
+async function forceUnbindNodeAccountMapping(acc: { node_id: string; local_username: string }) {
+  const billing = String(profileData.value?.username || "").trim();
+  const nodeID = String(acc?.node_id || "").trim();
+  const local = String(acc?.local_username || "").trim();
+  if (!billing || !nodeID || !local) {
+    error.value = "强制解绑失败：映射信息不完整";
+    return;
+  }
+  let reason = "";
+  try {
+    const promptRes = await ElMessageBox.prompt(
+      `请填写强制解绑理由（至少 10 个字）：\n平台账号：${billing}\n节点编号：${nodeID}\n节点账号：${local}`,
+      "强制解绑",
+      {
+        type: "warning",
+        confirmButtonText: "下一步",
+        cancelButtonText: "取消",
+        inputPlaceholder: "例如：违规使用、账号停用、归属变更",
+      },
+    );
+    reason = String((promptRes as any)?.value || "").trim();
+    if (reason.length < 10) {
+      ElMessage.warning("解绑理由至少 10 个字");
+      return;
+    }
+  } catch {
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(
+      `你正在执行强制解绑：\n平台账号：${billing}\n节点编号：${nodeID}\n节点账号：${local}\n\n该操作会立即终止进程并断开 SSH。`,
+      "第一次确认",
+      { type: "warning", confirmButtonText: "继续", cancelButtonText: "取消" },
+    );
+  } catch {
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(
+      `最后确认：是否强制解绑 ${nodeID}/${local} ？\n\n理由：${reason}`,
+      "第二次确认",
+      { type: "warning", confirmButtonText: "确认强制解绑", cancelButtonText: "取消" },
+    );
+  } catch {
+    return;
+  }
+  try {
+    await client().adminDeleteAccount({
+      billing_username: billing,
+      node_id: nodeID,
+      local_username: local,
+      reason,
+    });
+    success.value = `已强制解绑：${nodeID}/${local}`;
+    await Promise.all([openProfile(billing), reload()]);
+  } catch (e: any) {
+    error.value = e?.message ?? String(e);
   }
 }
 
@@ -838,6 +1024,53 @@ async function sendSingleDueUser(row: GraduationDueView) {
   await sendReminder([row.username]);
 }
 
+async function deleteDueUsers(usernames: string[]) {
+  const targets = Array.from(new Set((usernames ?? []).map((x) => String(x || "").trim()).filter(Boolean)));
+  if (targets.length === 0) {
+    ElMessage.warning("请先勾选要删除的到期用户");
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确认删除已勾选的 ${targets.length} 个到期平台账号吗？\n删除后可在“已删除平台账号（可恢复）”中恢复。`,
+      "批量删除确认",
+      { type: "warning", confirmButtonText: "确认删除", cancelButtonText: "取消" },
+    );
+  } catch {
+    return;
+  }
+  dueDeleteLoading.value = true;
+  error.value = "";
+  success.value = "";
+  const failed: string[] = [];
+  const successUsers = new Set<string>();
+  try {
+    for (const username of targets) {
+      try {
+        await client().adminDeleteUserCompat(username, "毕业到期批量删除");
+        successUsers.add(username);
+      } catch (e: any) {
+        failed.push(`${username}：${e?.message ?? "删除失败"}`);
+      }
+    }
+    if (successUsers.size > 0) {
+      dueRows.value = dueRows.value.filter((row) => !successUsers.has(String(row.username || "").trim()));
+      selectedDueRows.value = selectedDueRows.value.filter((row) => !successUsers.has(String(row.username || "").trim()));
+      await reload();
+    }
+    success.value = `毕业到期账号删除完成：成功 ${successUsers.size}，失败 ${failed.length}`;
+    if (failed.length > 0) {
+      error.value = failed.slice(0, 5).join("\n");
+    }
+  } finally {
+    dueDeleteLoading.value = false;
+  }
+}
+
+async function deleteSelectedDueUsers() {
+  await deleteDueUsers(selectedDueRows.value.map((x) => x.username));
+}
+
 reload();
 </script>
 
@@ -981,5 +1214,19 @@ reload();
   font-weight: 700;
   color: #fff;
   background: #7c3aed;
+}
+
+@media (max-width: 920px) {
+  .row {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+  .section-title-wrap {
+    width: 100%;
+  }
+  .content-stack :deep(.el-form--inline .el-form-item) {
+    margin-right: 8px;
+    margin-bottom: 8px;
+  }
 }
 </style>

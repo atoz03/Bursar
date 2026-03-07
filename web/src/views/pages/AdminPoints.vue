@@ -112,8 +112,21 @@
         <el-form-item>
           <el-checkbox v-model="filteredBatchOnlyRegular">仅普通用户</el-checkbox>
         </el-form-item>
+        <el-form-item label="积分类别">
+          <el-select v-model="filteredBatchScope" style="width: 160px">
+            <el-option label="通用积分" value="general" />
+            <el-option label="结转积分" value="carryover" />
+            <el-option label="节点专属积分" value="node_exclusive" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="filteredBatchScope === 'node_exclusive'" label="节点编号">
+          <el-input v-model="filteredBatchNodeId" placeholder="例如 60020" style="width: 160px" />
+        </el-form-item>
         <el-form-item label="调整积分">
           <el-input-number v-model="filteredBatchAmount" :min="-1000000" :max="1000000" :step="10" />
+        </el-form-item>
+        <el-form-item label="设为固定值">
+          <el-input-number v-model="filteredBatchSetValue" :min="-1000000" :max="1000000" :step="10" />
         </el-form-item>
         <el-form-item label="备注">
           <el-input v-model="filteredBatchReason" placeholder="可选" />
@@ -126,6 +139,14 @@
             @click="runFilteredBatchAdjust"
           >
             对当前筛选用户批量调整
+          </el-button>
+          <el-button
+            :loading="filteredBatchSetLoading"
+            :disabled="filteredBatchTargetUsernames.length === 0"
+            type="warning"
+            @click="runFilteredBatchSet"
+          >
+            对当前筛选用户设定固定值
           </el-button>
         </el-form-item>
       </el-form>
@@ -147,6 +168,16 @@
         </div>
       </template>
       <el-form inline>
+        <el-form-item label="积分类别">
+          <el-select v-model="batchScope" style="width: 160px">
+            <el-option label="通用积分" value="general" />
+            <el-option label="结转积分" value="carryover" />
+            <el-option label="节点专属积分" value="node_exclusive" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="batchScope === 'node_exclusive'" label="节点编号">
+          <el-input v-model="batchNodeId" placeholder="例如 60020" style="width: 160px" />
+        </el-form-item>
         <el-form-item label="调整积分">
           <el-input-number v-model="batchAmount" :min="-1000000" :max="1000000" :step="10" />
         </el-form-item>
@@ -259,10 +290,10 @@
         </el-form-item>
       </el-form>
       <div class="sub">
-        上次发放时间：{{ fmtTime(monthlyStatus.last_run?.run_at || "") }}
+        上次发放时间：{{ fmtDateTime(monthlyStatus.last_run?.run_at || "") }}
       </div>
       <div v-if="monthlyStatus.run?.run_at" class="sub">
-        最近执行：{{ fmtTime(monthlyStatus.run?.run_at || "") }}，操作者：{{ monthlyStatus.run?.run_by || "-" }}，
+        最近执行：{{ fmtDateTime(monthlyStatus.run?.run_at || "") }}，操作者：{{ monthlyStatus.run?.run_by || "-" }}，
         影响用户：{{ monthlyStatus.run?.changed_users || 0 }}/{{ monthlyStatus.run?.total_users || 0 }}
       </div>
     </el-card>
@@ -374,11 +405,12 @@ import { ElMessageBox } from "element-plus";
 import { ApiClient, type PointsUser, type PointsOperationRecord, type SpecialMonthlyPointsRule, type MonthlyPointsResetRun } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
-import { formatServerHMS } from "../../lib/time";
+import { formatServerDateTime } from "../../lib/time";
 import PlatformUserDetailDialog from "../../components/PlatformUserDetailDialog.vue";
 import { Clock, Coin, DataBoard, Document, UserFilled } from "@element-plus/icons-vue";
 
 type PointsKeywordField = "all" | "username" | "real_name" | "student_id" | "advisor" | "email" | "phone";
+type PointsScope = "general" | "carryover" | "node_exclusive";
 
 const loading = ref(false);
 const batchLoading = ref(false);
@@ -403,9 +435,15 @@ const monthlyStatus = reactive<{ month_key: string; has_run: boolean; run: Month
 
 const batchAmount = ref(50);
 const batchReason = ref("");
+const batchScope = ref<PointsScope>("general");
+const batchNodeId = ref("");
 const filteredBatchAmount = ref(30);
+const filteredBatchSetValue = ref(0);
 const filteredBatchReason = ref("");
+const filteredBatchScope = ref<PointsScope>("general");
+const filteredBatchNodeId = ref("");
 const filteredBatchLoading = ref(false);
+const filteredBatchSetLoading = ref(false);
 const filteredBatchOnlyRegular = ref(true);
 const recordKeyword = ref("");
 const forceReset = ref(false);
@@ -596,7 +634,11 @@ function fmtSigned(v: number): string {
 }
 
 function fmtTime(v: string): string {
-  return formatServerHMS(v);
+  return formatServerDateTime(v);
+}
+
+function fmtDateTime(v: string): string {
+  return formatServerDateTime(v);
 }
 
 function roleText(role: string): string {
@@ -623,8 +665,19 @@ function opLabel(method: string): string {
   if (m === "points_adjust_node_minus") return "单用户节点专属扣分";
   if (m === "points_batch_plus" || m === "points_batch_grant") return "全体加分";
   if (m === "points_batch_minus") return "全体扣分";
+  if (m === "points_batch_carry_plus") return "全体结转加分";
+  if (m === "points_batch_carry_minus") return "全体结转扣分";
+  if (m === "points_batch_node_plus") return "全体节点专属加分";
+  if (m === "points_batch_node_minus") return "全体节点专属扣分";
   if (m === "points_batch_filtered_plus") return "筛选批量加分";
   if (m === "points_batch_filtered_minus") return "筛选批量扣分";
+  if (m === "points_batch_filtered_carry_plus") return "筛选批量结转加分";
+  if (m === "points_batch_filtered_carry_minus") return "筛选批量结转扣分";
+  if (m === "points_batch_filtered_node_plus") return "筛选批量节点专属加分";
+  if (m === "points_batch_filtered_node_minus") return "筛选批量节点专属扣分";
+  if (m === "points_batch_filtered_set") return "筛选批量设定通用积分";
+  if (m === "points_batch_filtered_set_carry") return "筛选批量设定结转积分";
+  if (m === "points_batch_filtered_set_node") return "筛选批量设定节点专属积分";
   if (m === "monthly_reset") return "月初重置";
   if (m === "monthly_carryover_reset") return "月初结转重置";
   return m || "-";
@@ -637,14 +690,38 @@ function pointsScopeLabel(scope: string): string {
   return "通用";
 }
 
+function pointsScopeText(scope: PointsScope, nodeID?: string): string {
+  if (scope === "carryover") return "结转积分";
+  if (scope === "node_exclusive") return `节点专属积分（节点 ${String(nodeID || "").trim() || "-"})`;
+  return "通用积分";
+}
+
 function targetAccountLabel(row: PointsOperationRecord): string {
   const target = String(row.target_account || "").trim();
   if (target) return target;
   const method = String(row.method || "").trim();
-  if (method === "points_batch_plus" || method === "points_batch_minus" || method === "points_batch_grant") {
+  if (
+    method === "points_batch_plus" ||
+    method === "points_batch_minus" ||
+    method === "points_batch_grant" ||
+    method === "points_batch_carry_plus" ||
+    method === "points_batch_carry_minus" ||
+    method === "points_batch_node_plus" ||
+    method === "points_batch_node_minus"
+  ) {
     return "全部用户";
   }
-  if (method === "points_batch_filtered_plus" || method === "points_batch_filtered_minus") {
+  if (
+    method === "points_batch_filtered_plus" ||
+    method === "points_batch_filtered_minus" ||
+    method === "points_batch_filtered_carry_plus" ||
+    method === "points_batch_filtered_carry_minus" ||
+    method === "points_batch_filtered_node_plus" ||
+    method === "points_batch_filtered_node_minus" ||
+    method === "points_batch_filtered_set" ||
+    method === "points_batch_filtered_set_carry" ||
+    method === "points_batch_filtered_set_node"
+  ) {
     return "筛选用户组";
   }
   return String(row.username || "").trim() || "-";
@@ -832,15 +909,22 @@ async function runFilteredBatchAdjust() {
     error.value = "筛选批量调整值不能为 0";
     return;
   }
+  const scope = filteredBatchScope.value;
+  const nodeID = String(filteredBatchNodeId.value || "").trim();
+  if (scope === "node_exclusive" && !nodeID) {
+    error.value = "节点专属积分模式下必须填写节点编号";
+    return;
+  }
   const targets = filteredBatchTargetUsernames.value;
   if (targets.length === 0) {
     error.value = "当前筛选结果为空，无法批量调整";
     return;
   }
   const actionLabel = amount > 0 ? "筛选批量加分" : "筛选批量扣分";
+  const scopeText = pointsScopeText(scope, nodeID);
   try {
     await ElMessageBox.confirm(
-      `确认执行${actionLabel}吗？\n筛选字段：${pointsKeywordFieldLabel(keywordField.value)}\n筛选关键词：${keyword.value.trim() || "（空）"}\n目标人数：${targets.length}\n调整值：${amount > 0 ? "+" : ""}${amount}\n备注：${filteredBatchReason.value.trim() || "（空）"}`,
+      `确认执行${actionLabel}吗？\n积分类别：${scopeText}\n筛选字段：${pointsKeywordFieldLabel(keywordField.value)}\n筛选关键词：${keyword.value.trim() || "（空）"}\n目标人数：${targets.length}\n调整值：${amount > 0 ? "+" : ""}${amount}\n备注：${filteredBatchReason.value.trim() || "（空）"}`,
       "二次确认",
       { type: "warning", confirmButtonText: "确认执行", cancelButtonText: "取消" },
     );
@@ -855,8 +939,11 @@ async function runFilteredBatchAdjust() {
       amount,
       reason: filteredBatchReason.value.trim(),
       usernames: targets,
+      scope,
+      node_id: scope === "node_exclusive" ? nodeID : undefined,
     });
-    success.value = `${actionLabel}完成：命中 ${r.matched_users} 人，实际调整 ${r.adjusted_users} 人，总变动 ${fmt2(r.total_adjusted)} 积分`;
+    const successScopeText = pointsScopeText((r.scope as PointsScope) || scope, r.node_id || nodeID);
+    success.value = `${actionLabel}（${successScopeText}）完成：命中 ${r.matched_users} 人，实际调整 ${r.adjusted_users} 人，总变动 ${fmt2(r.total_adjusted)} 积分`;
     if ((r.skipped_users || 0) > 0) {
       success.value += `；跳过 ${r.skipped_users} 人`;
     }
@@ -871,16 +958,77 @@ async function runFilteredBatchAdjust() {
   }
 }
 
+async function runFilteredBatchSet() {
+  const value = Number(filteredBatchSetValue.value || 0);
+  const scope = filteredBatchScope.value;
+  const nodeID = String(filteredBatchNodeId.value || "").trim();
+  if (scope === "node_exclusive" && !nodeID) {
+    error.value = "节点专属积分模式下必须填写节点编号";
+    return;
+  }
+  if ((scope === "carryover" || scope === "node_exclusive") && value < 0) {
+    error.value = "结转积分和节点专属积分不能设为负数";
+    return;
+  }
+  const targets = filteredBatchTargetUsernames.value;
+  if (targets.length === 0) {
+    error.value = "当前筛选结果为空，无法批量设定";
+    return;
+  }
+  const scopeText = pointsScopeText(scope, nodeID);
+  try {
+    await ElMessageBox.confirm(
+      `确认按固定值设定吗？\n积分类别：${scopeText}\n筛选字段：${pointsKeywordFieldLabel(keywordField.value)}\n筛选关键词：${keyword.value.trim() || "（空）"}\n目标人数：${targets.length}\n设定值：${fmt2(value)}\n备注：${filteredBatchReason.value.trim() || "（空）"}`,
+      "二次确认",
+      { type: "warning", confirmButtonText: "确认执行", cancelButtonText: "取消" },
+    );
+  } catch {
+    return;
+  }
+  filteredBatchSetLoading.value = true;
+  error.value = "";
+  success.value = "";
+  try {
+    const r = await client().adminPointsBatchSetUsers({
+      value,
+      reason: filteredBatchReason.value.trim(),
+      usernames: targets,
+      scope,
+      node_id: scope === "node_exclusive" ? nodeID : undefined,
+    });
+    const successScopeText = pointsScopeText((r.scope as PointsScope) || scope, r.node_id || nodeID);
+    success.value = `筛选批量设定（${successScopeText}）完成：命中 ${r.matched_users} 人，变更 ${r.changed_users} 人，未变化 ${r.unchanged_users} 人，总变动 ${fmtSigned(r.total_delta)} 积分`;
+    if ((r.skipped_users || 0) > 0) {
+      success.value += `；跳过 ${r.skipped_users} 人`;
+    }
+    if ((r.interrupted_users || 0) > 0) {
+      success.value += `；强制中断 ${r.interrupted_users} 人（${r.interrupted_nodes} 节点账号）`;
+    }
+    await reloadAll();
+  } catch (e: any) {
+    error.value = e?.message ?? String(e);
+  } finally {
+    filteredBatchSetLoading.value = false;
+  }
+}
+
 async function runBatchGrant() {
   const amount = Number(batchAmount.value || 0);
   if (amount === 0) {
     error.value = "全体调整值不能为 0";
     return;
   }
+  const scope = batchScope.value;
+  const nodeID = String(batchNodeId.value || "").trim();
+  if (scope === "node_exclusive" && !nodeID) {
+    error.value = "节点专属积分模式下必须填写节点编号";
+    return;
+  }
   const actionLabel = amount > 0 ? "全体加分" : "全体扣分";
+  const scopeText = pointsScopeText(scope, nodeID);
   try {
     await ElMessageBox.confirm(
-      `确认执行${actionLabel}吗？\n调整值：${amount > 0 ? "+" : ""}${amount}\n备注：${batchReason.value.trim() || "（空）"}`,
+      `确认执行${actionLabel}吗？\n积分类别：${scopeText}\n调整值：${amount > 0 ? "+" : ""}${amount}\n备注：${batchReason.value.trim() || "（空）"}`,
       "二次确认",
       { type: "warning", confirmButtonText: "确认执行", cancelButtonText: "取消" },
     );
@@ -891,8 +1039,14 @@ async function runBatchGrant() {
   error.value = "";
   success.value = "";
   try {
-    const r = await client().adminPointsBatchGrant({ amount, reason: batchReason.value.trim() });
-    success.value = `${actionLabel}完成：${r.adjusted_users} 人，总变动 ${fmt2(r.total_adjusted)} 积分`;
+    const r = await client().adminPointsBatchGrant({
+      amount,
+      reason: batchReason.value.trim(),
+      scope,
+      node_id: scope === "node_exclusive" ? nodeID : undefined,
+    });
+    const successScopeText = pointsScopeText((r.scope as PointsScope) || scope, r.node_id || nodeID);
+    success.value = `${actionLabel}（${successScopeText}）完成：${r.adjusted_users} 人，总变动 ${fmt2(r.total_adjusted)} 积分`;
     if ((r.interrupted_users || 0) > 0) {
       success.value += `；强制中断 ${r.interrupted_users} 人（${r.interrupted_nodes} 节点账号）`;
     }

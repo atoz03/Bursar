@@ -29,6 +29,7 @@
         <el-form-item><el-checkbox v-model="createForm.can_view_board">可看运营看板</el-checkbox></el-form-item>
         <el-form-item><el-checkbox v-model="createForm.can_view_nodes">可看节点状态</el-checkbox></el-form-item>
         <el-form-item><el-checkbox v-model="createForm.can_manage_nodes">可修改节点状态</el-checkbox></el-form-item>
+        <el-form-item><el-checkbox v-model="createForm.can_manage_points">可管理积分（加减）</el-checkbox></el-form-item>
         <el-form-item><el-checkbox v-model="createForm.can_review_requests">可做注册审核</el-checkbox></el-form-item>
         <el-form-item><el-button type="primary" @click="create">新增高级用户</el-button></el-form-item>
       </el-form>
@@ -66,6 +67,7 @@
         <el-form-item><el-checkbox v-model="promoteForm.can_view_board">可看运营看板</el-checkbox></el-form-item>
         <el-form-item><el-checkbox v-model="promoteForm.can_view_nodes">可看节点状态</el-checkbox></el-form-item>
         <el-form-item><el-checkbox v-model="promoteForm.can_manage_nodes">可修改节点状态</el-checkbox></el-form-item>
+        <el-form-item><el-checkbox v-model="promoteForm.can_manage_points">可管理积分（加减）</el-checkbox></el-form-item>
         <el-form-item><el-checkbox v-model="promoteForm.can_review_requests">可做注册审核</el-checkbox></el-form-item>
         <el-form-item><el-button type="primary" @click="promote">提升为高级用户</el-button></el-form-item>
       </el-form>
@@ -86,11 +88,14 @@
       <el-table-column label="节点修改" width="120">
         <template #default="{ row }"><el-switch v-model="row.can_manage_nodes" @change="savePerm(row)" /></template>
       </el-table-column>
+      <el-table-column label="积分管理" width="120">
+        <template #default="{ row }"><el-switch v-model="row.can_manage_points" @change="savePerm(row)" /></template>
+      </el-table-column>
       <el-table-column label="注册审核" width="120">
         <template #default="{ row }"><el-switch v-model="row.can_review_requests" @change="savePerm(row)" /></template>
       </el-table-column>
       <el-table-column prop="updated_by" label="最近变更人" width="150" />
-      <el-table-column prop="updated_at" label="最近变更时间" min-width="180" />
+      <el-table-column prop="updated_at" label="最近变更时间" min-width="180" :formatter="tableTimeFormatter" />
       <el-table-column label="操作" width="120">
         <template #default="{ row }">
           <el-button
@@ -118,6 +123,7 @@ import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
 import { Connection, Plus, UserFilled } from "@element-plus/icons-vue";
 import { STRONG_PASSWORD_RULE_TEXT, checkStrongPassword } from "../../lib/passwordPolicy";
+import { formatServerDateTime } from "../../lib/time";
 
 const loading = ref(false);
 const error = ref("");
@@ -132,6 +138,7 @@ const createForm = reactive({
   can_view_board: true,
   can_view_nodes: true,
   can_manage_nodes: false,
+  can_manage_points: false,
   can_review_requests: false,
 });
 const promoteForm = reactive({
@@ -139,8 +146,13 @@ const promoteForm = reactive({
   can_view_board: true,
   can_view_nodes: true,
   can_manage_nodes: false,
+  can_manage_points: false,
   can_review_requests: false,
 });
+
+function tableTimeFormatter(_: unknown, __: unknown, cellValue: unknown): string {
+  return formatServerDateTime(String(cellValue ?? ""));
+}
 
 const promotableUsers = computed(() => {
   const powerSet = new Set((rows.value ?? []).map((x) => x.username));
@@ -195,6 +207,7 @@ async function create() {
       can_view_board: createForm.can_view_board,
       can_view_nodes: createForm.can_view_nodes,
       can_manage_nodes: createForm.can_manage_nodes,
+      can_manage_points: createForm.can_manage_points,
       can_review_requests: createForm.can_review_requests,
     });
     success.value = "高级用户创建成功";
@@ -203,6 +216,7 @@ async function create() {
     createForm.can_view_board = true;
     createForm.can_view_nodes = true;
     createForm.can_manage_nodes = false;
+    createForm.can_manage_points = false;
     createForm.can_review_requests = false;
     await reload();
   } catch (e: any) {
@@ -224,6 +238,7 @@ async function promote() {
       can_view_board: promoteForm.can_view_board,
       can_view_nodes: promoteForm.can_view_nodes,
       can_manage_nodes: promoteForm.can_manage_nodes,
+      can_manage_points: promoteForm.can_manage_points,
       can_review_requests: promoteForm.can_review_requests,
     });
     success.value = `已提升为高级用户：${promoteForm.username.trim()}`;
@@ -243,6 +258,7 @@ async function savePerm(row: PowerUser) {
       can_view_board: row.can_view_board,
       can_view_nodes: row.can_view_nodes,
       can_manage_nodes: row.can_manage_nodes,
+      can_manage_points: row.can_manage_points,
       can_review_requests: row.can_review_requests,
     });
     success.value = `权限已更新：${row.username}`;

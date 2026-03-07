@@ -51,6 +51,10 @@ func (a *NodeAgent) ExecuteAction(ctx context.Context, action Action) error {
 		return a.setUserMemoryLimit(ctx, action.Username, action.MemoryLimitGB, action.Reason)
 	case "set_disk_quota":
 		return a.setUserDiskQuota(ctx, action.Username, action.DiskQuotaMountpoint, action.DiskQuotaSoftMB, action.DiskQuotaHardMB, action.Reason)
+	case "set_gpu_exclusive":
+		return a.setGPUExclusivePolicy(ctx, action.GPUExclusiveEnabled, action.GPUExclusiveAssignments, action.Reason)
+	case "set_gpu_visibility":
+		return a.setUserGPUVisibility(ctx, action.Username, action.GPUIndices, action.Reason)
 	case "kill_process":
 		return a.killProcesses(ctx, action.Username, action.PIDs, action.Reason)
 	case "kick_ssh_all":
@@ -275,7 +279,7 @@ func (a *NodeAgent) writeNotice(username string, message string) error {
 	}
 	homeDir := filepath.Join("/home", username)
 	noticeFile := filepath.Join(homeDir, ".gpu_notice")
-	content := fmt.Sprintf("%s\n%s\n", time.Now().Format(time.RFC3339), message)
+	content := fmt.Sprintf("%s\n%s\n", formatRFC3339InBeijing(nowInBeijing()), message)
 	return os.WriteFile(noticeFile, []byte(content), 0644)
 }
 
@@ -349,6 +353,9 @@ func (a *NodeAgent) blockUserGPUAccess(ctx context.Context, username string, rea
 	if cgroupErr != nil && aclErr != nil {
 		return fmt.Errorf("GPU 限制下发失败：cgroup=%v acl=%v", cgroupErr, aclErr)
 	}
+	if err := a.reconcileGPUPoliciesForUser(ctx, username, "欠费 GPU 限制变更后重算策略（block）"); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -374,6 +381,9 @@ func (a *NodeAgent) unblockUserGPUAccess(ctx context.Context, username string) e
 	}
 	if cgroupErr != nil && aclErr != nil {
 		return fmt.Errorf("解除 GPU 限制失败：cgroup=%v acl=%v", cgroupErr, aclErr)
+	}
+	if err := a.reconcileGPUPoliciesForUser(ctx, username, "欠费 GPU 限制变更后重算策略（unblock）"); err != nil {
+		return err
 	}
 	return nil
 }

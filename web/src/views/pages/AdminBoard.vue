@@ -7,7 +7,10 @@
             <span class="section-icon tone-overview"><el-icon><DataBoard /></el-icon></span>
             <span class="title">运营看板</span>
           </div>
-          <el-button type="primary" :loading="loading" @click="loadAll">刷新</el-button>
+          <div class="head-actions">
+            <el-button type="primary" :loading="loading" @click="loadAll">刷新</el-button>
+            <el-button v-if="authState.role === 'admin'" :loading="exporting" @click="exportRangeCSV">导出区间 CSV</el-button>
+          </div>
         </div>
       </template>
 
@@ -20,7 +23,10 @@
             type="date"
             placeholder="开始日期"
             value-format="YYYY-MM-DD"
+            :clearable="false"
+            :editable="false"
             :disabled-date="disableFutureDate"
+            @change="onStatsRangeChanged"
           />
           <span class="range-sep">至</span>
           <el-date-picker
@@ -28,10 +34,80 @@
             type="date"
             placeholder="结束日期"
             value-format="YYYY-MM-DD"
+            :clearable="false"
+            :editable="false"
             :disabled-date="disableFutureDate"
+            @change="onStatsRangeChanged"
           />
         </el-form-item>
       </el-form>
+      <div class="range-meta">
+        生效区间：{{ appliedFromDate }} 至 {{ appliedToDate }}
+      </div>
+    </el-card>
+
+    <el-card v-if="authState.role === 'admin'" class="section-card">
+      <template #header>
+        <div class="section-title-wrap">
+          <span class="section-icon tone-retention"><el-icon><Delete /></el-icon></span>
+          <span>数据留存与删除（仅管理员）</span>
+        </div>
+      </template>
+      <el-form inline>
+        <el-form-item label="自动删除保留天数">
+          <el-input-number v-model="retentionDaysDraft" :min="0" :max="3650" :step="1" :precision="0" />
+        </el-form-item>
+        <el-form-item>
+          <el-button type="primary" :loading="retentionSaving" @click="saveRetentionDays">保存自动删除设置</el-button>
+        </el-form-item>
+        <el-form-item>
+          <span class="retention-tip">`0` 表示关闭自动删除；大于 `0` 时，系统每小时巡检、每天最多自动清理一次。</span>
+        </el-form-item>
+      </el-form>
+      <div class="retention-meta">
+        <span>上次删除时间：{{ retentionStatus?.last_deleted_at ? tableTimeFormatter(null, null, retentionStatus.last_deleted_at) : "暂无" }}</span>
+        <span>上次删除日期：{{ retentionStatus?.last_deleted_day || "-" }}</span>
+        <span>上次删除模式：{{ retentionModeText(retentionStatus?.last_deleted_mode) }}</span>
+        <span>删除条数：{{ Number(retentionStatus?.last_deleted_records || 0) }}</span>
+      </div>
+      <div class="retention-meta">
+        <span>上次删除范围：{{ retentionStatus?.last_deleted_from ? datePrefix(retentionStatus.last_deleted_from, "-") : "最早记录" }} 至 {{ retentionStatus?.last_deleted_to ? datePrefix(retentionStatus.last_deleted_to, "-") : "-" }}</span>
+      </div>
+
+      <el-form inline style="margin-top: 10px">
+        <el-form-item label="立即删除区间">
+          <el-date-picker
+            v-model="deleteRangeDays"
+            type="daterange"
+            value-format="YYYY-MM-DD"
+            range-separator="至"
+            start-placeholder="开始日期"
+            end-placeholder="结束日期"
+            :disabled-date="usageDeleteDisabledDate"
+            @change="onDeleteRangeChange"
+          />
+        </el-form-item>
+        <el-form-item>
+          <el-button :loading="deleteRangeEstimating" :disabled="!canDeleteRangeAction" @click="estimateDeleteRange">估算删除大小</el-button>
+        </el-form-item>
+        <el-form-item>
+          <el-button type="danger" plain :loading="deleteRangeDeleting" :disabled="!canDeleteRangeAction" @click="deleteRangeNow">立即删除该区间</el-button>
+        </el-form-item>
+      </el-form>
+      <el-alert
+        v-if="availableUsageDaysLoaded"
+        type="info"
+        :closable="false"
+        show-icon
+        :title="`有记录日期共 ${availableUsageDays.length} 天；无记录日期灰显不可选`"
+      />
+      <el-alert
+        v-if="deleteRangeEstimate"
+        type="warning"
+        :closable="false"
+        show-icon
+        :title="`删除估算：${deleteRangeEstimate.records} 条，CSV约 ${bytesText(deleteRangeEstimate.estimated_csv_bytes)}，数据库约 ${bytesText(deleteRangeEstimate.estimated_db_bytes)}`"
+      />
     </el-card>
 
     <el-card class="board-card section-card">
@@ -50,17 +126,23 @@
               </el-button>
             </template>
           </el-table-column>
-          <el-table-column prop="usage_records" label="记录数" min-width="96" />
-          <el-table-column prop="gpu_process_records" label="GPU记录" min-width="96" />
-          <el-table-column prop="cpu_process_records" label="CPU记录" min-width="96" />
-          <el-table-column label="CPU总占用%" min-width="116">
-            <template #default="{ row }">{{ fmt2(row.total_cpu_percent) }}</template>
+          <el-table-column label="CPU使用时间" min-width="130">
+            <template #default="{ row }">{{ fmtDuration(row.cpu_usage_seconds) }}</template>
           </el-table-column>
-          <el-table-column label="内存MB累计" min-width="116">
-            <template #default="{ row }">{{ fmt2(row.total_memory_mb) }}</template>
+          <el-table-column label="GPU使用时间" min-width="130">
+            <template #default="{ row }">{{ fmtDuration(row.gpu_usage_seconds) }}</template>
+          </el-table-column>
+          <el-table-column label="CPU占用率%" min-width="116">
+            <template #default="{ row }">{{ fmt2(row.cpu_util_percent) }}</template>
+          </el-table-column>
+          <el-table-column label="GPU占用率%" min-width="116">
+            <template #default="{ row }">{{ fmt2(row.gpu_util_percent) }}</template>
           </el-table-column>
           <el-table-column label="积分消耗" min-width="110">
             <template #default="{ row }">{{ fmt2(row.total_cost) }}</template>
+          </el-table-column>
+          <el-table-column label="剩余通用积分" min-width="130">
+            <template #default="{ row }">{{ fmt2(row.general_balance) }}</template>
           </el-table-column>
         </el-table>
       </div>
@@ -84,17 +166,17 @@
           <el-table-column prop="gpu_model" label="GPU型号" min-width="170" />
           <el-table-column prop="gpu_count" label="GPU数" min-width="74" />
           <el-table-column prop="usage_records" label="记录数" min-width="74" />
-          <el-table-column label="CPU累计%" min-width="96">
-            <template #default="{ row }">{{ fmt2(row.total_cpu_percent) }}</template>
+          <el-table-column label="CPU使用积分" min-width="110">
+            <template #default="{ row }">{{ fmt2(row.cpu_cost) }}</template>
           </el-table-column>
-          <el-table-column label="内存累计MB" min-width="110">
-            <template #default="{ row }">{{ fmt2(row.total_memory_mb) }}</template>
+          <el-table-column label="GPU使用积分" min-width="110">
+            <template #default="{ row }">{{ fmt2(row.gpu_cost) }}</template>
           </el-table-column>
           <el-table-column label="积分消耗" min-width="96">
             <template #default="{ row }">{{ fmt2(row.total_cost) }}</template>
           </el-table-column>
-          <el-table-column prop="last_seen_at" label="节点最后心跳" min-width="170" />
-          <el-table-column prop="last_usage_at" label="最后使用时间" min-width="170" />
+          <el-table-column prop="last_seen_at" label="节点最后心跳" min-width="170" :formatter="tableTimeFormatter" />
+          <el-table-column prop="last_usage_at" label="最后使用时间" min-width="170" :formatter="tableTimeFormatter" />
         </el-table>
       </div>
     </el-card>
@@ -156,7 +238,7 @@
           <el-table-column label="加分总额" min-width="120">
             <template #default="{ row }">{{ fmt2(row.recharge_total) }}</template>
           </el-table-column>
-          <el-table-column prop="last_recharge" label="最后加分时间" min-width="180" />
+          <el-table-column prop="last_recharge" label="最后加分时间" min-width="180" :formatter="tableTimeFormatter" />
         </el-table>
       </div>
     </el-card>
@@ -166,21 +248,22 @@
 
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import type { PlatformUsageNodeDetail, PlatformUsageUserSummary, RechargeSummary, UsageMonthlySummary } from "../../lib/api";
+import { ElMessage, ElMessageBox } from "element-plus";
+import type { PlatformUsageNodeDetail, PlatformUsageUserSummary, RechargeSummary, UsageDayStat, UsageMonthlySummary, UsageRetentionStatus } from "../../lib/api";
 import { ApiClient } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
 import PlatformUserDetailDialog from "../../components/PlatformUserDetailDialog.vue";
-import { Clock, Coin, DataBoard, Monitor, UserFilled } from "@element-plus/icons-vue";
+import { Clock, Coin, DataBoard, Delete, Monitor, UserFilled } from "@element-plus/icons-vue";
+import { formatServerDate, formatServerDateTime, getServerTodayDateText, normalizeServerDateInput, shiftServerDateText } from "../../lib/time";
 
 const loading = ref(false);
+const exporting = ref(false);
 const error = ref("");
 
-const today = new Date();
-const yearAgo = new Date();
-yearAgo.setDate(today.getDate() - 365);
-const fromDate = ref(fmtDate(yearAgo));
-const toDate = ref(fmtDate(today));
+const beijingToday = getBeijingTodayText();
+const fromDate = ref(shiftServerDateText(beijingToday, -365));
+const toDate = ref(beijingToday);
 
 const userRows = ref<PlatformUsageUserSummary[]>([]);
 const monthlyRows = ref<UsageMonthlySummary[]>([]);
@@ -191,6 +274,23 @@ const nodeRows = ref<PlatformUsageNodeDetail[]>([]);
 const activeUsername = ref("");
 const profileVisible = ref(false);
 const selectedProfileUsername = ref("");
+let rangeAutoReloadTimer: ReturnType<typeof setTimeout> | null = null;
+let loadAllSeq = 0;
+const appliedFromDate = ref(fromDate.value);
+const appliedToDate = ref(toDate.value);
+const retentionDaysDraft = ref(0);
+const retentionStatus = ref<UsageRetentionStatus | null>(null);
+const retentionSaving = ref(false);
+const deleteRangeDays = ref<string[]>([]);
+const deleteRangeEstimating = ref(false);
+const deleteRangeDeleting = ref(false);
+const deleteRangeEstimate = ref<{ records: number; estimated_csv_bytes: number; estimated_db_bytes: number } | null>(null);
+const availableUsageDays = ref<UsageDayStat[]>([]);
+const availableUsageDaysLoaded = ref(false);
+
+function tableTimeFormatter(_: unknown, __: unknown, cellValue: unknown): string {
+  return formatServerDateTime(String(cellValue ?? ""));
+}
 
 const displayUserRows = computed<PlatformUsageUserSummary[]>(() => {
   const byUser = new Map<string, PlatformUsageUserSummary>();
@@ -209,11 +309,12 @@ const displayUserRows = computed<PlatformUsageUserSummary[]>(() => {
     return {
       platform_username: u,
       usage_records: 0,
-      gpu_process_records: 0,
-      cpu_process_records: 0,
-      total_cpu_percent: 0,
-      total_memory_mb: 0,
+      cpu_usage_seconds: 0,
+      gpu_usage_seconds: 0,
+      cpu_util_percent: 0,
+      gpu_util_percent: 0,
       total_cost: 0,
+      general_balance: 0,
     };
   });
 });
@@ -264,27 +365,49 @@ const filteredMonthlyRows = computed(() => {
   return full.filter((row) => String(row.username || "").toLowerCase().includes(kw));
 });
 
-function fmtDate(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+const availableUsageDaySet = computed(() => {
+  const s = new Set<string>();
+  for (const row of availableUsageDays.value) {
+    const k = String(row.date || "").trim();
+    if (k) s.add(k);
+  }
+  return s;
+});
+
+const canDeleteRangeAction = computed(() => {
+  if (authState.role !== "admin") return false;
+  return Array.isArray(deleteRangeDays.value) && deleteRangeDays.value.length === 2 && !!deleteRangeDays.value[0] && !!deleteRangeDays.value[1];
+});
+
+function getBeijingTodayText(): string {
+  return getServerTodayDateText();
+}
+
+function normalizeDateInput(v: unknown, fallback: string): string {
+  return normalizeServerDateInput(v, fallback);
 }
 
 function fmt2(v: number): string {
   return Number(v ?? 0).toFixed(2);
 }
 
+function fmtDuration(seconds: number): string {
+  const s = Math.max(0, Math.round(Number(seconds || 0)));
+  if (s < 60) return `${s}秒`;
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h > 0) return `${h}小时${m}分钟`;
+  return `${m}分钟`;
+}
+
 function disableFutureDate(d: Date): boolean {
-  const endOfToday = new Date();
-  endOfToday.setHours(23, 59, 59, 999);
-  return d.getTime() > endOfToday.getTime();
+  return formatServerDate(d) > getBeijingTodayText();
 }
 
 function getRangeSafe(): [string, string] {
-  const todayText = fmtDate(new Date());
-  let from = String(fromDate.value || "").trim() || fmtDate(yearAgo);
-  let to = String(toDate.value || "").trim() || todayText;
+  const todayText = getBeijingTodayText();
+  let from = normalizeDateInput(fromDate.value, shiftServerDateText(todayText, -365));
+  let to = normalizeDateInput(toDate.value, todayText);
   if (from > todayText) from = todayText;
   if (to > todayText) to = todayText;
   if (from > to) {
@@ -295,6 +418,19 @@ function getRangeSafe(): [string, string] {
   fromDate.value = from;
   toDate.value = to;
   return [from, to];
+}
+
+function onStatsRangeChanged() {
+  getRangeSafe();
+  scheduleAutoReloadByRangeChange();
+}
+
+function datePrefix(v: unknown, fallback: string): string {
+  const s = String(v || "").trim();
+  if (!s) return fallback;
+  const m = s.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (m) return m[1];
+  return normalizeDateInput(s, fallback);
 }
 
 function queryMonthlyUsers(queryString: string, cb: (items: Array<{ value: string }>) => void) {
@@ -310,7 +446,77 @@ function onMonthlyUserSelect(item: { value?: string }) {
   monthlyUserKeyword.value = String(item?.value || "").trim();
 }
 
+function bytesText(n: number): string {
+  const x = Number(n || 0);
+  if (x < 1024) return `${x} B`;
+  if (x < 1024 * 1024) return `${(x / 1024).toFixed(2)} KB`;
+  if (x < 1024 * 1024 * 1024) return `${(x / 1024 / 1024).toFixed(2)} MB`;
+  return `${(x / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function retentionModeText(v?: string): string {
+  const m = String(v || "").trim().toLowerCase();
+  if (m === "auto") return "自动";
+  if (m === "manual") return "手动";
+  return "-";
+}
+
+function getDeleteRangeSafe(): [string, string] {
+  const todayText = getBeijingTodayText();
+  let from = normalizeDateInput(deleteRangeDays.value?.[0], "");
+  let to = normalizeDateInput(deleteRangeDays.value?.[1], "");
+  if (!from || !to) {
+    throw new Error("请先选择完整删除区间");
+  }
+  if (from > todayText) from = todayText;
+  if (to > todayText) to = todayText;
+  if (from > to) {
+    const t = from;
+    from = to;
+    to = t;
+  }
+  deleteRangeDays.value = [from, to];
+  return [from, to];
+}
+
+function onDeleteRangeChange() {
+  deleteRangeEstimate.value = null;
+}
+
+function usageDeleteDisabledDate(d: Date): boolean {
+  if (disableFutureDate(d)) return true;
+  if (!availableUsageDaysLoaded.value) return false;
+  return !availableUsageDaySet.value.has(formatServerDate(d));
+}
+
+function applyRetentionStatus(resp: UsageRetentionStatus) {
+  retentionStatus.value = resp;
+  const days = Number(resp?.retention_days ?? 0);
+  if (Number.isFinite(days) && days >= 0) {
+    retentionDaysDraft.value = Math.min(3650, Math.round(days));
+  } else {
+    retentionDaysDraft.value = 0;
+  }
+}
+
+async function refreshRetentionStatus(client?: ApiClient) {
+  if (authState.role !== "admin") return;
+  const c = client ?? new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+  const resp = await c.adminUsageRetentionGet();
+  applyRetentionStatus(resp);
+}
+
+async function refreshUsageDayStats(client?: ApiClient, force = false) {
+  if (authState.role !== "admin") return;
+  if (availableUsageDaysLoaded.value && !force) return;
+  const c = client ?? new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+  const resp = await c.adminUsageDays({});
+  availableUsageDays.value = resp.days ?? [];
+  availableUsageDaysLoaded.value = true;
+}
+
 async function loadAll() {
+  const seq = ++loadAllSeq;
   loading.value = true;
   error.value = "";
   try {
@@ -321,14 +527,28 @@ async function loadAll() {
       client.adminStatsMonthly({ from, to, limit: 50000 }),
       client.adminStatsRecharges({ from, to, limit: 1000 }),
     ]);
+    if (seq !== loadAllSeq) return;
+    appliedFromDate.value = datePrefix(u.from || m.from || r.from || from, from);
+    appliedToDate.value = datePrefix(u.to || m.to || r.to || to, to);
     userRows.value = u.rows ?? [];
     monthlyRows.value = m.rows ?? [];
     rechargeRows.value = r.rows ?? [];
     if (authState.role === "admin") {
-      const usersResp = await client.adminUsersDetails(5000);
+      const [usersResp, retentionResp] = await Promise.all([
+        client.adminUsersDetails(5000),
+        client.adminUsageRetentionGet(),
+      ]);
+      if (seq !== loadAllSeq) return;
       allPlatformUsers.value = (usersResp.users ?? [])
         .map((u: any) => String(u?.username || "").trim())
         .filter(Boolean);
+      applyRetentionStatus(retentionResp);
+      if (!availableUsageDaysLoaded.value) {
+        const daysResp = await client.adminUsageDays({});
+        if (seq !== loadAllSeq) return;
+        availableUsageDays.value = daysResp.days ?? [];
+        availableUsageDaysLoaded.value = true;
+      }
     } else {
       // 高级用户不请求超管专属接口，避免“已授权看板却报无权限”。
       const s = new Set<string>();
@@ -341,6 +561,10 @@ async function loadAll() {
         if (u) s.add(u);
       }
       allPlatformUsers.value = Array.from(s).sort((a, b) => a.localeCompare(b));
+      retentionStatus.value = null;
+      retentionDaysDraft.value = 0;
+      availableUsageDays.value = [];
+      availableUsageDaysLoaded.value = false;
     }
     if (displayUserRows.value.length > 0) {
       await loadUserNodes(displayUserRows.value[0].platform_username);
@@ -349,9 +573,12 @@ async function loadAll() {
       nodeRows.value = [];
     }
   } catch (e: any) {
+    if (seq !== loadAllSeq) return;
     error.value = e?.message ?? String(e);
   } finally {
-    loading.value = false;
+    if (seq === loadAllSeq) {
+      loading.value = false;
+    }
   }
 }
 
@@ -368,6 +595,99 @@ async function loadUserNodes(username: string) {
   }
 }
 
+async function exportRangeCSV() {
+  exporting.value = true;
+  error.value = "";
+  try {
+    const [from, to] = getRangeSafe();
+    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+    const blob = await client.adminExportUsageCSV({ from, to, limit: 200000 });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `board_usage_${from}_${to}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    ElMessage.success(`已开始下载 board_usage_${from}_${to}.csv`);
+  } catch (e: any) {
+    error.value = e?.message ?? String(e);
+  } finally {
+    exporting.value = false;
+  }
+}
+
+async function saveRetentionDays() {
+  if (authState.role !== "admin") return;
+  retentionSaving.value = true;
+  error.value = "";
+  try {
+    const retentionDays = Math.min(3650, Math.max(0, Math.round(Number(retentionDaysDraft.value || 0))));
+    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+    const resp = await client.adminUsageRetentionSet({ retention_days: retentionDays });
+    applyRetentionStatus(resp);
+    ElMessage.success(retentionDays > 0 ? `已设置自动删除保留 ${retentionDays} 天` : "已关闭自动删除");
+  } catch (e: any) {
+    error.value = e?.message ?? String(e);
+  } finally {
+    retentionSaving.value = false;
+  }
+}
+
+async function estimateDeleteRange() {
+  if (!canDeleteRangeAction.value) return;
+  deleteRangeEstimating.value = true;
+  error.value = "";
+  try {
+    const [from, to] = getDeleteRangeSafe();
+    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+    const resp = await client.adminUsageRangeEstimate({ from, to });
+    deleteRangeEstimate.value = {
+      records: Number(resp.records || 0),
+      estimated_csv_bytes: Number(resp.estimated_csv_bytes || 0),
+      estimated_db_bytes: Number(resp.estimated_db_bytes || 0),
+    };
+  } catch (e: any) {
+    error.value = e?.message ?? String(e);
+  } finally {
+    deleteRangeEstimating.value = false;
+  }
+}
+
+async function deleteRangeNow() {
+  if (!canDeleteRangeAction.value) return;
+  deleteRangeDeleting.value = true;
+  error.value = "";
+  try {
+    const [from, to] = getDeleteRangeSafe();
+    await ElMessageBox.confirm(
+      `将删除 ${from} 至 ${to} 的全部使用记录。此操作不可恢复，确认继续吗？`,
+      "确认删除区间记录",
+      { type: "warning", confirmButtonText: "确认删除", cancelButtonText: "取消" },
+    );
+    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+    const resp = await client.adminUsageDeleteRange({ from, to, confirm: true });
+    deleteRangeEstimate.value = {
+      records: Number(resp.records_before || 0),
+      estimated_csv_bytes: Number(resp.estimated_csv_bytes || 0),
+      estimated_db_bytes: Number(resp.estimated_db_bytes || 0),
+    };
+    ElMessage.success(`删除完成：${resp.deleted_records} 条记录`);
+    await Promise.all([
+      refreshRetentionStatus(client),
+      refreshUsageDayStats(client, true),
+      loadAll(),
+    ]);
+  } catch (e: any) {
+    if (String(e?.message || "") !== "cancel") {
+      error.value = e?.message ?? String(e);
+    }
+  } finally {
+    deleteRangeDeleting.value = false;
+  }
+}
+
 function openUser(username: string) {
   const u = String(username || "").trim();
   if (!u) return;
@@ -376,13 +696,37 @@ function openUser(username: string) {
   loadUserNodes(u);
 }
 
+function scheduleAutoReloadByRangeChange() {
+  if (rangeAutoReloadTimer) {
+    clearTimeout(rangeAutoReloadTimer);
+  }
+  rangeAutoReloadTimer = setTimeout(() => {
+    rangeAutoReloadTimer = null;
+    void loadAll();
+  }, 250);
+}
+
 loadAll();
 </script>
 
 <style scoped>
 .head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.head-actions { display: inline-flex; align-items: center; gap: 8px; }
 .title { font-weight: 700; font-size: 16px; }
 .mb { margin-bottom: 12px; }
+.range-meta { margin-top: 8px; color: #475569; font-size: 13px; }
+.retention-meta {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  color: #475569;
+  font-size: 13px;
+}
+.retention-tip {
+  color: #64748b;
+  font-size: 13px;
+}
 .board-wrap {
   width: 100%;
   min-width: 0;
@@ -443,6 +787,10 @@ loadAll();
 .tone-points {
   background: linear-gradient(135deg, #be123c, #e11d48);
   color: #ffe4e6;
+}
+.tone-retention {
+  background: linear-gradient(135deg, #9a3412, #ea580c);
+  color: #ffedd5;
 }
 .table-wrap {
   width: 100%;
