@@ -40,9 +40,9 @@
       <div class="rule-chips">
         <span class="chip chip-orange">用户名：全平台唯一</span>
         <span class="chip chip-cyan">学号：全平台唯一</span>
-        <span class="chip chip-blue">邮箱：全平台唯一&个人使用的高频邮箱</span>
+        <span class="chip chip-blue">邮箱：仅允许 @example.org / @students.example.org</span>
       </div>
-      <div class="rule-note">提交前会自动校验重复项，并明确告诉你是哪个字段冲突。</div>
+      <div class="rule-note">提交前会自动校验重复项；并强制校验“邮箱前缀=学号（学号自动转大写）”。</div>
 
       <el-form label-position="top" :disabled="submitted" class="register-form">
         <div class="section-grid">
@@ -58,8 +58,8 @@
               <el-col :span="24">
                 <el-form-item required>
                   <template #label><span class="required">*</span> 邮箱</template>
-                  <el-input v-model="form.email" placeholder="example@example.org" @blur="checkUnique('email')" />
-                  <div class="field-tip">请填写日常使用邮箱，审核结果、密码找回与重要通知都会发送到这个邮箱。</div>
+                  <el-input v-model="form.email" placeholder="例如：26B123456@example.org" @blur="checkUnique('email')" />
+                  <div class="field-tip">必须使用 `@example.org` 或 `@students.example.org`；邮箱前缀必须与学号一致。</div>
                   <div v-if="fieldErrors.email" class="field-error">{{ fieldErrors.email }}</div>
                 </el-form-item>
               </el-col>
@@ -76,7 +76,8 @@
               <el-col :span="24">
                 <el-form-item required>
                   <template #label><span class="required">*</span> 密码</template>
-                  <el-input v-model="form.password" type="password" show-password placeholder="至少 8 位" />
+                  <el-input v-model="form.password" type="password" show-password placeholder="请设置强密码" />
+                  <div class="field-tip">{{ passwordRuleText }}</div>
                 </el-form-item>
               </el-col>
               <el-col :span="24">
@@ -86,6 +87,18 @@
                 </el-form-item>
               </el-col>
             </el-row>
+            <el-form-item required>
+              <template #label><span class="required">*</span> 安全验证码（每次注册必做）</template>
+              <div class="captcha-wrap">
+                <div class="captcha-question">{{ captchaQuestionLabel }}</div>
+                <el-radio-group v-model="captchaOption" class="captcha-options">
+                  <el-radio-button v-for="(op, idx) in captchaOptions" :key="`${captchaId}-${idx}-${op}`" :label="idx">{{ op }}</el-radio-button>
+                </el-radio-group>
+                <div class="captcha-actions">
+                  <el-button text type="primary" :loading="captchaLoading" @click="loadCaptcha">换一题</el-button>
+                </div>
+              </div>
+            </el-form-item>
           </section>
 
           <section class="form-section section-profile">
@@ -107,8 +120,8 @@
               <el-col :span="24">
                 <el-form-item required>
                   <template #label><span class="required">*</span> 学号</template>
-                  <el-input v-model="form.student_id" placeholder="注意全大写，例如26B123456" @blur="checkUnique('student_id')" />
-                  <div class="field-tip">学号请使用全大写格式，例如26B123456。</div>
+                  <el-input v-model="form.student_id" placeholder="注意全大写，例如26B123456" @input="onStudentInput" @blur="checkUnique('student_id')" />
+                  <div class="field-tip">输入小写会自动转为大写；并将用于校验邮箱前缀。</div>
                   <div v-if="fieldErrors.student_id" class="field-error">{{ fieldErrors.student_id }}</div>
                 </el-form-item>
               </el-col>
@@ -177,14 +190,16 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ApiClient } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { ElMessageBox } from "element-plus";
 import { renderMarkdown } from "../../lib/markdown";
+import { STRONG_PASSWORD_RULE_TEXT, checkStrongPassword } from "../../lib/passwordPolicy";
 
 type FieldKey = "username" | "email" | "student_id";
+const allowedEmailDomains = ["example.org", "students.example.org"];
 
 function toYYYYMM(year: number, month: number): string {
   return `${year}-${String(month).padStart(2, "0")}`;
@@ -209,8 +224,15 @@ const graduationYm = ref(toYYYYMM(new Date().getFullYear() + 3, 6));
 const guidelineVisible = ref(false);
 const guidelineContent = ref("正在加载用户准则...");
 const acceptGuideline = ref(false);
+const passwordRuleText = STRONG_PASSWORD_RULE_TEXT;
 const route = useRoute();
 const router = useRouter();
+const captchaLoading = ref(false);
+const captchaId = ref("");
+const captchaQuestion = ref("");
+const captchaOptions = ref<number[]>([]);
+const captchaOption = ref<number | null>(null);
+const captchaQuestionLabel = computed(() => captchaQuestion.value || "验证码加载中...");
 const fieldErrors = reactive<Record<FieldKey, string>>({
   username: "",
   email: "",
@@ -228,10 +250,30 @@ const form = reactive({
   phone: "",
 });
 
-function isValidEmail(v: string): boolean {
-  const text = String(v || "").trim();
-  if (!text) return false;
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text);
+function normalizeStudentIDInput(v: string): string {
+  return String(v || "").trim().toUpperCase();
+}
+
+function normalizeRegisterEmailForStudent(emailRaw: string, studentRaw: string): { value: string; error: string | null } {
+  const student = normalizeStudentIDInput(studentRaw);
+  const email = String(emailRaw || "").trim();
+  if (!email) return { value: "", error: "邮箱不能为空" };
+  if (!student) return { value: email, error: "请先填写学号" };
+  const m = email.match(/^([^@\s]+)@([^@\s]+)$/);
+  if (!m) return { value: email, error: "邮箱格式不合法" };
+  const local = String(m[1] || "").trim().toUpperCase();
+  const domain = String(m[2] || "").trim().toLowerCase();
+  if (!allowedEmailDomains.includes(domain)) {
+    return { value: email, error: "注册邮箱后缀仅支持 @example.org 或 @students.example.org" };
+  }
+  if (local !== student) {
+    return { value: `${student}@${domain}`, error: "邮箱前缀必须与学号一致（邮箱前缀=学号）" };
+  }
+  return { value: `${student}@${domain}`, error: null };
+}
+
+function onStudentInput() {
+  form.student_id = normalizeStudentIDInput(form.student_id);
 }
 
 function normalizeFieldError(field: FieldKey, msg: string): string {
@@ -240,6 +282,9 @@ function normalizeFieldError(field: FieldKey, msg: string): string {
   if (text === "用户名已存在") return "该用户名已被使用，请换一个用户名。";
   if (text === "邮箱已存在") return "该邮箱已被使用，请换一个邮箱。";
   if (text === "邮箱格式不合法") return "邮箱格式不正确，请检查后再填写。";
+  if (text.includes("注册邮箱后缀仅支持")) return "邮箱后缀仅支持 @example.org 或 @students.example.org。";
+  if (text.includes("邮箱前缀必须与学号一致")) return "邮箱前缀必须与学号一致（邮箱前缀=学号）。";
+  if (text === "请先填写学号") return "请先填写学号。";
   if (text === "学号已存在") return "该学号已被使用，请确认后再填写。";
   if (text === "用户名已被待审核申请占用") return "该用户名已被他人提交注册申请，请更换。";
   if (text === "邮箱已被待审核申请占用") return "该邮箱已被他人提交注册申请，请更换。";
@@ -274,18 +319,32 @@ function normalizeRegisterError(msg: string): string {
   }
   if (text === "请完整填写注册信息") return "请把所有必填项填写完整后再提交。";
   if (text === "用户名不得超过 18 个字符") return "用户名最多 18 个字符，请缩短后再提交。";
-  if (text === "密码至少 8 位") return "密码至少需要 8 位，请重新输入。";
+  if (text.includes("强密码规则")) return STRONG_PASSWORD_RULE_TEXT;
+  if (text === "密码不能包含空格") return "密码不能包含空格。";
   if (text === "邮箱格式不合法") return "邮箱格式不正确，请检查后再提交。";
+  if (text.includes("注册邮箱后缀仅支持")) return "注册邮箱后缀仅支持 @example.org 或 @students.example.org。";
+  if (text.includes("邮箱前缀必须与学号一致")) return "邮箱前缀必须与学号一致（邮箱前缀=学号）。";
+  if (text === "请求过于频繁，请稍后再试") return "请求过于频繁，请稍后再试。";
+  if (text === "该邮箱请求过于频繁，请稍后再试") return "该邮箱请求过于频繁，请稍后再试。";
+  if (text === "验证码错误，请重试") return "验证码错误，请重新选择后再提交。";
+  if (text === "验证码已过期，请刷新后重试" || text === "验证码已失效，请刷新后重试") return "验证码已失效，请点击“换一题”后重试。";
+  if (text === "该邮箱域名不允许注册，请使用学校正式邮箱") return "该邮箱域名不允许注册，请使用学校正式邮箱。";
   if (text === "请先阅读并勾选同意《用户准则》后再提交") return "请先阅读并勾选同意《用户准则》后再提交。";
   if (text === "请求的资源不存在") return "注册接口不可用，请确认控制器服务已更新并重启。";
   return text;
 }
 
 async function checkUnique(field?: FieldKey): Promise<boolean> {
+  form.student_id = normalizeStudentIDInput(form.student_id);
+  fieldErrors.email = "";
   const emailRaw = String(form.email || "").trim();
-  if (emailRaw && !isValidEmail(emailRaw)) {
-    fieldErrors.email = "邮箱格式不正确，请填写常用邮箱，例如 name@example.org";
-    if (field === "email") return false;
+  if (emailRaw) {
+    const normalized = normalizeRegisterEmailForStudent(emailRaw, form.student_id);
+    form.email = normalized.value;
+    if (normalized.error) {
+      fieldErrors.email = normalized.error;
+      if (field === "email" || field === "student_id") return false;
+    }
   }
   try {
     const client = new ApiClient(settingsState.baseUrl);
@@ -295,7 +354,9 @@ async function checkUnique(field?: FieldKey): Promise<boolean> {
       student_id: form.student_id,
     });
     fieldErrors.username = normalizeFieldError("username", r.errors?.username ?? "");
-    fieldErrors.email = normalizeFieldError("email", r.errors?.email ?? "");
+    if (!fieldErrors.email) {
+      fieldErrors.email = normalizeFieldError("email", r.errors?.email ?? "");
+    }
     fieldErrors.student_id = normalizeFieldError("student_id", r.errors?.student_id ?? "");
     if (field) return !(fieldErrors[field] ?? "");
     return !fieldErrors.username && !fieldErrors.email && !fieldErrors.student_id;
@@ -313,6 +374,7 @@ async function submit() {
   if (submitted.value) return;
   error.value = "";
   success.value = "";
+  form.student_id = normalizeStudentIDInput(form.student_id);
   const ym = parseYYYYMM(graduationYm.value);
   if (!ym) {
     error.value = "请选择合法的预计毕业年月";
@@ -324,20 +386,27 @@ async function submit() {
     error.value = "用户名不得超过 18 个字符";
     return;
   }
-  if (!isValidEmail(form.email)) {
-    error.value = "邮箱格式不正确，请填写常用邮箱，例如 name@example.org";
+  const normalizedEmail = normalizeRegisterEmailForStudent(form.email, form.student_id);
+  form.email = normalizedEmail.value;
+  if (normalizedEmail.error) {
+    error.value = normalizedEmail.error;
     return;
   }
   if (form.password !== confirmPassword.value) {
     error.value = "两次密码输入不一致";
     return;
   }
-  if (form.password.length < 8) {
-    error.value = "密码至少 8 位";
+  const pwdErr = checkStrongPassword(form.password);
+  if (pwdErr) {
+    error.value = pwdErr;
     return;
   }
   if (!acceptGuideline.value) {
     error.value = "请先阅读并勾选同意《用户准则》";
+    return;
+  }
+  if (!captchaId.value || captchaOption.value === null) {
+    error.value = "请先完成安全验证码";
     return;
   }
   loading.value = true;
@@ -348,7 +417,12 @@ async function submit() {
       return;
     }
     const client = new ApiClient(settingsState.baseUrl);
-    const r = await client.authRegister({ ...form, accept_guideline: acceptGuideline.value });
+    const r = await client.authRegister({
+      ...form,
+      accept_guideline: acceptGuideline.value,
+      captcha_id: captchaId.value,
+      captcha_option: Number(captchaOption.value),
+    });
     success.value = r.message || "验证邮件已发送，请前往邮箱点击链接完成提交。";
     submitted.value = true;
     await ElMessageBox.alert(success.value, "验证邮件已发送", {
@@ -357,8 +431,28 @@ async function submit() {
     });
   } catch (e: any) {
     error.value = normalizeRegisterError(e?.message ?? String(e));
+    await loadCaptcha();
   } finally {
     loading.value = false;
+  }
+}
+
+async function loadCaptcha() {
+  captchaLoading.value = true;
+  try {
+    const client = new ApiClient(settingsState.baseUrl);
+    const r = await client.authRegisterCaptcha();
+    captchaId.value = String(r.captcha_id || "").trim();
+    captchaQuestion.value = String(r.question || "").trim();
+    captchaOptions.value = Array.isArray(r.options) ? r.options.map((v) => Number(v)) : [];
+    captchaOption.value = null;
+  } catch (e: any) {
+    captchaId.value = "";
+    captchaQuestion.value = "验证码加载失败，请稍后重试";
+    captchaOptions.value = [];
+    error.value = normalizeRegisterError(e?.message ?? String(e));
+  } finally {
+    captchaLoading.value = false;
   }
 }
 
@@ -399,6 +493,7 @@ async function handleVerifyResultFromQuery() {
 
 onMounted(() => {
   loadGuideline();
+  loadCaptcha();
   handleVerifyResultFromQuery();
 });
 </script>
@@ -680,6 +775,27 @@ onMounted(() => {
   margin-top: 6px;
   font-size: 13px;
   color: #64748b;
+}
+.captcha-wrap {
+  width: 100%;
+  border: 1px dashed #94a3b8;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #ffffffc7;
+}
+.captcha-question {
+  font-size: 14px;
+  font-weight: 700;
+  color: #0f172a;
+  margin-bottom: 8px;
+}
+.captcha-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.captcha-actions {
+  margin-top: 8px;
 }
 .field-error {
   margin-top: 6px;

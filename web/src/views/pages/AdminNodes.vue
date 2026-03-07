@@ -144,7 +144,7 @@
           </template>
         </el-table-column>
 
-        <el-table-column label="策略" width="250">
+        <el-table-column label="策略" width="340">
           <template #default="{ row }">
             <div class="node-guard-switch-wrap">
               <div class="node-switch-item">
@@ -180,7 +180,42 @@
                   />
                 </el-tooltip>
               </div>
+              <div class="node-switch-item">
+                <el-text size="small" class="node-switch-label">硬盘配额</el-text>
+                <el-tooltip content="开启后可按节点策略下发磁盘软/硬配额；关闭时不自动下发。" placement="top">
+                  <el-switch
+                    :model-value="!!row.disk_quota_enabled"
+                    size="small"
+                    inline-prompt
+                    active-text="开"
+                    inactive-text="关"
+                    :loading="diskQuotaUpdatingNodeId === row.node_id"
+                    :disabled="!canManageNodes || diskQuotaUpdatingNodeId === row.node_id"
+                    @change="(v: boolean) => onNodeDiskQuotaToggle(row, v)"
+                  />
+                </el-tooltip>
+              </div>
               <div class="node-switch-actions">
+                <el-button
+                  v-if="canManageNodes"
+                  size="small"
+                  link
+                  type="primary"
+                  class="node-visibility-btn"
+                  @click="openNodePointsPolicyDialog(row)"
+                >
+                  限速策略
+                </el-button>
+                <el-button
+                  v-if="canManageNodes"
+                  size="small"
+                  link
+                  type="primary"
+                  class="node-visibility-btn"
+                  @click="openNodeDiskQuotaDialog(row)"
+                >
+                  硬盘配额
+                </el-button>
                 <el-button
                   v-if="canManageNodes"
                   size="small"
@@ -493,9 +528,21 @@
         </div>
 
         <div class="ssh-users-wrap">
-          <div class="ssh-users-title section-inline-title">
-            <el-icon><UserFilled /></el-icon>
-            <span>节点内全部本地用户（含映射状态）</span>
+          <div class="section-inline-title-row">
+            <div class="ssh-users-title section-inline-title">
+              <el-icon><UserFilled /></el-icon>
+              <span>节点内全部本地用户（含映射状态）</span>
+            </div>
+            <el-button
+              type="danger"
+              size="small"
+              plain
+              :loading="killingProcNodeId === detailNodeId"
+              :disabled="!canManageNodes || !detailNodeId || (detailData.local_users || []).length === 0"
+              @click="killAllDetailUsersProcesses"
+            >
+              强制清除全部用户进程
+            </el-button>
           </div>
           <el-table
             :data="detailData.local_users || []"
@@ -642,11 +689,66 @@
             <el-icon><Document /></el-icon>
             <span>安全审计日志（节点维度）</span>
           </div>
+          <div class="security-filter-bar">
+            <el-date-picker
+              v-model="securityRange"
+              type="datetimerange"
+              start-placeholder="开始时间"
+              end-placeholder="结束时间"
+              format="YYYY-MM-DD HH:mm:ss"
+              value-format="YYYY-MM-DD HH:mm:ss"
+              range-separator="至"
+              style="width: 420px"
+            />
+            <el-select v-model="securityEventTypeFilter" clearable filterable placeholder="事件类型（可选）" style="width: 220px">
+              <el-option label="全部事件" value="" />
+              <el-option label="疑似挖矿" value="suspected_mining" />
+              <el-option label="高CPU负载" value="high_cpu_load" />
+              <el-option label="SSH失败峰值" value="ssh_failed_login_spike" />
+              <el-option label="SSH爆破" value="ssh_bruteforce" />
+              <el-option label="端口扫描" value="abnormal_port_scan" />
+              <el-option label="磁盘风险" value="disk_full_risk" />
+            </el-select>
+            <el-switch v-model="securityShowSummary" inline-prompt active-text="规约视图" inactive-text="原始日志" />
+            <el-button type="primary" :loading="securityEventsLoading" @click="queryNodeSecurityEvents">查询</el-button>
+            <el-button :disabled="securityEventsLoading" @click="resetNodeSecurityFilters">重置</el-button>
+          </div>
+          <el-alert
+            type="info"
+            show-icon
+            :closable="false"
+            class="security-normalizer-alert"
+            :title="`规约说明：${securitySummaryNormalizer || 'event_type + severity + reason(数字归一化)'}`"
+          />
           <el-table
-            :data="detailData.security_events || []"
+            v-if="securityShowSummary"
+            :data="securityEventSummariesRows"
             size="small"
             stripe
             style="width: 100%"
+            v-loading="securityEventsLoading"
+            :header-cell-style="{ background: 'var(--bg-tertiary)', color: 'var(--text-primary)' }"
+            empty-text="当前时间范围内暂无可规约的安全事件"
+          >
+            <el-table-column prop="event_type" label="事件类型" min-width="140" />
+            <el-table-column prop="severity" label="等级" width="90" />
+            <el-table-column prop="normalized_reason" label="规约后原因" min-width="280" />
+            <el-table-column prop="event_count" label="事件数" width="90" align="center" />
+            <el-table-column prop="affected_users" label="影响账号数" width="110" align="center" />
+            <el-table-column label="首次时间" min-width="170">
+              <template #default="{ row }">{{ formatTime(row.first_seen_at) }}</template>
+            </el-table-column>
+            <el-table-column label="最近时间" min-width="170">
+              <template #default="{ row }">{{ formatTime(row.last_seen_at) }}</template>
+            </el-table-column>
+          </el-table>
+          <el-table
+            v-else
+            :data="securityEventsRows"
+            size="small"
+            stripe
+            style="width: 100%"
+            v-loading="securityEventsLoading"
             :header-cell-style="{ background: 'var(--bg-tertiary)', color: 'var(--text-primary)' }"
             empty-text="暂无安全事件日志"
           >
@@ -742,7 +844,9 @@
         <el-table :data="platformProfile.node_accounts || []" stripe max-height="220" empty-text="暂无映射">
           <el-table-column prop="node_id" label="节点编号" width="140" />
           <el-table-column prop="local_username" label="节点账号" width="160" />
-          <el-table-column prop="updated_at" label="更新时间" min-width="180" />
+          <el-table-column label="更新时间" min-width="180">
+            <template #default="{ row }">{{ formatTime(row.updated_at) }}</template>
+          </el-table-column>
         </el-table>
       </template>
     </el-dialog>
@@ -836,6 +940,204 @@
       </template>
     </el-dialog>
 
+    <el-dialog v-model="nodePointsPolicyVisible" title="节点积分限速策略" width="760px">
+      <el-form label-width="170px">
+        <el-form-item label="节点ID">
+          <el-text>{{ nodePointsPolicyNodeId || "-" }}</el-text>
+        </el-form-item>
+        <el-form-item label="积分拦截开关">
+          <el-switch v-model="nodePointsPolicyEnabled" inline-prompt active-text="开启" inactive-text="关闭" />
+          <el-text type="info" size="small" style="margin-left: 8px">
+            开启后才会扣分并按阈值触发限速；关闭则不扣分且不限速
+          </el-text>
+        </el-form-item>
+        <el-form-item label="低积分限速阈值">
+          <el-input-number
+            v-model="nodePointsThrottleThreshold"
+            :min="0"
+            :step="1"
+            :precision="2"
+            style="width: 220px"
+          />
+          <el-text type="info" size="small" style="margin-left: 8px">余额 ≤ 阈值时触发“低积分限速”</el-text>
+        </el-form-item>
+        <el-form-item label="低积分限速比例">
+          <el-input-number
+            v-model="nodePointsLimitedCPUQuota"
+            :min="1"
+            :max="100"
+            :step="1"
+            :precision="1"
+            style="width: 220px"
+          />
+          <el-text type="info" size="small" style="margin-left: 8px">对应 `set_cpu_quota`，单位：%</el-text>
+        </el-form-item>
+        <el-form-item label="欠费强限速比例">
+          <el-input-number
+            v-model="nodePointsBlockedCPUQuota"
+            :min="1"
+            :max="100"
+            :step="1"
+            :precision="1"
+            style="width: 220px"
+          />
+          <el-text type="info" size="small" style="margin-left: 8px">当余额 ≤ 0 时使用，更严格</el-text>
+        </el-form-item>
+        <el-form-item label="欠费内存上限(GB)">
+          <el-input-number
+            v-model="nodePointsOverdraftMemoryGB"
+            :min="0"
+            :step="0.5"
+            :precision="2"
+            style="width: 220px"
+          />
+          <el-text type="info" size="small" style="margin-left: 8px">
+            当超过每月欠费上限时生效；0 表示关闭内存上限
+          </el-text>
+        </el-form-item>
+        <el-form-item>
+          <el-alert
+            type="info"
+            show-icon
+            :closable="false"
+            class="points-policy-help"
+          >
+            <template #title>可调项说明（避免误操作）</template>
+            <div class="points-policy-help-lines">
+              <div>1. 积分拦截开关：关闭时本节点不扣分且不触发限速，仅保留使用记录。</div>
+              <div>2. 低积分限速阈值：当账号余额 ≤ 该值时，触发“低积分限速比例”。</div>
+              <div>3. 低积分/欠费比例：分别对应两种 `set_cpu_quota` 强度，值越小限制越强。</div>
+              <div>4. 欠费内存上限：仅在“超过每月欠费上限”时触发 `set_memory_limit`。</div>
+              <div>5. 当前控制器 CPU 限速总开关：{{ nodePointsCPUControlEnabled ? "已开启" : "未开启（即使保存也不会生效）" }}。</div>
+            </div>
+          </el-alert>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="nodePointsPolicyVisible = false">取消</el-button>
+        <el-button type="primary" :loading="nodePointsPolicySaving" @click="saveNodePointsPolicy">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="nodeDiskQuotaVisible" title="节点硬盘配额策略" width="980px">
+      <el-form label-width="170px" v-loading="nodeDiskQuotaLoading">
+        <el-form-item label="节点ID">
+          <el-text>{{ nodeDiskQuotaNodeId || "-" }}</el-text>
+        </el-form-item>
+        <el-form-item label="Quota 安装状态">
+          <el-alert
+            :type="nodeDiskQuotaInstalled ? 'success' : 'warning'"
+            show-icon
+            :closable="false"
+            :title="nodeDiskQuotaInstalled ? '已检测到 quota 工具（setquota）' : '未检测到 quota 工具（setquota）'"
+            class="disk-quota-alert"
+          />
+        </el-form-item>
+        <el-form-item label="已启用 Quota 分区">
+          <div class="disk-quota-mounts">
+            <el-tag v-for="m in nodeDiskQuotaMounts" :key="`dq-mount-${m}`" type="info" effect="plain">{{ m }}</el-tag>
+            <el-text v-if="nodeDiskQuotaMounts.length === 0" type="warning">节点尚未上报启用 quota 的分区（常见是 /home 或 /）</el-text>
+          </div>
+        </el-form-item>
+        <el-form-item label="策略开关">
+          <el-switch v-model="nodeDiskQuotaEnabled" inline-prompt active-text="开启" inactive-text="关闭" />
+          <el-text type="info" size="small" style="margin-left: 8px">
+            开启后可按策略自动下发用户磁盘配额；关闭仅停止自动下发，不会自动清空已有配额
+          </el-text>
+        </el-form-item>
+        <el-form-item label="配额分区">
+          <el-select v-model="nodeDiskQuotaMountpoint" clearable style="width: 260px" placeholder="选择 quota 分区">
+            <el-option v-for="m in nodeDiskQuotaMounts" :key="`dq-opt-${m}`" :label="m" :value="m" />
+          </el-select>
+          <el-text type="info" size="small" style="margin-left: 8px">
+            当前优先：{{ nodeDiskQuotaPreferredMountpoint || "未检测到" }}
+          </el-text>
+        </el-form-item>
+        <el-form-item label="默认软配额 (G)">
+          <el-input-number v-model="nodeDiskQuotaDefaultSoftGB" :min="0" :step="1" :precision="2" style="width: 220px" />
+          <el-text type="info" size="small" style="margin-left: 8px">达到软阈值后触发告警/宽限（由系统实现），`0` 表示不限额</el-text>
+        </el-form-item>
+        <el-form-item label="默认硬配额 (G)">
+          <el-input-number v-model="nodeDiskQuotaDefaultHardGB" :min="0" :step="1" :precision="2" style="width: 220px" />
+          <el-text type="info" size="small" style="margin-left: 8px">达到硬阈值后禁止继续写入；`0` 表示不限额</el-text>
+        </el-form-item>
+        <el-form-item label="保存后自动全体应用">
+          <el-switch v-model="nodeDiskQuotaApplyAllOnSave" inline-prompt active-text="是" inactive-text="否" />
+        </el-form-item>
+      </el-form>
+
+      <div class="ssh-users-wrap">
+        <div class="ssh-users-title section-inline-title">
+          <el-icon><UserFilled /></el-icon>
+          <span>用户配额（可逐个调整）</span>
+        </div>
+        <el-table
+          :data="nodeDiskQuotaUsers"
+          size="small"
+          stripe
+          max-height="360"
+          style="width: 100%"
+          :header-cell-style="{ background: 'var(--bg-tertiary)', color: 'var(--text-primary)' }"
+          empty-text="暂无节点本地用户"
+        >
+          <el-table-column prop="local_username" label="节点账号" min-width="140" />
+          <el-table-column label="平台账号" min-width="140">
+            <template #default="{ row }">
+              <el-button
+                v-if="row.platform_username"
+                link
+                type="primary"
+                @click="openPlatformProfile(row.platform_username)"
+              >
+                {{ row.platform_username }}
+              </el-button>
+              <span v-else>-</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="当前分区" min-width="100">
+            <template #default="{ row }">{{ row.quota_mountpoint || nodeDiskQuotaMountpoint || "-" }}</template>
+          </el-table-column>
+          <el-table-column label="已用 (G)" min-width="110" align="right">
+            <template #default="{ row }">{{ fmtQuotaGBFromMB(row.quota_used_mb) }}</template>
+          </el-table-column>
+          <el-table-column label="当前软配额 (G)" min-width="130" align="right">
+            <template #default="{ row }">{{ fmtQuotaGBFromMB(row.quota_soft_mb, true) }}</template>
+          </el-table-column>
+          <el-table-column label="当前硬配额 (G)" min-width="130" align="right">
+            <template #default="{ row }">{{ fmtQuotaGBFromMB(row.quota_hard_mb, true) }}</template>
+          </el-table-column>
+          <el-table-column label="新软配额 (G)" min-width="130">
+            <template #default="{ row }">
+              <el-input-number v-model="row.edit_soft_gb" :min="0" :step="1" :precision="2" style="width: 120px" />
+            </template>
+          </el-table-column>
+          <el-table-column label="新硬配额 (G)" min-width="130">
+            <template #default="{ row }">
+              <el-input-number v-model="row.edit_hard_gb" :min="0" :step="1" :precision="2" style="width: 120px" />
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="120" fixed="right">
+            <template #default="{ row }">
+              <el-button
+                type="primary"
+                size="small"
+                :loading="diskQuotaApplyingUserKey === `${nodeDiskQuotaNodeId}::${row.local_username}`"
+                @click="applyNodeDiskQuotaUser(row)"
+              >
+                应用
+              </el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+
+      <template #footer>
+        <el-button :loading="nodeDiskQuotaApplyingAll" @click="applyNodeDiskQuotaAll">全体应用默认配额</el-button>
+        <el-button @click="nodeDiskQuotaVisible = false">取消</el-button>
+        <el-button type="primary" :loading="nodeDiskQuotaSaving" @click="saveNodeDiskQuotaPolicy">保存策略</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="nodePriceVisible" title="节点单卡积分设置" width="700px">
       <el-form label-width="130px">
         <el-form-item label="节点ID">
@@ -871,9 +1173,19 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { ApiClient, type NodeDetailResp, type NodeRuntimeSnapshot, type NodeSecurityEvent, type NodeStatus, type NodeSuspiciousUser } from "../../lib/api";
+import {
+  ApiClient,
+  type NodeDetailResp,
+  type NodeLocalUser,
+  type NodeRuntimeSnapshot,
+  type NodeSecurityEvent,
+  type NodeSecurityEventSummary,
+  type NodeStatus,
+  type NodeSuspiciousUser,
+} from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
+import { formatServerDateTime } from "../../lib/time";
 import { Monitor, Refresh, Cpu, Coin, Clock, List, Document, User, UserFilled, WarningFilled } from "@element-plus/icons-vue";
 import dayjs from "dayjs";
 
@@ -885,6 +1197,7 @@ const killingProcNodeId = ref("");
 const syncingNodeId = ref("");
 const guardUpdatingNodeId = ref("");
 const pointsUpdatingNodeId = ref("");
+const diskQuotaUpdatingNodeId = ref("");
 const nodeVisibilityVisible = ref(false);
 const nodeVisibilitySaving = ref(false);
 const nodeVisibilityNodeId = ref("");
@@ -897,6 +1210,31 @@ const nodeExclusiveNodeId = ref("");
 const nodeExclusiveEnabled = ref(false);
 const nodeExclusiveUsers = ref<string[]>([]);
 const nodeExclusiveCandidates = ref<string[]>([]);
+const nodePointsPolicyVisible = ref(false);
+const nodePointsPolicySaving = ref(false);
+const nodePointsPolicyNodeId = ref("");
+const nodePointsPolicyEnabled = ref(true);
+const nodePointsThrottleThreshold = ref(0);
+const nodePointsLimitedCPUQuota = ref(40);
+const nodePointsBlockedCPUQuota = ref(20);
+const nodePointsOverdraftMemoryGB = ref(8);
+const nodePointsCPUControlEnabled = ref(true);
+const nodeDiskQuotaVisible = ref(false);
+const nodeDiskQuotaLoading = ref(false);
+const nodeDiskQuotaSaving = ref(false);
+const nodeDiskQuotaApplyingAll = ref(false);
+const diskQuotaApplyingUserKey = ref("");
+const nodeDiskQuotaNodeId = ref("");
+const nodeDiskQuotaInstalled = ref(false);
+const nodeDiskQuotaMounts = ref<string[]>([]);
+const nodeDiskQuotaPreferredMountpoint = ref("");
+const nodeDiskQuotaMountpoint = ref("");
+const nodeDiskQuotaEnabled = ref(false);
+const nodeDiskQuotaDefaultSoftGB = ref(0);
+const nodeDiskQuotaDefaultHardGB = ref(0);
+const nodeDiskQuotaApplyAllOnSave = ref(false);
+type DiskQuotaUserRow = NodeLocalUser & { edit_soft_gb: number; edit_hard_gb: number };
+const nodeDiskQuotaUsers = ref<DiskQuotaUserRow[]>([]);
 const nodePriceVisible = ref(false);
 const nodePriceSaving = ref(false);
 const nodePriceNodeId = ref("");
@@ -906,6 +1244,13 @@ const detailLoading = ref(false);
 const detailError = ref("");
 const detailNodeId = ref("");
 const detailData = ref<NodeDetailResp | null>(null);
+const securityEventsLoading = ref(false);
+const securityRange = ref<string[]>([]);
+const securityEventTypeFilter = ref("");
+const securityShowSummary = ref(false);
+const securityEventsRows = ref<NodeSecurityEvent[]>([]);
+const securityEventSummariesRows = ref<NodeSecurityEventSummary[]>([]);
+const securitySummaryNormalizer = ref("event_type + severity + reason(数字归一化)");
 const lastRefreshAt = ref("");
 const detailLastRefreshAt = ref("");
 const disconnectingUserKey = ref("");
@@ -1016,13 +1361,95 @@ const canManageNodes = computed(() => authState.role === "admin" || (authState.r
 
 function formatTime(time: string): string {
   if (!time) return "-";
-  return dayjs(time).format("YYYY-MM-DD HH:mm:ss");
+  return formatServerDateTime(time);
+}
+
+function buildDefaultSecurityRange(): string[] {
+  const now = dayjs();
+  return [now.subtract(7, "day").format("YYYY-MM-DD HH:mm:ss"), now.format("YYYY-MM-DD HH:mm:ss")];
+}
+
+function currentSecurityRangeParams(): { from?: string; to?: string } {
+  if (securityRange.value.length !== 2) return {};
+  const from = String(securityRange.value[0] || "").trim();
+  const to = String(securityRange.value[1] || "").trim();
+  if (!from || !to) return {};
+  return { from, to };
+}
+
+function applyNodePointsPolicyToRows(nodeId: string, policy: {
+  enabled?: boolean;
+  throttle_threshold_points?: number;
+  limited_cpu_quota_percent?: number;
+  blocked_cpu_quota_percent?: number;
+  overdraft_memory_limit_gb?: number;
+}) {
+  const id = String(nodeId || "").trim();
+  if (!id) return;
+  const row = rows.value.find((x) => String(x.node_id || "").trim() === id);
+  if (row) {
+    if (typeof policy.enabled === "boolean") row.points_intercept_enabled = policy.enabled;
+    if (typeof policy.throttle_threshold_points === "number") row.points_throttle_threshold = policy.throttle_threshold_points;
+    if (typeof policy.limited_cpu_quota_percent === "number") row.points_limited_cpu_quota_percent = policy.limited_cpu_quota_percent;
+    if (typeof policy.blocked_cpu_quota_percent === "number") row.points_blocked_cpu_quota_percent = policy.blocked_cpu_quota_percent;
+    if (typeof policy.overdraft_memory_limit_gb === "number") row.points_overdraft_memory_limit_gb = policy.overdraft_memory_limit_gb;
+  }
+  if (detailData.value && String(detailData.value.node.node_id || "").trim() === id) {
+    if (typeof policy.enabled === "boolean") detailData.value.node.points_intercept_enabled = policy.enabled;
+    if (typeof policy.throttle_threshold_points === "number") detailData.value.node.points_throttle_threshold = policy.throttle_threshold_points;
+    if (typeof policy.limited_cpu_quota_percent === "number") detailData.value.node.points_limited_cpu_quota_percent = policy.limited_cpu_quota_percent;
+    if (typeof policy.blocked_cpu_quota_percent === "number") detailData.value.node.points_blocked_cpu_quota_percent = policy.blocked_cpu_quota_percent;
+    if (typeof policy.overdraft_memory_limit_gb === "number") detailData.value.node.points_overdraft_memory_limit_gb = policy.overdraft_memory_limit_gb;
+  }
+}
+
+function applyNodeDiskQuotaPolicyToRows(nodeId: string, policy: {
+  enabled?: boolean;
+  mountpoint?: string;
+  default_soft_mb?: number;
+  default_hard_mb?: number;
+}) {
+  const id = String(nodeId || "").trim();
+  if (!id) return;
+  const row = rows.value.find((x) => String(x.node_id || "").trim() === id);
+  if (row) {
+    if (typeof policy.enabled === "boolean") row.disk_quota_enabled = policy.enabled;
+    if (typeof policy.mountpoint === "string") row.disk_quota_mountpoint = policy.mountpoint;
+    if (typeof policy.default_soft_mb === "number") row.disk_quota_soft_mb = policy.default_soft_mb;
+    if (typeof policy.default_hard_mb === "number") row.disk_quota_hard_mb = policy.default_hard_mb;
+  }
+  if (detailData.value && String(detailData.value.node.node_id || "").trim() === id) {
+    if (typeof policy.enabled === "boolean") detailData.value.node.disk_quota_enabled = policy.enabled;
+    if (typeof policy.mountpoint === "string") detailData.value.node.disk_quota_mountpoint = policy.mountpoint;
+    if (typeof policy.default_soft_mb === "number") detailData.value.node.disk_quota_soft_mb = policy.default_soft_mb;
+    if (typeof policy.default_hard_mb === "number") detailData.value.node.disk_quota_hard_mb = policy.default_hard_mb;
+  }
 }
 
 function fmtGB(v?: number): string {
   const n = Number(v || 0);
   if (!Number.isFinite(n) || n <= 0) return "-";
   return `${n.toFixed(2)} GB`;
+}
+
+const DISK_QUOTA_MB_PER_GB = 1024;
+
+function mbToQuotaGB(v?: number): number {
+  const n = Number(v ?? 0);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Number((n / DISK_QUOTA_MB_PER_GB).toFixed(2));
+}
+
+function quotaGBToMB(v?: number): number {
+  const n = Number(v ?? 0);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.round(n * DISK_QUOTA_MB_PER_GB);
+}
+
+function fmtQuotaGBFromMB(v?: number, zeroAsUnlimited = false): string {
+  const gb = mbToQuotaGB(v);
+  if (gb <= 0) return zeroAsUnlimited ? "0 (不限额)" : "0";
+  return `${gb.toFixed(2)}`;
 }
 
 function diskUsagePercent(total?: number, used?: number): string {
@@ -1160,8 +1587,26 @@ async function onNodePointsInterceptToggle(row: NodeStatus, enabled: boolean) {
   try {
     const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
     const r = await client.adminSetNodePointsIntercept(nodeId, enabled);
-    row.points_intercept_enabled = !!r.enabled;
-    ElMessage.success(r.enabled ? `节点 ${nodeId} 已开启正常扣分与限速` : `节点 ${nodeId} 已关闭扣分与限速（仅记录使用）`);
+    let syncErr = "";
+    try {
+      await client.adminSyncNodeNow(nodeId);
+    } catch (e: any) {
+      syncErr = e?.message ?? String(e);
+    }
+    applyNodePointsPolicyToRows(nodeId, {
+      enabled: !!r.enabled,
+      throttle_threshold_points: Number(r.throttle_threshold_points ?? row.points_throttle_threshold ?? 0),
+      limited_cpu_quota_percent: Number(r.limited_cpu_quota_percent ?? row.points_limited_cpu_quota_percent ?? 0),
+      blocked_cpu_quota_percent: Number(r.blocked_cpu_quota_percent ?? row.points_blocked_cpu_quota_percent ?? 0),
+    });
+    if (syncErr) {
+      ElMessage.success(r.enabled ? `节点 ${nodeId} 已开启正常扣分与限速（将按轮询自动生效）` : `节点 ${nodeId} 已关闭扣分与限速（仅记录使用）`);
+      ElMessage.warning(`节点 ${nodeId} 立即同步下发失败：${syncErr}`);
+    } else {
+      ElMessage.success(r.enabled ? `节点 ${nodeId} 已开启正常扣分与限速，并已实时同步` : `节点 ${nodeId} 已关闭扣分与限速（仅记录使用），并已实时同步`);
+      await wait(1200);
+      await reload();
+    }
     if (detailVisible.value && detailNodeId.value === nodeId) {
       await loadNodeDetail(nodeId, false);
     }
@@ -1170,6 +1615,260 @@ async function onNodePointsInterceptToggle(row: NodeStatus, enabled: boolean) {
     ElMessage.error(e?.message ?? String(e));
   } finally {
     pointsUpdatingNodeId.value = "";
+  }
+}
+
+async function onNodeDiskQuotaToggle(row: NodeStatus, enabled: boolean) {
+  const nodeId = String(row.node_id || "").trim();
+  if (!nodeId) return;
+  const prev = !!row.disk_quota_enabled;
+  if (enabled === prev) return;
+  diskQuotaUpdatingNodeId.value = nodeId;
+  try {
+    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+    const r = await client.adminSetNodeDiskQuota(nodeId, { enabled });
+    let syncErr = "";
+    try {
+      await client.adminSyncNodeNow(nodeId);
+    } catch (e: any) {
+      syncErr = e?.message ?? String(e);
+    }
+    applyNodeDiskQuotaPolicyToRows(nodeId, {
+      enabled: !!r.enabled,
+      mountpoint: String(r.mountpoint || ""),
+      default_soft_mb: Number(r.default_soft_mb ?? row.disk_quota_soft_mb ?? 0),
+      default_hard_mb: Number(r.default_hard_mb ?? row.disk_quota_hard_mb ?? 0),
+    });
+    if (r.warning) {
+      ElMessage.warning(String(r.warning));
+    }
+    if (syncErr) {
+      ElMessage.success(`节点 ${nodeId} 硬盘配额策略已更新（将按轮询自动生效）`);
+      ElMessage.warning(`节点 ${nodeId} 立即同步下发失败：${syncErr}`);
+    } else {
+      ElMessage.success(`节点 ${nodeId} 硬盘配额策略已更新，并已实时同步`);
+      await wait(1200);
+      await reload();
+    }
+    if (detailVisible.value && detailNodeId.value === nodeId) {
+      await loadNodeDetail(nodeId, false);
+    }
+  } catch (e: any) {
+    row.disk_quota_enabled = prev;
+    ElMessage.error(e?.message ?? String(e));
+  } finally {
+    diskQuotaUpdatingNodeId.value = "";
+  }
+}
+
+function toDiskQuotaUserRows(users: NodeLocalUser[], fallbackSoftGB: number, fallbackHardGB: number): DiskQuotaUserRow[] {
+  return (users || []).map((u) => {
+    const softGB = u.quota_soft_mb != null ? mbToQuotaGB(u.quota_soft_mb) : Number(fallbackSoftGB || 0);
+    const hardGB = u.quota_hard_mb != null ? mbToQuotaGB(u.quota_hard_mb) : Number(fallbackHardGB || 0);
+    return {
+      ...u,
+      edit_soft_gb: Number.isFinite(softGB) ? softGB : 0,
+      edit_hard_gb: Number.isFinite(hardGB) ? hardGB : 0,
+    };
+  });
+}
+
+async function loadNodeDiskQuotaDialog(nodeId: string, withLoading = true) {
+  const id = String(nodeId || "").trim();
+  if (!id) return;
+  if (withLoading) nodeDiskQuotaLoading.value = true;
+  try {
+    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+    const r = await client.adminNodeDiskQuota(id);
+    nodeDiskQuotaInstalled.value = !!r.quota_installed;
+    nodeDiskQuotaMounts.value = Array.isArray(r.quota_mounts) ? r.quota_mounts : [];
+    nodeDiskQuotaPreferredMountpoint.value = String(r.preferred_mountpoint || "");
+    nodeDiskQuotaEnabled.value = !!r.enabled;
+    nodeDiskQuotaMountpoint.value = String(r.mountpoint || r.effective_mountpoint || nodeDiskQuotaPreferredMountpoint.value || "");
+    nodeDiskQuotaDefaultSoftGB.value = mbToQuotaGB(Number(r.effective_soft_mb ?? r.default_soft_mb ?? 0));
+    nodeDiskQuotaDefaultHardGB.value = mbToQuotaGB(Number(r.effective_hard_mb ?? r.default_hard_mb ?? 0));
+    nodeDiskQuotaUsers.value = toDiskQuotaUserRows(
+      Array.isArray(r.users) ? r.users : [],
+      nodeDiskQuotaDefaultSoftGB.value,
+      nodeDiskQuotaDefaultHardGB.value,
+    );
+  } catch (e: any) {
+    ElMessage.error(e?.message ?? String(e));
+    throw e;
+  } finally {
+    if (withLoading) nodeDiskQuotaLoading.value = false;
+  }
+}
+
+async function openNodeDiskQuotaDialog(row: NodeStatus) {
+  const nodeId = String(row.node_id || "").trim();
+  if (!nodeId) return;
+  nodeDiskQuotaNodeId.value = nodeId;
+  nodeDiskQuotaApplyAllOnSave.value = false;
+  nodeDiskQuotaVisible.value = true;
+  nodeDiskQuotaSaving.value = false;
+  nodeDiskQuotaApplyingAll.value = false;
+  diskQuotaApplyingUserKey.value = "";
+  try {
+    await loadNodeDiskQuotaDialog(nodeId, true);
+  } catch {
+    nodeDiskQuotaVisible.value = false;
+  }
+}
+
+function validateDiskQuotaInput(softGB: number, hardGB: number): string {
+  if (!Number.isFinite(softGB) || softGB < 0) return "软配额（G）必须是非负数";
+  if (!Number.isFinite(hardGB) || hardGB < 0) return "硬配额（G）必须是非负数";
+  if (softGB > 0 && hardGB > 0 && hardGB < softGB) return "硬配额（G）不能小于软配额（G）";
+  return "";
+}
+
+async function saveNodeDiskQuotaPolicy() {
+  const nodeId = String(nodeDiskQuotaNodeId.value || "").trim();
+  if (!nodeId) return;
+  const errMsg = validateDiskQuotaInput(Number(nodeDiskQuotaDefaultSoftGB.value), Number(nodeDiskQuotaDefaultHardGB.value));
+  if (errMsg) {
+    ElMessage.error(errMsg);
+    return;
+  }
+  if (!String(nodeDiskQuotaMountpoint.value || "").trim() && nodeDiskQuotaEnabled.value) {
+    ElMessage.error("请先选择配额分区（/home 或 /）");
+    return;
+  }
+  nodeDiskQuotaSaving.value = true;
+  try {
+    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+    const r = await client.adminSetNodeDiskQuota(nodeId, {
+      enabled: !!nodeDiskQuotaEnabled.value,
+      mountpoint: String(nodeDiskQuotaMountpoint.value || "").trim(),
+      default_soft_mb: quotaGBToMB(Number(nodeDiskQuotaDefaultSoftGB.value)),
+      default_hard_mb: quotaGBToMB(Number(nodeDiskQuotaDefaultHardGB.value)),
+      apply_to_all: !!nodeDiskQuotaApplyAllOnSave.value,
+    });
+    let syncErr = "";
+    try {
+      await client.adminSyncNodeNow(nodeId);
+    } catch (e: any) {
+      syncErr = e?.message ?? String(e);
+    }
+    applyNodeDiskQuotaPolicyToRows(nodeId, {
+      enabled: !!r.enabled,
+      mountpoint: String(r.mountpoint || nodeDiskQuotaMountpoint.value || ""),
+      default_soft_mb: Number(r.default_soft_mb ?? quotaGBToMB(nodeDiskQuotaDefaultSoftGB.value)),
+      default_hard_mb: Number(r.default_hard_mb ?? quotaGBToMB(nodeDiskQuotaDefaultHardGB.value)),
+    });
+    if (r.warning) {
+      ElMessage.warning(String(r.warning));
+    }
+    if (syncErr) {
+      ElMessage.success("节点硬盘配额策略已保存（将按轮询自动生效）");
+      ElMessage.warning(`节点 ${nodeId} 立即同步下发失败：${syncErr}`);
+    } else {
+      const applied = Number(r.applied_users || 0);
+      ElMessage.success(applied > 0 ? `节点硬盘配额策略已保存，并已实时同步（已应用 ${applied} 个用户）` : "节点硬盘配额策略已保存，并已实时同步");
+      await wait(1200);
+    }
+    await reload();
+    if (detailVisible.value && detailNodeId.value === nodeId) {
+      await loadNodeDetail(nodeId, false);
+    }
+    await loadNodeDiskQuotaDialog(nodeId, false);
+  } catch (e: any) {
+    ElMessage.error(e?.message ?? String(e));
+  } finally {
+    nodeDiskQuotaSaving.value = false;
+  }
+}
+
+async function applyNodeDiskQuotaAll() {
+  const nodeId = String(nodeDiskQuotaNodeId.value || "").trim();
+  if (!nodeId) return;
+  const errMsg = validateDiskQuotaInput(Number(nodeDiskQuotaDefaultSoftGB.value), Number(nodeDiskQuotaDefaultHardGB.value));
+  if (errMsg) {
+    ElMessage.error(errMsg);
+    return;
+  }
+  if (!String(nodeDiskQuotaMountpoint.value || "").trim()) {
+    ElMessage.error("请先选择配额分区");
+    return;
+  }
+  nodeDiskQuotaApplyingAll.value = true;
+  try {
+    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+    const r = await client.adminApplyNodeDiskQuota(nodeId, {
+      all_users: true,
+      mountpoint: String(nodeDiskQuotaMountpoint.value || "").trim(),
+      soft_mb: quotaGBToMB(Number(nodeDiskQuotaDefaultSoftGB.value)),
+      hard_mb: quotaGBToMB(Number(nodeDiskQuotaDefaultHardGB.value)),
+    });
+    let syncErr = "";
+    try {
+      await client.adminSyncNodeNow(nodeId);
+    } catch (e: any) {
+      syncErr = e?.message ?? String(e);
+    }
+    if (syncErr) {
+      ElMessage.success(`已下发全体配额（${Number(r.applied_users || 0)} 个用户），将按轮询自动生效`);
+      ElMessage.warning(`节点 ${nodeId} 立即同步下发失败：${syncErr}`);
+    } else {
+      ElMessage.success(`已下发全体配额（${Number(r.applied_users || 0)} 个用户）并实时同步`);
+      await wait(1200);
+    }
+    await loadNodeDiskQuotaDialog(nodeId, false);
+    await reload();
+    if (detailVisible.value && detailNodeId.value === nodeId) {
+      await loadNodeDetail(nodeId, false);
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.message ?? String(e));
+  } finally {
+    nodeDiskQuotaApplyingAll.value = false;
+  }
+}
+
+async function applyNodeDiskQuotaUser(row: DiskQuotaUserRow) {
+  const nodeId = String(nodeDiskQuotaNodeId.value || "").trim();
+  const local = String(row.local_username || "").trim();
+  if (!nodeId || !local) return;
+  const softGB = Number(row.edit_soft_gb || 0);
+  const hardGB = Number(row.edit_hard_gb || 0);
+  const errMsg = validateDiskQuotaInput(softGB, hardGB);
+  if (errMsg) {
+    ElMessage.error(errMsg);
+    return;
+  }
+  if (!String(nodeDiskQuotaMountpoint.value || "").trim()) {
+    ElMessage.error("请先选择配额分区");
+    return;
+  }
+  diskQuotaApplyingUserKey.value = `${nodeId}::${local}`;
+  try {
+    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+    await client.adminApplyNodeDiskQuota(nodeId, {
+      mountpoint: String(nodeDiskQuotaMountpoint.value || "").trim(),
+      users: [{ local_username: local, soft_mb: quotaGBToMB(softGB), hard_mb: quotaGBToMB(hardGB) }],
+    });
+    let syncErr = "";
+    try {
+      await client.adminSyncNodeNow(nodeId);
+    } catch (e: any) {
+      syncErr = e?.message ?? String(e);
+    }
+    if (syncErr) {
+      ElMessage.success(`用户 ${local} 配额已下发（将按轮询自动生效）`);
+      ElMessage.warning(`节点 ${nodeId} 立即同步下发失败：${syncErr}`);
+    } else {
+      ElMessage.success(`用户 ${local} 配额已下发并实时同步`);
+      await wait(1200);
+    }
+    await loadNodeDiskQuotaDialog(nodeId, false);
+    if (detailVisible.value && detailNodeId.value === nodeId) {
+      await loadNodeDetail(nodeId, false);
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.message ?? String(e));
+  } finally {
+    diskQuotaApplyingUserKey.value = "";
   }
 }
 
@@ -1260,6 +1959,96 @@ async function saveNodeExclusive() {
     ElMessage.error(e?.message ?? String(e));
   } finally {
     nodeExclusiveSaving.value = false;
+  }
+}
+
+async function openNodePointsPolicyDialog(row: NodeStatus) {
+  const nodeId = String(row.node_id || "").trim();
+  if (!nodeId) return;
+  nodePointsPolicyNodeId.value = nodeId;
+  nodePointsPolicyVisible.value = true;
+  nodePointsPolicySaving.value = false;
+  nodePointsPolicyEnabled.value = !!row.points_intercept_enabled;
+  nodePointsThrottleThreshold.value = Number(row.points_throttle_threshold ?? 0);
+  nodePointsLimitedCPUQuota.value = Number(row.points_limited_cpu_quota_percent ?? 40);
+  nodePointsBlockedCPUQuota.value = Number(row.points_blocked_cpu_quota_percent ?? 20);
+  nodePointsOverdraftMemoryGB.value = Number(row.points_overdraft_memory_limit_gb ?? 8);
+  nodePointsCPUControlEnabled.value = true;
+  try {
+    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+    const r = await client.adminNodePointsIntercept(nodeId);
+    nodePointsPolicyEnabled.value = !!r.enabled;
+    nodePointsThrottleThreshold.value = Number(r.effective_threshold_points ?? r.throttle_threshold_points ?? 0);
+    nodePointsLimitedCPUQuota.value = Number(r.effective_limited_cpu_quota ?? r.limited_cpu_quota_percent ?? 40);
+    nodePointsBlockedCPUQuota.value = Number(r.effective_blocked_cpu_quota ?? r.blocked_cpu_quota_percent ?? 20);
+    nodePointsOverdraftMemoryGB.value = Number(
+      r.effective_overdraft_memory_gb ?? r.overdraft_memory_limit_gb ?? r.default_overdraft_memory_gb ?? 8,
+    );
+    nodePointsCPUControlEnabled.value = r.cpu_control_enabled_on_server !== false;
+  } catch (e: any) {
+    ElMessage.error(e?.message ?? String(e));
+    nodePointsPolicyVisible.value = false;
+  }
+}
+
+async function saveNodePointsPolicy() {
+  const nodeId = String(nodePointsPolicyNodeId.value || "").trim();
+  if (!nodeId) return;
+  if (!Number.isFinite(nodePointsThrottleThreshold.value) || nodePointsThrottleThreshold.value < 0) {
+    ElMessage.error("低积分限速阈值必须是非负数");
+    return;
+  }
+  if (!Number.isFinite(nodePointsLimitedCPUQuota.value) || nodePointsLimitedCPUQuota.value < 1 || nodePointsLimitedCPUQuota.value > 100) {
+    ElMessage.error("低积分限速比例必须在 1~100 之间");
+    return;
+  }
+  if (!Number.isFinite(nodePointsBlockedCPUQuota.value) || nodePointsBlockedCPUQuota.value < 1 || nodePointsBlockedCPUQuota.value > 100) {
+    ElMessage.error("欠费强限速比例必须在 1~100 之间");
+    return;
+  }
+  if (!Number.isFinite(nodePointsOverdraftMemoryGB.value) || nodePointsOverdraftMemoryGB.value < 0) {
+    ElMessage.error("欠费内存上限必须是非负数（0 表示关闭）");
+    return;
+  }
+  nodePointsPolicySaving.value = true;
+  try {
+    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+    const r = await client.adminSetNodePointsIntercept(nodeId, {
+      enabled: !!nodePointsPolicyEnabled.value,
+      throttle_threshold_points: Number(nodePointsThrottleThreshold.value),
+      limited_cpu_quota_percent: Number(nodePointsLimitedCPUQuota.value),
+      blocked_cpu_quota_percent: Number(nodePointsBlockedCPUQuota.value),
+      overdraft_memory_limit_gb: Number(nodePointsOverdraftMemoryGB.value),
+    });
+    let syncErr = "";
+    try {
+      await client.adminSyncNodeNow(nodeId);
+    } catch (e: any) {
+      syncErr = e?.message ?? String(e);
+    }
+    applyNodePointsPolicyToRows(nodeId, {
+      enabled: !!r.enabled,
+      throttle_threshold_points: Number(r.throttle_threshold_points ?? nodePointsThrottleThreshold.value),
+      limited_cpu_quota_percent: Number(r.limited_cpu_quota_percent ?? nodePointsLimitedCPUQuota.value),
+      blocked_cpu_quota_percent: Number(r.blocked_cpu_quota_percent ?? nodePointsBlockedCPUQuota.value),
+      overdraft_memory_limit_gb: Number(r.overdraft_memory_limit_gb ?? nodePointsOverdraftMemoryGB.value),
+    });
+    nodePointsPolicyVisible.value = false;
+    if (syncErr) {
+      ElMessage.success("节点积分限速策略已保存（将按轮询自动生效）");
+      ElMessage.warning(`节点 ${nodeId} 立即同步下发失败：${syncErr}`);
+    } else {
+      ElMessage.success("节点积分限速策略已保存，并已实时同步到计算节点");
+      await wait(1200);
+    }
+    await reload();
+    if (detailVisible.value && detailNodeId.value === nodeId) {
+      await loadNodeDetail(nodeId, false);
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.message ?? String(e));
+  } finally {
+    nodePointsPolicySaving.value = false;
   }
 }
 
@@ -1382,7 +2171,7 @@ async function showSecurityEventDetail(row: NodeSecurityEvent) {
 }
 
 async function showSuspiciousDetail(row: NodeSuspiciousUser) {
-  const events = (detailData.value?.security_events || [])
+  const events = (securityEventsRows.value || [])
     .filter((x) => (x.related_usernames || []).includes(row.username))
     .slice(0, 10);
   const lines = events.map((x) => `${formatTime(x.created_at)} | ${x.event_type} | ${x.reason}`);
@@ -1398,6 +2187,48 @@ async function showSuspiciousDetail(row: NodeSuspiciousUser) {
     dangerouslyUseHTMLString: true,
     confirmButtonText: "关闭",
   });
+}
+
+async function loadNodeSecurityEvents(nodeId: string, withLoading = true) {
+  const id = String(nodeId || "").trim();
+  if (!id) return;
+  if (withLoading) securityEventsLoading.value = true;
+  try {
+    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+    const { from, to } = currentSecurityRangeParams();
+    const r = await client.adminNodeSecurityEvents(id, {
+      eventType: securityEventTypeFilter.value,
+      limit: 600,
+      summaryLimit: 300,
+      from,
+      to,
+    });
+    securityEventsRows.value = Array.isArray(r.events) ? r.events : [];
+    securityEventSummariesRows.value = Array.isArray(r.event_summaries) ? r.event_summaries : [];
+    securitySummaryNormalizer.value = String(r.summary_normalizer || "event_type + severity + reason(数字归一化)");
+    if (detailData.value && String(detailData.value.node.node_id || "").trim() === id) {
+      detailData.value.security_events = securityEventsRows.value;
+      if (Array.isArray(r.suspicious_users)) {
+        detailData.value.suspicious_users = r.suspicious_users;
+      }
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.message ?? String(e));
+  } finally {
+    if (withLoading) securityEventsLoading.value = false;
+  }
+}
+
+async function queryNodeSecurityEvents() {
+  if (!detailNodeId.value) return;
+  await loadNodeSecurityEvents(detailNodeId.value, true);
+}
+
+async function resetNodeSecurityFilters() {
+  securityRange.value = buildDefaultSecurityRange();
+  securityEventTypeFilter.value = "";
+  if (!detailNodeId.value) return;
+  await loadNodeSecurityEvents(detailNodeId.value, true);
 }
 
 async function blacklistSuspiciousUser(row: NodeSuspiciousUser) {
@@ -1437,8 +2268,11 @@ async function loadNodeDetail(nodeID: string, withLoading = true) {
   try {
     const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
     detailData.value = await client.adminNodeDetail(nodeID, { minutes: 180, limit: 360 });
+    securityEventsRows.value = detailData.value.security_events || [];
+    securityEventSummariesRows.value = [];
     detailLastRefreshAt.value = new Date().toISOString();
     await refreshSSHUserMappings(nodeID, detailData.value.latest.ssh_users || []);
+    await loadNodeSecurityEvents(nodeID, false);
   } catch (e: any) {
     detailError.value = e?.message ?? String(e);
   } finally {
@@ -1468,6 +2302,9 @@ function startDetailAutoRefresh() {
 }
 
 async function openNodeDetail(row: NodeStatus) {
+  securityRange.value = buildDefaultSecurityRange();
+  securityEventTypeFilter.value = "";
+  securityShowSummary.value = false;
   detailVisible.value = true;
   await loadNodeDetail(row.node_id, true);
   startDetailAutoRefresh();
@@ -1476,6 +2313,9 @@ async function openNodeDetail(row: NodeStatus) {
 async function openNodeDetailById(nodeID: string) {
   const id = String(nodeID || "").trim();
   if (!id) return;
+  securityRange.value = buildDefaultSecurityRange();
+  securityEventTypeFilter.value = "";
+  securityShowSummary.value = false;
   const row = rows.value.find((x) => String(x.node_id || "").trim() === id);
   if (row) {
     await openNodeDetail(row);
@@ -1512,11 +2352,13 @@ async function disconnectAllSSH(row: NodeStatus) {
   }
 }
 
-async function killAllUserProcesses(row: NodeStatus) {
-  const nodeId = row.node_id;
+async function killAllUserProcessesByNode(nodeId: string, localUserCount?: number) {
+  nodeId = String(nodeId || "").trim();
+  if (!nodeId) return;
+  const countText = typeof localUserCount === "number" && localUserCount >= 0 ? `\n节点本地用户数：${localUserCount}` : "";
   try {
     await ElMessageBox.confirm(
-      `确认清除节点 ${nodeId} 的全部用户进程吗？\n该操作会强制结束节点上所有普通节点用户进程，仅用于紧急清理，避免绕过注册审计。`,
+      `确认强制清除节点 ${nodeId} 的全部用户进程吗？\n覆盖范围：节点内全部本地用户（含未上线用户）。${countText}\n该操作会立即发送 KILL 指令，请仅在紧急情况下执行。`,
       "二次确认",
       { type: "warning", confirmButtonText: "确认执行", cancelButtonText: "取消" },
     );
@@ -1538,6 +2380,19 @@ async function killAllUserProcesses(row: NodeStatus) {
   } finally {
     killingProcNodeId.value = "";
   }
+}
+
+async function killAllUserProcesses(row: NodeStatus) {
+  const nodeId = String(row.node_id || "").trim();
+  const localUserCount = detailVisible.value && detailNodeId.value === nodeId ? (detailData.value?.local_users || []).length : undefined;
+  await killAllUserProcessesByNode(nodeId, localUserCount);
+}
+
+async function killAllDetailUsersProcesses() {
+  const nodeId = String(detailNodeId.value || "").trim();
+  if (!nodeId) return;
+  const localUserCount = (detailData.value?.local_users || []).length;
+  await killAllUserProcessesByNode(nodeId, localUserCount);
 }
 
 async function syncNodeNow(nodeId: string) {
@@ -1725,6 +2580,41 @@ onBeforeUnmount(() => {
   color: #b45309;
 }
 
+.security-filter-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 8px 0 12px;
+}
+
+.security-normalizer-alert {
+  margin-bottom: 10px;
+}
+
+.points-policy-help {
+  width: 100%;
+}
+
+.disk-quota-alert {
+  width: 100%;
+}
+
+.disk-quota-mounts {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.points-policy-help-lines {
+  display: grid;
+  gap: 4px;
+  margin-top: 4px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
@@ -1910,6 +2800,13 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+}
+.section-inline-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 .section-inline-title :deep(svg) {
   width: 16px;

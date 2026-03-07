@@ -25,13 +25,14 @@
       </template>
       <el-form inline>
         <el-form-item label="用户名 *"><el-input v-model="createForm.username" /></el-form-item>
-        <el-form-item label="初始密码 *"><el-input v-model="createForm.password" type="password" show-password /></el-form-item>
+        <el-form-item label="初始密码 *"><el-input v-model="createForm.password" type="password" show-password placeholder="请设置强密码" /></el-form-item>
         <el-form-item><el-checkbox v-model="createForm.can_view_board">可看运营看板</el-checkbox></el-form-item>
         <el-form-item><el-checkbox v-model="createForm.can_view_nodes">可看节点状态</el-checkbox></el-form-item>
         <el-form-item><el-checkbox v-model="createForm.can_manage_nodes">可修改节点状态</el-checkbox></el-form-item>
         <el-form-item><el-checkbox v-model="createForm.can_review_requests">可做注册审核</el-checkbox></el-form-item>
         <el-form-item><el-button type="primary" @click="create">新增高级用户</el-button></el-form-item>
       </el-form>
+      <div class="tips">密码要求：{{ passwordRuleText }}</div>
       <div class="tips">要求：该用户名不能与现有平台账号/管理员/高级用户重名。</div>
     </el-card>
 
@@ -116,6 +117,7 @@ import { ApiClient, type AdminUserDetail, type PowerUser } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
 import { Connection, Plus, UserFilled } from "@element-plus/icons-vue";
+import { STRONG_PASSWORD_RULE_TEXT, checkStrongPassword } from "../../lib/passwordPolicy";
 
 const loading = ref(false);
 const error = ref("");
@@ -123,6 +125,7 @@ const success = ref("");
 const rows = ref<PowerUser[]>([]);
 const allPlatformUsers = ref<AdminUserDetail[]>([]);
 const platformKeyword = ref("");
+const passwordRuleText = STRONG_PASSWORD_RULE_TEXT;
 const createForm = reactive({
   username: "",
   password: "",
@@ -179,6 +182,11 @@ function onPlatformSearch(query: string) {
 async function create() {
   error.value = "";
   success.value = "";
+  const pwdErr = checkStrongPassword(createForm.password);
+  if (pwdErr) {
+    error.value = pwdErr;
+    return;
+  }
   try {
     const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
     await client.adminCreatePowerUser({

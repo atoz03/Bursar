@@ -13,8 +13,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const hardInterruptBalanceThreshold = -10.0
-
 type adminPointsAdjustReq struct {
 	Username string  `json:"username"`
 	Delta    float64 `json:"delta"`
@@ -28,6 +26,12 @@ type adminPointsBatchGrantReq struct {
 	Reason string  `json:"reason"`
 }
 
+type adminPointsBatchAdjustUsersReq struct {
+	Amount    float64  `json:"amount"`
+	Reason    string   `json:"reason"`
+	Usernames []string `json:"usernames"`
+}
+
 type adminPointsSpecialRuleReq struct {
 	Username      string  `json:"username"`
 	MonthlyPoints float64 `json:"monthly_points"`
@@ -39,10 +43,11 @@ type adminPointsMonthlyResetReq struct {
 }
 
 type adminPointsMonthlyConfigReq struct {
-	DoctorPoints   float64 `json:"doctor_points"`
-	MasterPoints   float64 `json:"master_points"`
-	OtherPoints    float64 `json:"other_points"`
-	CarryoverLimit float64 `json:"carryover_limit"`
+	DoctorPoints      float64 `json:"doctor_points"`
+	MasterPoints      float64 `json:"master_points"`
+	OtherPoints       float64 `json:"other_points"`
+	CarryoverLimit    float64 `json:"carryover_limit"`
+	MaxOverdraftLimit float64 `json:"max_overdraft_limit"`
 }
 
 type pointsMonthlyResetSummary struct {
@@ -53,6 +58,14 @@ type pointsMonthlyResetSummary struct {
 	ChangedUsers      int                    `json:"changed_users"`
 	InterruptedUsers  int                    `json:"interrupted_users"`
 	InterruptedTarget int                    `json:"interrupted_targets"`
+	QuotaRefreshUsers int                    `json:"quota_refresh_users"`
+	QuotaRefreshNodes int                    `json:"quota_refresh_nodes"`
+	QuotaRefreshErrs  int                    `json:"quota_refresh_errors"`
+}
+
+type billingUserTarget struct {
+	NodeID        string
+	LocalUsername string
 }
 
 func monthlyBasePointsByStudentID(studentID string, cfg MonthlyPointsConfig) float64 {
@@ -66,29 +79,48 @@ func monthlyBasePointsByStudentID(studentID string, cfg MonthlyPointsConfig) flo
 	return cfg.OtherPoints
 }
 
-func (s *Server) enqueueHardInterruptForBillingUser(ctx context.Context, billingUsername string, reason string) (int, error) {
+func killAllProcessBalanceThreshold(maxOverdraftLimit float64) float64 {
+	limit := normalizeMonthlyMaxOverdraftLimit(maxOverdraftLimit)
+	return -limit
+}
+
+func isOverdraftExceeded(balance float64, maxOverdraftLimit float64) bool {
+	return balance < killAllProcessBalanceThreshold(maxOverdraftLimit)
+}
+
+func shouldTriggerOverdraftInterrupt(prevBalance float64, nextBalance float64, maxOverdraftLimit float64) bool {
+	return !isOverdraftExceeded(prevBalance, maxOverdraftLimit) && isOverdraftExceeded(nextBalance, maxOverdraftLimit)
+}
+
+func (s *Server) getMonthlyMaxOverdraftLimit(ctx context.Context) (float64, error) {
+	cfg, err := s.store.GetMonthlyPointsConfig(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return normalizeMonthlyMaxOverdraftLimit(cfg.MaxOverdraftLimit), nil
+}
+
+func (s *Server) listBillingUserTargets(ctx context.Context, billingUsername string) ([]billingUserTarget, error) {
 	billingUsername = strings.TrimSpace(billingUsername)
 	if billingUsername == "" {
-		return 0, errors.New("billing_username 不能为空")
+		return nil, errors.New("billing_username 不能为空")
 	}
-	reason = strings.TrimSpace(reason)
-	if reason == "" {
-		reason = fmt.Sprintf("余额低于 %.2f 积分，强制中断所有进程", hardInterruptBalanceThreshold)
-	}
-
-	targets := map[string]struct{}{}
+	targets := map[string]billingUserTarget{}
 	add := func(nodeID string, localUsername string) {
 		nodeID = strings.TrimSpace(nodeID)
 		localUsername = strings.TrimSpace(localUsername)
 		if nodeID == "" || localUsername == "" {
 			return
 		}
-		targets[nodeID+"|"+localUsername] = struct{}{}
+		targets[nodeID+"|"+localUsername] = billingUserTarget{
+			NodeID:        nodeID,
+			LocalUsername: localUsername,
+		}
 	}
 
 	accounts, err := s.store.ListUserNodeAccountsByBilling(ctx, billingUsername, 5000)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return 0, err
+		return nil, err
 	}
 	for _, acc := range accounts {
 		add(acc.NodeID, acc.LocalUsername)
@@ -98,7 +130,7 @@ func (s *Server) enqueueHardInterruptForBillingUser(ctx context.Context, billing
 	if len(targets) == 0 {
 		nodes, err := s.store.ListNodes(ctx, 5000)
 		if err != nil {
-			return 0, err
+			return nil, err
 		}
 		for _, n := range nodes {
 			add(n.NodeID, billingUsername)
@@ -106,7 +138,7 @@ func (s *Server) enqueueHardInterruptForBillingUser(ctx context.Context, billing
 	}
 
 	if len(targets) == 0 {
-		return 0, nil
+		return nil, nil
 	}
 
 	keys := make([]string, 0, len(targets))
@@ -114,23 +146,36 @@ func (s *Server) enqueueHardInterruptForBillingUser(ctx context.Context, billing
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-
+	out := make([]billingUserTarget, 0, len(keys))
 	for _, k := range keys {
-		parts := strings.SplitN(k, "|", 2)
-		nodeID := parts[0]
-		localUsername := parts[1]
-		s.enqueueNodeAction(nodeID, Action{
-			Type:     "block_user",
-			Username: localUsername,
-			Reason:   reason,
-		})
+		out = append(out, targets[k])
+	}
+	return out, nil
+}
+
+func (s *Server) enqueueHardInterruptForBillingUser(ctx context.Context, billingUsername string, maxOverdraftLimit float64, reason string) (int, error) {
+	billingUsername = strings.TrimSpace(billingUsername)
+	if billingUsername == "" {
+		return 0, errors.New("billing_username 不能为空")
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = fmt.Sprintf("欠费超过 %.2f 积分上限，强制中断所有进程", normalizeMonthlyMaxOverdraftLimit(maxOverdraftLimit))
+	}
+	targets, err := s.listBillingUserTargets(ctx, billingUsername)
+	if err != nil {
+		return 0, err
+	}
+	for _, t := range targets {
+		nodeID := t.NodeID
+		localUsername := t.LocalUsername
 		s.enqueueNodeAction(nodeID, Action{
 			Type:     "kill_all_processes",
 			Username: localUsername,
 			Reason:   reason,
 		})
 	}
-	return len(keys), nil
+	return len(targets), nil
 }
 
 func (s *Server) applyMonthlyPointsReset(ctx context.Context, runBy string, force bool) (pointsMonthlyResetSummary, error) {
@@ -160,7 +205,15 @@ func (s *Server) applyMonthlyPointsReset(ctx context.Context, runBy string, forc
 	out.TotalUsers = len(users)
 
 	interruptUsers := map[string]struct{}{}
+	stateRecheckUsers := map[string]float64{}
 	changedUsers := 0
+	monthlyCfg := MonthlyPointsConfig{
+		DoctorPoints:      200,
+		MasterPoints:      100,
+		OtherPoints:       50,
+		CarryoverLimit:    500,
+		MaxOverdraftLimit: 500,
+	}
 	method := "monthly_reset"
 	carryMethod := "monthly_carryover_reset"
 	if err := s.store.WithTx(ctx, func(tx *sql.Tx) error {
@@ -175,10 +228,11 @@ func (s *Server) applyMonthlyPointsReset(ctx context.Context, runBy string, forc
 			}
 		}
 
-		monthlyCfg, err := s.store.LoadMonthlyPointsConfigTx(ctx, tx)
+		loadedCfg, err := s.store.LoadMonthlyPointsConfigTx(ctx, tx)
 		if err != nil {
 			return err
 		}
+		monthlyCfg = loadedCfg
 		specialMap, err := s.store.LoadSpecialMonthlyPointsMapTx(ctx, tx)
 		if err != nil {
 			return err
@@ -213,8 +267,9 @@ func (s *Server) applyMonthlyPointsReset(ctx context.Context, runBy string, forc
 			}
 			if deltaGeneral != 0 || deltaCarryover != 0 {
 				changedUsers++
+				stateRecheckUsers[u.Username] = res.User.Balance + res.User.CarryoverBalance
 			}
-			if res.User.Balance+res.User.CarryoverBalance <= hardInterruptBalanceThreshold {
+			if shouldTriggerOverdraftInterrupt(res.PrevEffectiveBalance, res.EffectiveBalance, monthlyCfg.MaxOverdraftLimit) {
 				interruptUsers[u.Username] = struct{}{}
 			}
 		}
@@ -233,8 +288,14 @@ func (s *Server) applyMonthlyPointsReset(ctx context.Context, runBy string, forc
 
 	out.ChangedUsers = changedUsers
 	interruptedTargets := 0
+	killThreshold := killAllProcessBalanceThreshold(monthlyCfg.MaxOverdraftLimit)
 	for username := range interruptUsers {
-		n, err := s.enqueueHardInterruptForBillingUser(ctx, username, fmt.Sprintf("月初重置后余额低于 %.2f 积分，强制中断", hardInterruptBalanceThreshold))
+		n, err := s.enqueueHardInterruptForBillingUser(
+			ctx,
+			username,
+			monthlyCfg.MaxOverdraftLimit,
+			fmt.Sprintf("月初重置后余额低于 %.2f 积分，已超过每月最大欠费上限，强制中断", killThreshold),
+		)
 		if err != nil {
 			log.Printf("月初重置后强制中断失败 username=%s err=%v", username, err)
 			continue
@@ -245,6 +306,44 @@ func (s *Server) applyMonthlyPointsReset(ctx context.Context, runBy string, forc
 		}
 	}
 	out.InterruptedTarget = interruptedTargets
+	if len(stateRecheckUsers) > 0 {
+		usernames := make([]string, 0, len(stateRecheckUsers))
+		for username := range stateRecheckUsers {
+			usernames = append(usernames, username)
+		}
+		sort.Strings(usernames)
+		for _, username := range usernames {
+			n, err := s.refreshCPUQuotaForBillingUser(
+				ctx,
+				username,
+				stateRecheckUsers[username],
+				fmt.Sprintf("月初重置后积分调整，重算限速（%s）", username),
+			)
+			if err != nil {
+				out.QuotaRefreshErrs++
+				log.Printf("月初重置后刷新 CPU 限速失败 username=%s err=%v", username, err)
+			} else if n > 0 {
+				out.QuotaRefreshUsers++
+				out.QuotaRefreshNodes += n
+			}
+			if _, err := s.refreshGPUAccessForBillingUser(
+				ctx,
+				username,
+				stateRecheckUsers[username],
+				fmt.Sprintf("月初重置后积分调整，同步 GPU 限制（%s）", username),
+			); err != nil {
+				log.Printf("月初重置后刷新 GPU 限制失败 username=%s err=%v", username, err)
+			}
+			if _, err := s.refreshMemoryLimitForBillingUser(
+				ctx,
+				username,
+				stateRecheckUsers[username],
+				fmt.Sprintf("月初重置后积分调整，同步内存限额（%s）", username),
+			); err != nil {
+				log.Printf("月初重置后刷新内存限额失败 username=%s err=%v", username, err)
+			}
+		}
+	}
 
 	run, exists, err := s.store.GetMonthlyPointsResetRun(ctx, monthKey)
 	if err == nil && exists {
@@ -281,13 +380,23 @@ func (s *Server) StartPointsMonthlyResetScheduler(ctx context.Context) {
 
 func (s *Server) handleAdminPointsUsers(c *gin.Context) {
 	keyword := strings.TrimSpace(c.Query("keyword"))
+	keywordField := normalizePointsUsersKeywordField(c.Query("keyword_field"))
 	limit := parseLimit(c.Query("limit"), 1000, 5000)
-	rows, err := s.store.ListPointsUsers(c.Request.Context(), keyword, limit)
+	rows, err := s.store.ListPointsUsers(c.Request.Context(), keyword, keywordField, limit)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(200, gin.H{"users": rows})
+}
+
+func normalizePointsUsersKeywordField(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "username", "student_id", "real_name", "advisor", "email", "phone":
+		return strings.ToLower(strings.TrimSpace(v))
+	default:
+		return "all"
+	}
 }
 
 func (s *Server) handleAdminPointsRecords(c *gin.Context) {
@@ -402,17 +511,72 @@ func (s *Server) handleAdminPointsAdjust(c *gin.Context) {
 	}
 
 	interruptTargets := 0
-	if (req.Scope == "general" || req.Scope == "carryover") && res.User.Balance+carryoverBalance <= hardInterruptBalanceThreshold {
+	maxOverdraftLimit := 0.0
+	if req.Scope == "general" || req.Scope == "carryover" {
+		limit, err := s.getMonthlyMaxOverdraftLimit(c.Request.Context())
+		if err != nil {
+			c.JSON(500, gin.H{"error": "积分已调整，但读取欠费上限失败: " + err.Error()})
+			return
+		}
+		maxOverdraftLimit = limit
+	}
+	if (req.Scope == "general" || req.Scope == "carryover") && shouldTriggerOverdraftInterrupt(res.PrevEffectiveBalance, res.EffectiveBalance, maxOverdraftLimit) {
+		killThreshold := killAllProcessBalanceThreshold(maxOverdraftLimit)
 		n, err := s.enqueueHardInterruptForBillingUser(
 			c.Request.Context(),
 			req.Username,
-			fmt.Sprintf("管理员调整后余额低于 %.2f 积分，强制中断", hardInterruptBalanceThreshold),
+			maxOverdraftLimit,
+			fmt.Sprintf("管理员调整后余额低于 %.2f 积分，已超过每月最大欠费上限，强制中断", killThreshold),
 		)
 		if err != nil {
 			c.JSON(500, gin.H{"error": "积分已调整，但下发强制中断失败: " + err.Error()})
 			return
 		}
 		interruptTargets = n
+	}
+	quotaRefreshTargets := 0
+	quotaRefreshError := ""
+	gpuRefreshTargets := 0
+	gpuRefreshError := ""
+	memoryRefreshTargets := 0
+	memoryRefreshError := ""
+	if req.Scope == "general" || req.Scope == "carryover" {
+		n, err := s.refreshCPUQuotaForBillingUser(
+			c.Request.Context(),
+			req.Username,
+			res.User.Balance+carryoverBalance,
+			fmt.Sprintf("管理员积分调整后重算限速（%s）", req.Username),
+		)
+		if err != nil {
+			quotaRefreshError = err.Error()
+			log.Printf("积分调整后刷新 CPU 限速失败 username=%s err=%v", req.Username, err)
+		} else {
+			quotaRefreshTargets = n
+		}
+		n, err = s.refreshGPUAccessForBillingUser(
+			c.Request.Context(),
+			req.Username,
+			res.User.Balance+carryoverBalance,
+			fmt.Sprintf("管理员积分调整后同步 GPU 限制（%s）", req.Username),
+		)
+		if err != nil {
+			gpuRefreshError = err.Error()
+			log.Printf("积分调整后刷新 GPU 限制失败 username=%s err=%v", req.Username, err)
+		} else {
+			gpuRefreshTargets = n
+		}
+		n, err = s.refreshMemoryLimitForBillingUser(
+			c.Request.Context(),
+			req.Username,
+			res.User.Balance+carryoverBalance,
+			fmt.Sprintf("管理员积分调整后同步内存限额（%s）", req.Username),
+		)
+		if err != nil {
+			memoryRefreshError = err.Error()
+			log.Printf("积分调整后刷新内存限额失败 username=%s err=%v", req.Username, err)
+		} else {
+			memoryRefreshTargets = n
+		}
 	}
 	totalBalance := res.User.Balance + carryoverBalance + exclusiveBalance
 
@@ -429,6 +593,12 @@ func (s *Server) handleAdminPointsAdjust(c *gin.Context) {
 		"node_exclusive_balance_current": nodeExclusiveCurrent,
 		"status":                         res.User.Status,
 		"interrupt_targets":              interruptTargets,
+		"quota_refresh_targets":          quotaRefreshTargets,
+		"quota_refresh_error":            quotaRefreshError,
+		"gpu_refresh_targets":            gpuRefreshTargets,
+		"gpu_refresh_error":              gpuRefreshError,
+		"memory_refresh_targets":         memoryRefreshTargets,
+		"memory_refresh_error":           memoryRefreshError,
 	})
 }
 
@@ -447,9 +617,16 @@ func (s *Server) handleAdminPointsBatchGrant(c *gin.Context) {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
+	maxOverdraftLimit, err := s.getMonthlyMaxOverdraftLimit(c.Request.Context())
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	killThreshold := killAllProcessBalanceThreshold(maxOverdraftLimit)
 	now := time.Now()
 	changed := 0
 	interruptUsers := map[string]struct{}{}
+	stateRecheckUsers := map[string]float64{}
 	method := "points_batch_plus"
 	if req.Amount < 0 {
 		method = "points_batch_minus"
@@ -461,7 +638,8 @@ func (s *Server) handleAdminPointsBatchGrant(c *gin.Context) {
 				return err
 			}
 			changed++
-			if res.User.Balance+res.User.CarryoverBalance <= hardInterruptBalanceThreshold {
+			stateRecheckUsers[u.Username] = res.User.Balance + res.User.CarryoverBalance
+			if shouldTriggerOverdraftInterrupt(res.PrevEffectiveBalance, res.EffectiveBalance, maxOverdraftLimit) {
 				interruptUsers[u.Username] = struct{}{}
 			}
 		}
@@ -477,7 +655,8 @@ func (s *Server) handleAdminPointsBatchGrant(c *gin.Context) {
 		n, err := s.enqueueHardInterruptForBillingUser(
 			c.Request.Context(),
 			username,
-			fmt.Sprintf("全体积分调整后余额低于 %.2f 积分，强制中断", hardInterruptBalanceThreshold),
+			maxOverdraftLimit,
+			fmt.Sprintf("全体积分调整后余额低于 %.2f 积分，已超过每月最大欠费上限，强制中断", killThreshold),
 		)
 		if err != nil {
 			log.Printf("全体积分调整后强制中断失败 username=%s err=%v", username, err)
@@ -488,16 +667,249 @@ func (s *Server) handleAdminPointsBatchGrant(c *gin.Context) {
 			interruptedNodes += n
 		}
 	}
+	quotaRefreshUsers := 0
+	quotaRefreshNodes := 0
+	quotaRefreshErrs := 0
+	gpuRefreshUsers := 0
+	gpuRefreshNodes := 0
+	gpuRefreshErrs := 0
+	memoryRefreshUsers := 0
+	memoryRefreshNodes := 0
+	memoryRefreshErrs := 0
+	if len(stateRecheckUsers) > 0 {
+		usernames := make([]string, 0, len(stateRecheckUsers))
+		for username := range stateRecheckUsers {
+			usernames = append(usernames, username)
+		}
+		sort.Strings(usernames)
+		for _, username := range usernames {
+			n, err := s.refreshCPUQuotaForBillingUser(
+				c.Request.Context(),
+				username,
+				stateRecheckUsers[username],
+				fmt.Sprintf("全体积分调整后重算限速（%s）", username),
+			)
+			if err != nil {
+				quotaRefreshErrs++
+				log.Printf("全体积分调整后刷新 CPU 限速失败 username=%s err=%v", username, err)
+			} else if n > 0 {
+				quotaRefreshUsers++
+				quotaRefreshNodes += n
+			}
+			n, err = s.refreshGPUAccessForBillingUser(
+				c.Request.Context(),
+				username,
+				stateRecheckUsers[username],
+				fmt.Sprintf("全体积分调整后同步 GPU 限制（%s）", username),
+			)
+			if err != nil {
+				gpuRefreshErrs++
+				log.Printf("全体积分调整后刷新 GPU 限制失败 username=%s err=%v", username, err)
+				continue
+			}
+			if n > 0 {
+				gpuRefreshUsers++
+				gpuRefreshNodes += n
+			}
+			n, err = s.refreshMemoryLimitForBillingUser(
+				c.Request.Context(),
+				username,
+				stateRecheckUsers[username],
+				fmt.Sprintf("全体积分调整后同步内存限额（%s）", username),
+			)
+			if err != nil {
+				memoryRefreshErrs++
+				log.Printf("全体积分调整后刷新内存限额失败 username=%s err=%v", username, err)
+				continue
+			}
+			if n > 0 {
+				memoryRefreshUsers++
+				memoryRefreshNodes += n
+			}
+		}
+	}
 
 	c.JSON(200, gin.H{
-		"ok":                true,
-		"amount":            req.Amount,
-		"granted_users":     changed,
-		"adjusted_users":    changed,
-		"total_granted":     req.Amount * float64(changed),
-		"total_adjusted":    req.Amount * float64(changed),
-		"interrupted_users": interruptedUsers,
-		"interrupted_nodes": interruptedNodes,
+		"ok":                    true,
+		"amount":                req.Amount,
+		"granted_users":         changed,
+		"adjusted_users":        changed,
+		"total_granted":         req.Amount * float64(changed),
+		"total_adjusted":        req.Amount * float64(changed),
+		"interrupted_users":     interruptedUsers,
+		"interrupted_nodes":     interruptedNodes,
+		"quota_refresh_users":   quotaRefreshUsers,
+		"quota_refresh_nodes":   quotaRefreshNodes,
+		"quota_refresh_errors":  quotaRefreshErrs,
+		"gpu_refresh_users":     gpuRefreshUsers,
+		"gpu_refresh_nodes":     gpuRefreshNodes,
+		"gpu_refresh_errors":    gpuRefreshErrs,
+		"memory_refresh_users":  memoryRefreshUsers,
+		"memory_refresh_nodes":  memoryRefreshNodes,
+		"memory_refresh_errors": memoryRefreshErrs,
+	})
+}
+
+func (s *Server) handleAdminPointsBatchAdjustUsers(c *gin.Context) {
+	var req adminPointsBatchAdjustUsersReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "请求参数不合法"})
+		return
+	}
+	if req.Amount == 0 {
+		c.JSON(400, gin.H{"error": "amount 不能为 0"})
+		return
+	}
+	targetUsernames := uniqTrim(req.Usernames)
+	if len(targetUsernames) == 0 {
+		c.JSON(400, gin.H{"error": "usernames 不能为空"})
+		return
+	}
+	if len(targetUsernames) > 50000 {
+		c.JSON(400, gin.H{"error": "批量用户数量过大（最大 50000）"})
+		return
+	}
+	existingUsernames, err := s.store.FilterExistingPointsUsernames(c.Request.Context(), targetUsernames)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if len(existingUsernames) == 0 {
+		c.JSON(400, gin.H{"error": "筛选结果为空或用户不存在"})
+		return
+	}
+	maxOverdraftLimit, err := s.getMonthlyMaxOverdraftLimit(c.Request.Context())
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	killThreshold := killAllProcessBalanceThreshold(maxOverdraftLimit)
+
+	now := time.Now()
+	changed := 0
+	interruptUsers := map[string]struct{}{}
+	stateRecheckUsers := map[string]float64{}
+	method := "points_batch_filtered_plus"
+	if req.Amount < 0 {
+		method = "points_batch_filtered_minus"
+	}
+	if err := s.store.WithTx(c.Request.Context(), func(tx *sql.Tx) error {
+		for _, username := range existingUsernames {
+			res, err := s.store.AdjustBalanceTx(c.Request.Context(), tx, username, req.Amount, method, now, s.cfg)
+			if err != nil {
+				return err
+			}
+			changed++
+			stateRecheckUsers[username] = res.User.Balance + res.User.CarryoverBalance
+			if shouldTriggerOverdraftInterrupt(res.PrevEffectiveBalance, res.EffectiveBalance, maxOverdraftLimit) {
+				interruptUsers[username] = struct{}{}
+			}
+		}
+		return nil
+	}); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	interruptedUsers := 0
+	interruptedNodes := 0
+	for username := range interruptUsers {
+		n, err := s.enqueueHardInterruptForBillingUser(
+			c.Request.Context(),
+			username,
+			maxOverdraftLimit,
+			fmt.Sprintf("批量积分调整后余额低于 %.2f 积分，已超过每月最大欠费上限，强制中断", killThreshold),
+		)
+		if err != nil {
+			log.Printf("筛选批量积分调整后强制中断失败 username=%s err=%v", username, err)
+			continue
+		}
+		if n > 0 {
+			interruptedUsers++
+			interruptedNodes += n
+		}
+	}
+	quotaRefreshUsers := 0
+	quotaRefreshNodes := 0
+	quotaRefreshErrs := 0
+	gpuRefreshUsers := 0
+	gpuRefreshNodes := 0
+	gpuRefreshErrs := 0
+	memoryRefreshUsers := 0
+	memoryRefreshNodes := 0
+	memoryRefreshErrs := 0
+	if len(stateRecheckUsers) > 0 {
+		usernames := make([]string, 0, len(stateRecheckUsers))
+		for username := range stateRecheckUsers {
+			usernames = append(usernames, username)
+		}
+		sort.Strings(usernames)
+		for _, username := range usernames {
+			n, err := s.refreshCPUQuotaForBillingUser(
+				c.Request.Context(),
+				username,
+				stateRecheckUsers[username],
+				fmt.Sprintf("筛选批量积分调整后重算限速（%s）", username),
+			)
+			if err != nil {
+				quotaRefreshErrs++
+				log.Printf("筛选批量积分调整后刷新 CPU 限速失败 username=%s err=%v", username, err)
+			} else if n > 0 {
+				quotaRefreshUsers++
+				quotaRefreshNodes += n
+			}
+			n, err = s.refreshGPUAccessForBillingUser(
+				c.Request.Context(),
+				username,
+				stateRecheckUsers[username],
+				fmt.Sprintf("筛选批量积分调整后同步 GPU 限制（%s）", username),
+			)
+			if err != nil {
+				gpuRefreshErrs++
+				log.Printf("筛选批量积分调整后刷新 GPU 限制失败 username=%s err=%v", username, err)
+				continue
+			}
+			if n > 0 {
+				gpuRefreshUsers++
+				gpuRefreshNodes += n
+			}
+			n, err = s.refreshMemoryLimitForBillingUser(
+				c.Request.Context(),
+				username,
+				stateRecheckUsers[username],
+				fmt.Sprintf("筛选批量积分调整后同步内存限额（%s）", username),
+			)
+			if err != nil {
+				memoryRefreshErrs++
+				log.Printf("筛选批量积分调整后刷新内存限额失败 username=%s err=%v", username, err)
+				continue
+			}
+			if n > 0 {
+				memoryRefreshUsers++
+				memoryRefreshNodes += n
+			}
+		}
+	}
+
+	c.JSON(200, gin.H{
+		"ok":                    true,
+		"amount":                req.Amount,
+		"requested_users":       len(targetUsernames),
+		"matched_users":         len(existingUsernames),
+		"adjusted_users":        changed,
+		"skipped_users":         len(targetUsernames) - len(existingUsernames),
+		"total_adjusted":        req.Amount * float64(changed),
+		"interrupted_users":     interruptedUsers,
+		"interrupted_nodes":     interruptedNodes,
+		"quota_refresh_users":   quotaRefreshUsers,
+		"quota_refresh_nodes":   quotaRefreshNodes,
+		"quota_refresh_errors":  quotaRefreshErrs,
+		"gpu_refresh_users":     gpuRefreshUsers,
+		"gpu_refresh_nodes":     gpuRefreshNodes,
+		"gpu_refresh_errors":    gpuRefreshErrs,
+		"memory_refresh_users":  memoryRefreshUsers,
+		"memory_refresh_nodes":  memoryRefreshNodes,
+		"memory_refresh_errors": memoryRefreshErrs,
 	})
 }
 
@@ -564,15 +976,16 @@ func (s *Server) handleAdminPointsMonthlyConfigSet(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "请求参数不合法"})
 		return
 	}
-	if req.DoctorPoints < 0 || req.MasterPoints < 0 || req.OtherPoints < 0 || req.CarryoverLimit < 0 {
-		c.JSON(400, gin.H{"error": "博士/硕士/其他积分与结转上限不能为负数"})
+	if req.DoctorPoints < 0 || req.MasterPoints < 0 || req.OtherPoints < 0 || req.CarryoverLimit < 0 || req.MaxOverdraftLimit < 0 {
+		c.JSON(400, gin.H{"error": "博士/硕士/其他积分、结转上限、每月最大欠费上限不能为负数"})
 		return
 	}
 	if err := s.store.UpsertMonthlyPointsConfig(c.Request.Context(), MonthlyPointsConfig{
-		DoctorPoints:   req.DoctorPoints,
-		MasterPoints:   req.MasterPoints,
-		OtherPoints:    req.OtherPoints,
-		CarryoverLimit: req.CarryoverLimit,
+		DoctorPoints:      req.DoctorPoints,
+		MasterPoints:      req.MasterPoints,
+		OtherPoints:       req.OtherPoints,
+		CarryoverLimit:    req.CarryoverLimit,
+		MaxOverdraftLimit: req.MaxOverdraftLimit,
 	}); err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -618,14 +1031,17 @@ func (s *Server) handleAdminPointsMonthlyReset(c *gin.Context) {
 		msg = "本月已执行过月初重置（如需重跑请勾选强制重置）"
 	}
 	c.JSON(200, gin.H{
-		"ok":                true,
-		"message":           msg,
-		"month_key":         res.MonthKey,
-		"already_run":       res.AlreadyRun,
-		"total_users":       res.TotalUsers,
-		"changed_users":     res.ChangedUsers,
-		"interrupted_users": res.InterruptedUsers,
-		"interrupted_nodes": res.InterruptedTarget,
-		"run":               res.Run,
+		"ok":                   true,
+		"message":              msg,
+		"month_key":            res.MonthKey,
+		"already_run":          res.AlreadyRun,
+		"total_users":          res.TotalUsers,
+		"changed_users":        res.ChangedUsers,
+		"interrupted_users":    res.InterruptedUsers,
+		"interrupted_nodes":    res.InterruptedTarget,
+		"quota_refresh_users":  res.QuotaRefreshUsers,
+		"quota_refresh_nodes":  res.QuotaRefreshNodes,
+		"quota_refresh_errors": res.QuotaRefreshErrs,
+		"run":                  res.Run,
 	})
 }

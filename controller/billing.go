@@ -5,7 +5,6 @@ import (
 	"math"
 	"sort"
 	"strings"
-	"time"
 )
 
 type PriceIndex struct {
@@ -98,25 +97,34 @@ func StatusForBalance(balance, warningThreshold, limitedThreshold float64) strin
 	return "normal"
 }
 
-// DecideActions 根据余额状态决定下发动作。
-// 为避免刷屏：warning/limited/blocked 的 notify/block 仅在状态变化时下发；
-// blocked 的 kill 在超过宽限期且仍存在 GPU 进程时下发（可重复下发，Agent 应幂等执行）。
-func DecideActions(now time.Time, prevStatus string, user User, warningThreshold, limitedThreshold float64, grace time.Duration, pids []int32) []Action {
+// EffectiveStatusForBalance 用于接口展示/运行时控制：
+// 1) 默认按“实时可用积分”计算状态；
+// 2) 若数据库状态为 blocked（例如管理员手动封禁），则保持 blocked，不被余额自动覆盖。
+func EffectiveStatusForBalance(storedStatus string, effectiveBalance, warningThreshold, limitedThreshold float64) string {
+	derived := StatusForBalance(effectiveBalance, warningThreshold, limitedThreshold)
+	if strings.EqualFold(strings.TrimSpace(storedStatus), "blocked") && derived != "blocked" {
+		return "blocked"
+	}
+	return derived
+}
+
+func normalizeMonthlyMaxOverdraftLimit(limit float64) float64 {
+	if math.IsNaN(limit) || math.IsInf(limit, 0) || limit < 0 {
+		return 0
+	}
+	return limit
+}
+
+// DecideActions 根据余额状态决定提示动作（仅 notify）。
+// 具体的 GPU 限制组/CPU 限速/强制中断，由调用方按余额策略单独下发，
+// 这样可避免策略耦合导致重复动作或误触发。
+func DecideActions(prevStatus string, user User, warningThreshold, limitedThreshold, maxOverdraftLimit float64) []Action {
 	newStatus := user.Status
 	if newStatus == "" {
 		newStatus = StatusForBalance(user.Balance, warningThreshold, limitedThreshold)
 	}
 
 	var actions []Action
-
-	// 解除限制：余额恢复后允许继续启动任务
-	if (prevStatus == "limited" || prevStatus == "blocked") && (newStatus == "normal" || newStatus == "warning") {
-		actions = append(actions, Action{
-			Type:     "unblock_user",
-			Username: user.Username,
-			Reason:   "余额已恢复，解除限制",
-		})
-	}
 
 	switch newStatus {
 	case "warning":
@@ -130,32 +138,24 @@ func DecideActions(now time.Time, prevStatus string, user User, warningThreshold
 	case "limited":
 		if prevStatus != "limited" {
 			actions = append(actions, Action{
-				Type:     "block_user",
+				Type:     "notify",
 				Username: user.Username,
-				Reason:   formatBalanceMessage("余额不足，限制新 GPU 任务", user.Balance),
+				Message:  formatBalanceMessage("余额不足，已触发限速", user.Balance),
 			})
 		}
 	case "blocked":
-		// 首次进入 blocked 先提醒，超过宽限期再 kill
 		if prevStatus != "blocked" {
-			actions = append(actions, Action{
-				Type:     "block_user",
-				Username: user.Username,
-				Reason:   formatBalanceMessage("已欠费，限制新 GPU 任务", user.Balance),
-			})
+			msg := formatBalanceMessage("已欠费，已触发限速", user.Balance)
+			if isOverdraftExceeded(user.Balance, maxOverdraftLimit) {
+				msg = formatBalanceMessage(
+					fmt.Sprintf("已超过欠费上限 %.2f，GPU 将禁用并触发一次性清进程", normalizeMonthlyMaxOverdraftLimit(maxOverdraftLimit)),
+					user.Balance,
+				)
+			}
 			actions = append(actions, Action{
 				Type:     "notify",
 				Username: user.Username,
-				Message:  formatBalanceMessage("已欠费，宽限期后将终止 GPU 任务", user.Balance),
-			})
-		}
-
-		if user.BlockedAt != nil && grace > 0 && now.Sub(*user.BlockedAt) >= grace && len(pids) > 0 {
-			actions = append(actions, Action{
-				Type:     "kill_process",
-				Username: user.Username,
-				PIDs:     pids,
-				Reason:   formatBalanceMessage("欠费超过宽限期，终止 GPU 进程", user.Balance),
+				Message:  msg,
 			})
 		}
 	}
@@ -164,7 +164,7 @@ func DecideActions(now time.Time, prevStatus string, user User, warningThreshold
 }
 
 func formatBalanceMessage(prefix string, balance float64) string {
-	return strings.TrimSpace(prefix) + "（当前余额：" + formatMoney(balance) + " 元）"
+	return strings.TrimSpace(prefix) + "（当前积分：" + formatMoney(balance) + "）"
 }
 
 func formatMoney(v float64) string {

@@ -40,6 +40,9 @@ export type AuthMeResp = {
   can_review_requests?: boolean;
   expires_at?: string;
   csrf_token?: string;
+  server_now?: string;
+  server_tz_name?: string;
+  server_tz_offset_minutes?: number;
 };
 
 export type UserGuidelineResp = {
@@ -82,6 +85,11 @@ export type BalanceResp = {
   month_remaining_points?: number;
   month_used_points?: number;
   total_used_points?: number;
+  warning_threshold_points?: number;
+  limited_threshold_points?: number;
+  monthly_max_overdraft_limit?: number;
+  current_overdraft_points?: number;
+  overdraft_exceeded?: boolean;
 };
 
 export type NodeExclusivePointsBalance = {
@@ -163,9 +171,19 @@ export type NodeStatus = {
   cpu_process_count: number;
   usage_records_count: number;
   ssh_active_count?: number;
+  disk_quota_installed?: boolean;
+  disk_quota_mounts?: string[];
   ssh_guard_enabled?: boolean;
   ssh_exclusive_enabled?: boolean;
   points_intercept_enabled?: boolean;
+  points_throttle_threshold?: number;
+  points_limited_cpu_quota_percent?: number;
+  points_blocked_cpu_quota_percent?: number;
+  points_overdraft_memory_limit_gb?: number;
+  disk_quota_enabled?: boolean;
+  disk_quota_mountpoint?: string;
+  disk_quota_soft_mb?: number;
+  disk_quota_hard_mb?: number;
   node_price_per_minute?: number | null;
   node_model_price_overrides?: Record<string, number>;
   security_event_count_7d?: number;
@@ -202,6 +220,10 @@ export type NodeLocalUser = {
   home_created_at?: string;
   last_login_at?: string;
   home_used_gb: number;
+  quota_mountpoint?: string;
+  quota_used_mb?: number;
+  quota_soft_mb?: number;
+  quota_hard_mb?: number;
   has_sudo?: boolean;
   has_docker?: boolean;
   updated_at?: string;
@@ -254,6 +276,16 @@ export type NodeSecurityEvent = {
   created_at: string;
 };
 
+export type NodeSecurityEventSummary = {
+  event_type: string;
+  severity: string;
+  normalized_reason: string;
+  event_count: number;
+  affected_users: number;
+  first_seen_at: string;
+  last_seen_at: string;
+};
+
 export type NodeSuspiciousUser = {
   node_id: string;
   username: string;
@@ -277,7 +309,13 @@ export type NodeSSHUserPlatformResp = {
 
 export type PointsUser = {
   username: string;
+  email?: string;
+  real_name?: string;
   student_id: string;
+  advisor?: string;
+  phone?: string;
+  expected_graduation_year?: number;
+  expected_graduation_month?: number;
   role?: string;
   balance: number;
   general_balance?: number;
@@ -310,6 +348,7 @@ export type MonthlyPointsConfig = {
   master_points: number;
   other_points: number;
   carryover_limit: number;
+  max_overdraft_limit: number;
 };
 
 export type PointsOperationRecord = {
@@ -329,6 +368,18 @@ export type UserNodeAccount = {
   billing_username: string;
   created_at: string;
   updated_at: string;
+};
+
+export type UserNodeAccountMappingRisk = {
+  node_id: string;
+  local_username: string;
+  current_billing_username: string;
+  switch_count: number;
+  distinct_billing_count: number;
+  platform_usernames: string[];
+  switch_history?: string[];
+  last_changed_at: string;
+  risk_reason: string;
 };
 
 export type AdminAccountProvisionResp = {
@@ -366,6 +417,9 @@ export type UserProvisionMessage = {
   mail_to: string;
   created_by: string;
   created_at: string;
+  first_decrypted_at?: string;
+  destroy_after_at?: string;
+  destroyed_at?: string;
 };
 
 export type AdminAccountProvisionLog = {
@@ -482,6 +536,35 @@ export type RegistrationRequest = {
 export type RegistrationRequestView = RegistrationRequest & {
   conflict_fields?: string[];
   conflict_reason?: string;
+};
+
+export type RegisterCaptchaChallenge = {
+  captcha_id: string;
+  question: string;
+  options: number[];
+  expire_at: string;
+};
+
+export type RegistrationDisposableEmailDomain = {
+  domain: string;
+  enabled: boolean;
+  note: string;
+  updated_by: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type RegistrationSecurityEvent = {
+  event_id: number;
+  action: string;
+  decision: string;
+  reason: string;
+  client_ip: string;
+  username: string;
+  email: string;
+  student_id: string;
+  user_agent: string;
+  created_at: string;
 };
 
 export type Announcement = {
@@ -829,6 +912,8 @@ export class ApiClient {
     email: string;
     username: string;
     password: string;
+    captcha_id: string;
+    captcha_option: number;
     real_name: string;
     student_id: string;
     advisor: string;
@@ -846,6 +931,10 @@ export class ApiClient {
     if ((payload.email ?? "").trim()) q.set("email", (payload.email ?? "").trim());
     if ((payload.student_id ?? "").trim()) q.set("student_id", (payload.student_id ?? "").trim());
     return await this.getJson(`/api/auth/register/check?${q.toString()}`);
+  }
+
+  async authRegisterCaptcha(): Promise<RegisterCaptchaChallenge> {
+    return await this.getJson("/api/auth/register/captcha");
   }
 
   async authForgotPassword(email: string): Promise<{ ok: boolean }> {
@@ -931,6 +1020,10 @@ export class ApiClient {
     return await this.getJson(`/api/user/provision-messages?limit=${limit}`);
   }
 
+  async userProvisionMessageDecryptStart(messageId: number): Promise<{ ok: boolean; message: UserProvisionMessage }> {
+    return await this.postJson(`/api/user/provision-messages/${Math.floor(Number(messageId))}/decrypt-start`, {});
+  }
+
   async userUpsertAccount(nodeId: string, localUsername: string): Promise<{ ok: boolean }> {
     return await this.postJson("/api/user/accounts", { node_id: nodeId, local_username: localUsername });
   }
@@ -992,9 +1085,9 @@ export class ApiClient {
 
   async createOpenRequest(
     billingUsername: string,
-    nodeId: string,
-    localUsername: string,
     message: string,
+    nodeId = "待分配",
+    localUsername = "待分配",
   ): Promise<{ ok: boolean; request_id: number }> {
     return await this.postJson("/api/requests/open", {
       billing_username: billingUsername,
@@ -1217,17 +1310,131 @@ export class ApiClient {
     return await this.postJson(`/api/admin/nodes/${encodeURIComponent(nodeId)}/ssh-guard`, { enabled }, this.adminHeaders());
   }
 
-  async adminNodePointsIntercept(nodeId: string): Promise<{ ok: boolean; node_id: string; enabled: boolean }> {
+  async adminNodePointsIntercept(nodeId: string): Promise<{
+    ok: boolean;
+    node_id: string;
+    enabled: boolean;
+    throttle_threshold_points?: number;
+    limited_cpu_quota_percent?: number;
+    blocked_cpu_quota_percent?: number;
+    overdraft_memory_limit_gb?: number;
+    effective_threshold_points?: number;
+    effective_limited_cpu_quota?: number;
+    effective_blocked_cpu_quota?: number;
+    effective_overdraft_memory_gb?: number;
+    default_threshold_points?: number;
+    default_limited_cpu_quota?: number;
+    default_blocked_cpu_quota?: number;
+    default_overdraft_memory_gb?: number;
+    cpu_control_enabled_on_server?: boolean;
+  }> {
     return await this.getJson(`/api/admin/nodes/${encodeURIComponent(nodeId)}/points-intercept`, this.adminHeaders());
   }
 
-  async adminSetNodePointsIntercept(nodeId: string, enabled: boolean): Promise<{
+  async adminSetNodePointsIntercept(
+    nodeId: string,
+    payloadOrEnabled:
+      | boolean
+      | {
+          enabled: boolean;
+          throttle_threshold_points?: number;
+          limited_cpu_quota_percent?: number;
+          blocked_cpu_quota_percent?: number;
+          overdraft_memory_limit_gb?: number;
+        },
+  ): Promise<{
     ok: boolean;
     node_id: string;
     enabled: boolean;
     previous: boolean;
+    throttle_threshold_points?: number;
+    limited_cpu_quota_percent?: number;
+    blocked_cpu_quota_percent?: number;
+    overdraft_memory_limit_gb?: number;
+    effective_threshold_points?: number;
+    effective_limited_cpu_quota?: number;
+    effective_blocked_cpu_quota?: number;
+    effective_overdraft_memory_gb?: number;
+    memory_sync_targets?: number;
   }> {
-    return await this.postJson(`/api/admin/nodes/${encodeURIComponent(nodeId)}/points-intercept`, { enabled }, this.adminHeaders());
+    const payload =
+      typeof payloadOrEnabled === "boolean"
+        ? { enabled: payloadOrEnabled }
+        : {
+            enabled: !!payloadOrEnabled.enabled,
+            throttle_threshold_points: payloadOrEnabled.throttle_threshold_points,
+            limited_cpu_quota_percent: payloadOrEnabled.limited_cpu_quota_percent,
+            blocked_cpu_quota_percent: payloadOrEnabled.blocked_cpu_quota_percent,
+            overdraft_memory_limit_gb: payloadOrEnabled.overdraft_memory_limit_gb,
+          };
+    return await this.postJson(`/api/admin/nodes/${encodeURIComponent(nodeId)}/points-intercept`, payload, this.adminHeaders());
+  }
+
+  async adminNodeDiskQuota(nodeId: string): Promise<{
+    ok: boolean;
+    node_id: string;
+    quota_installed: boolean;
+    quota_mounts: string[];
+    preferred_mountpoint?: string;
+    effective_mountpoint?: string;
+    enabled: boolean;
+    mountpoint?: string;
+    default_soft_mb?: number;
+    default_hard_mb?: number;
+    effective_soft_mb?: number;
+    effective_hard_mb?: number;
+    users: NodeLocalUser[];
+    checked_at?: string;
+  }> {
+    return await this.getJson(`/api/admin/nodes/${encodeURIComponent(nodeId)}/disk-quota`, this.adminHeaders());
+  }
+
+  async adminSetNodeDiskQuota(
+    nodeId: string,
+    payload: {
+      enabled: boolean;
+      mountpoint?: string;
+      default_soft_mb?: number;
+      default_hard_mb?: number;
+      apply_to_all?: boolean;
+    },
+  ): Promise<{
+    ok: boolean;
+    node_id: string;
+    enabled: boolean;
+    mountpoint?: string;
+    default_soft_mb?: number;
+    default_hard_mb?: number;
+    effective_mountpoint?: string;
+    effective_soft_mb?: number;
+    effective_hard_mb?: number;
+    quota_installed?: boolean;
+    quota_mounts?: string[];
+    applied_users?: number;
+    warning?: string;
+  }> {
+    return await this.postJson(`/api/admin/nodes/${encodeURIComponent(nodeId)}/disk-quota`, payload, this.adminHeaders());
+  }
+
+  async adminApplyNodeDiskQuota(
+    nodeId: string,
+    payload: {
+      mountpoint?: string;
+      all_users?: boolean;
+      soft_mb?: number;
+      hard_mb?: number;
+      users?: Array<{ local_username: string; soft_mb: number; hard_mb: number }>;
+    },
+  ): Promise<{
+    ok: boolean;
+    node_id: string;
+    mountpoint?: string;
+    applied_users: number;
+    quota_installed?: boolean;
+    quota_mounts?: string[];
+    message?: string;
+  }> {
+    return await this.postJson(`/api/admin/nodes/${encodeURIComponent(nodeId)}/disk-quota/apply`, payload, this.adminHeaders());
   }
 
   async adminNodePrice(nodeId: string): Promise<{
@@ -1292,21 +1499,37 @@ export class ApiClient {
     ], payload, this.adminHeaders());
   }
 
-  async adminNodeSecurityEvents(nodeId: string, params?: { eventType?: string; limit?: number }): Promise<{
+  async adminNodeSecurityEvents(
+    nodeId: string,
+    params?: { eventType?: string; limit?: number; summaryLimit?: number; from?: string; to?: string },
+  ): Promise<{
     node_id: string;
     event_type: string;
     events: NodeSecurityEvent[];
+    event_summaries: NodeSecurityEventSummary[];
     suspicious_users: NodeSuspiciousUser[];
+    suspicious_days?: number;
+    from?: string;
+    to?: string;
+    summary_normalizer?: string;
   }> {
     const q = new URLSearchParams();
     if ((params?.eventType ?? "").trim()) q.set("event_type", (params?.eventType ?? "").trim());
     q.set("limit", String(params?.limit ?? 200));
+    q.set("summary_limit", String(params?.summaryLimit ?? 120));
+    if ((params?.from ?? "").trim()) q.set("from", (params?.from ?? "").trim());
+    if ((params?.to ?? "").trim()) q.set("to", (params?.to ?? "").trim());
     return await this.getJson(`/api/admin/nodes/${encodeURIComponent(nodeId)}/security-events?${q.toString()}`, this.adminHeaders());
   }
 
-  async adminPointsUsers(params?: { keyword?: string; limit?: number }): Promise<{ users: PointsUser[] }> {
+  async adminPointsUsers(params?: {
+    keyword?: string;
+    keywordField?: "all" | "username" | "real_name" | "student_id" | "advisor" | "email" | "phone";
+    limit?: number;
+  }): Promise<{ users: PointsUser[] }> {
     const q = new URLSearchParams();
     if ((params?.keyword ?? "").trim()) q.set("keyword", (params?.keyword ?? "").trim());
+    if ((params?.keywordField ?? "").trim()) q.set("keyword_field", (params?.keywordField ?? "").trim());
     q.set("limit", String(params?.limit ?? 1000));
     return await this.getJson(`/api/admin/points/users?${q.toString()}`, this.adminHeaders());
   }
@@ -1347,6 +1570,23 @@ export class ApiClient {
     return await this.postJson("/api/admin/points/batch-grant", payload, this.adminHeaders());
   }
 
+  async adminPointsBatchAdjustUsers(payload: { amount: number; usernames: string[]; reason?: string }): Promise<{
+    ok: boolean;
+    amount: number;
+    requested_users: number;
+    matched_users: number;
+    adjusted_users: number;
+    skipped_users: number;
+    total_adjusted: number;
+    interrupted_users: number;
+    interrupted_nodes: number;
+    quota_refresh_users: number;
+    quota_refresh_nodes: number;
+    quota_refresh_errors: number;
+  }> {
+    return await this.postJson("/api/admin/points/batch-adjust-users", payload, this.adminHeaders());
+  }
+
   async adminPointsRecords(params?: { username?: string; method?: string; limit?: number }): Promise<{ records: PointsOperationRecord[] }> {
     const q = new URLSearchParams();
     if ((params?.username ?? "").trim()) q.set("username", (params?.username ?? "").trim());
@@ -1380,7 +1620,13 @@ export class ApiClient {
     return await this.getJson("/api/admin/points/monthly-config", this.adminHeaders());
   }
 
-  async adminPointsSetMonthlyConfig(payload: { doctor_points: number; master_points: number; other_points: number; carryover_limit: number }): Promise<{ ok: boolean }> {
+  async adminPointsSetMonthlyConfig(payload: {
+    doctor_points: number;
+    master_points: number;
+    other_points: number;
+    carryover_limit: number;
+    max_overdraft_limit: number;
+  }): Promise<{ ok: boolean }> {
     return await this.postJson("/api/admin/points/monthly-config", payload, this.adminHeaders());
   }
 
@@ -1402,12 +1648,74 @@ export class ApiClient {
     return await this.getJson(`/api/admin/requests?${q.toString()}`, this.adminHeaders());
   }
 
-  async adminRegistrationRequestsOverview(limit = 500): Promise<{
+  async adminRegistrationRequestsOverview(params: { limit?: number; field?: string; keyword?: string } = {}): Promise<{
     pending: RegistrationRequestView[];
     conflicts: RegistrationRequestView[];
     rejected: RegistrationRequest[];
   }> {
-    return await this.getJson(`/api/admin/registration-requests/overview?limit=${limit}`, this.adminHeaders());
+    const q = new URLSearchParams();
+    q.set("limit", String(params.limit ?? 1000));
+    if ((params.field ?? "").trim()) q.set("field", (params.field ?? "").trim());
+    if ((params.keyword ?? "").trim()) q.set("keyword", (params.keyword ?? "").trim());
+    return await this.getJson(`/api/admin/registration-requests/overview?${q.toString()}`, this.adminHeaders());
+  }
+
+  async adminRegisterSecurityPolicy(): Promise<{
+    ip_window_seconds: number;
+    ip_limit: number;
+    email_window_seconds: number;
+    email_limit: number;
+    ip_cooldown_seconds: number;
+    email_cooldown_seconds: number;
+    captcha_ttl_seconds: number;
+    allowed_email_domains: string[];
+    allowed_email_suffix_tip: string;
+  }> {
+    return await this.getJson("/api/admin/register-security/policy", this.adminHeaders());
+  }
+
+  async adminRegisterSecurityEvents(params: {
+    keyword?: string;
+    field?: string;
+    action?: string;
+    decision?: string;
+    limit?: number;
+  }): Promise<{ events: RegistrationSecurityEvent[] }> {
+    const q = new URLSearchParams();
+    if ((params.keyword ?? "").trim()) q.set("keyword", (params.keyword ?? "").trim());
+    if ((params.field ?? "").trim()) q.set("field", (params.field ?? "").trim());
+    if ((params.action ?? "").trim()) q.set("action", (params.action ?? "").trim());
+    if ((params.decision ?? "").trim()) q.set("decision", (params.decision ?? "").trim());
+    q.set("limit", String(params.limit ?? 500));
+    return await this.getJson(`/api/admin/register-security/events?${q.toString()}`, this.adminHeaders());
+  }
+
+  async adminDisposableEmailDomains(params: { keyword?: string; limit?: number } = {}): Promise<{ domains: RegistrationDisposableEmailDomain[] }> {
+    const q = new URLSearchParams();
+    if ((params.keyword ?? "").trim()) q.set("keyword", (params.keyword ?? "").trim());
+    q.set("limit", String(params.limit ?? 1000));
+    return await this.getJson(`/api/admin/register-security/disposable-domains?${q.toString()}`, this.adminHeaders());
+  }
+
+  async adminUpsertDisposableEmailDomain(payload: {
+    domain: string;
+    enabled: boolean;
+    note?: string;
+  }): Promise<{ ok: boolean; domain: RegistrationDisposableEmailDomain }> {
+    return await this.postJson("/api/admin/register-security/disposable-domains", payload, this.adminHeaders());
+  }
+
+  async adminDeleteDisposableEmailDomain(domain: string): Promise<{ ok: boolean }> {
+    const res = await fetch(this.url(`/api/admin/register-security/disposable-domains/${encodeURIComponent(domain)}`), {
+      method: "DELETE",
+      headers: { ...this.adminHeaders(), ...this.csrfHeaders() },
+      credentials: "include",
+    });
+    if (!res.ok) {
+      const text = await this.readText(res);
+      throw normalizeServerError(res.status, text);
+    }
+    return (await res.json()) as { ok: boolean };
   }
 
   async adminApproveRegistrationRequest(requestId: number): Promise<{ ok: boolean; request: RegistrationRequest }> {
@@ -1424,6 +1732,10 @@ export class ApiClient {
 
   async adminRejectRequest(requestId: number): Promise<{ ok: boolean; request: UserRequest }> {
     return await this.postJson(`/api/admin/requests/${requestId}/reject`, {}, this.adminHeaders());
+  }
+
+  async adminReopenRequest(requestId: number): Promise<{ ok: boolean; request: UserRequest }> {
+    return await this.postJson(`/api/admin/requests/${requestId}/reopen`, {}, this.adminHeaders());
   }
 
   async adminBatchReview(requestIds: number[], newStatus: "approved" | "rejected"): Promise<{ ok: boolean; ok_count: number; fail_count: number; fail_items: Array<{request_id:number;error:string}> }> {
@@ -1580,6 +1892,23 @@ export class ApiClient {
     const q = new URLSearchParams();
     if (billingUsername.trim()) q.set("billing_username", billingUsername.trim());
     return await this.getJson(`/api/admin/accounts?${q.toString()}`, this.adminHeaders());
+  }
+
+  async adminAccountMappingRisks(params: {
+    days?: number;
+    min_switches?: number;
+    limit?: number;
+  } = {}): Promise<{
+    days: number;
+    min_switches: number;
+    total_risky: number;
+    risky_accounts: UserNodeAccountMappingRisk[];
+  }> {
+    const q = new URLSearchParams();
+    if (Number.isFinite(params.days) && Number(params.days) > 0) q.set("days", String(Math.floor(Number(params.days))));
+    if (Number.isFinite(params.min_switches) && Number(params.min_switches) > 0) q.set("min_switches", String(Math.floor(Number(params.min_switches))));
+    if (Number.isFinite(params.limit) && Number(params.limit) > 0) q.set("limit", String(Math.floor(Number(params.limit))));
+    return await this.getJson(`/api/admin/accounts/mapping-risks?${q.toString()}`, this.adminHeaders());
   }
 
   async adminProvisionLogs(params: {
