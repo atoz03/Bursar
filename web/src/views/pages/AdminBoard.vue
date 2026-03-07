@@ -115,10 +115,16 @@
           placeholder="输入平台账号筛选（支持联想）"
           @select="onMonthlyUserSelect"
         />
-        <el-button link type="primary" @click="monthlyUserKeyword = ''">清空筛选</el-button>
+        <el-button link type="primary" @click="monthlyUserKeyword = ''; monthlyTablePage = 1">清空筛选</el-button>
+      </div>
+      <div class="monthly-load-more">
+        <el-button type="primary" plain :loading="monthlyLoading" :disabled="!monthlyHasMore" @click="loadMoreMonthlyRows">
+          {{ monthlyHasMore ? "加载更多月度记录" : "月度记录已全部加载" }}
+        </el-button>
+        <el-text type="info" size="small">已加载 {{ monthlyRows.length }} 条月度汇总</el-text>
       </div>
       <div class="table-wrap">
-        <el-table :data="filteredMonthlyRows" stripe table-layout="auto">
+        <el-table :data="pagedMonthlyRows" stripe table-layout="auto">
           <el-table-column prop="month" label="月份" min-width="90" />
           <el-table-column label="平台账号" min-width="130">
             <template #default="{ row }">
@@ -135,6 +141,16 @@
             <template #default="{ row }">{{ fmt2(row.total_cpu_percent) }}</template>
           </el-table-column>
         </el-table>
+      </div>
+      <div class="table-pagination">
+        <el-pagination
+          v-model:current-page="monthlyTablePage"
+          v-model:page-size="monthlyTablePageSize"
+          background
+          layout="total, sizes, prev, pager, next"
+          :page-sizes="[20, 50, 100, 200]"
+          :total="filteredMonthlyRows.length"
+        />
       </div>
     </el-card>
 
@@ -165,7 +181,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import type { PlatformUsageNodeDetail, PlatformUsageUserSummary, RechargeSummary, UsageMonthlySummary } from "../../lib/api";
 import { ApiClient } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
@@ -186,11 +202,19 @@ const userRows = ref<PlatformUsageUserSummary[]>([]);
 const monthlyRows = ref<UsageMonthlySummary[]>([]);
 const rechargeRows = ref<RechargeSummary[]>([]);
 const monthlyUserKeyword = ref("");
+const monthlyLoading = ref(false);
+const monthlyHasMore = ref(false);
+const monthlyOffset = ref(0);
+const monthlyLoadedFrom = ref("");
+const monthlyLoadedTo = ref("");
+const monthlyTablePage = ref(1);
+const monthlyTablePageSize = ref(50);
 const allPlatformUsers = ref<string[]>([]);
 const nodeRows = ref<PlatformUsageNodeDetail[]>([]);
 const activeUsername = ref("");
 const profileVisible = ref(false);
 const selectedProfileUsername = ref("");
+const MONTHLY_FETCH_BATCH_SIZE = 1000;
 
 const displayUserRows = computed<PlatformUsageUserSummary[]>(() => {
   const byUser = new Map<string, PlatformUsageUserSummary>();
@@ -264,6 +288,13 @@ const filteredMonthlyRows = computed(() => {
   return full.filter((row) => String(row.username || "").toLowerCase().includes(kw));
 });
 
+const pagedMonthlyRows = computed(() => {
+  const page = Number(monthlyTablePage.value || 1);
+  const size = Number(monthlyTablePageSize.value || 50);
+  const start = (page - 1) * size;
+  return filteredMonthlyRows.value.slice(start, start + size);
+});
+
 function fmtDate(d: Date): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -308,6 +339,39 @@ function queryMonthlyUsers(queryString: string, cb: (items: Array<{ value: strin
 
 function onMonthlyUserSelect(item: { value?: string }) {
   monthlyUserKeyword.value = String(item?.value || "").trim();
+  monthlyTablePage.value = 1;
+}
+
+async function loadMonthlyRows(client: ApiClient, from: string, to: string, reset: boolean) {
+  if (monthlyLoading.value) return;
+  monthlyLoading.value = true;
+  try {
+    const offset = reset ? 0 : monthlyOffset.value;
+    const m = await client.adminStatsMonthly({ from, to, limit: MONTHLY_FETCH_BATCH_SIZE, offset });
+    const nextRows = m.rows ?? [];
+    if (reset) {
+      monthlyRows.value = nextRows;
+      monthlyOffset.value = nextRows.length;
+      monthlyTablePage.value = 1;
+    } else {
+      monthlyRows.value = [...monthlyRows.value, ...nextRows];
+      monthlyOffset.value += nextRows.length;
+    }
+    monthlyHasMore.value = !!m.has_more;
+    monthlyLoadedFrom.value = from;
+    monthlyLoadedTo.value = to;
+  } finally {
+    monthlyLoading.value = false;
+  }
+}
+
+async function loadMoreMonthlyRows() {
+  if (!monthlyHasMore.value || monthlyLoading.value) return;
+  const from = monthlyLoadedFrom.value || String(fromDate.value || "").trim();
+  const to = monthlyLoadedTo.value || String(toDate.value || "").trim();
+  if (!from || !to) return;
+  const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+  await loadMonthlyRows(client, from, to, false);
 }
 
 async function loadAll() {
@@ -316,14 +380,13 @@ async function loadAll() {
   try {
     const [from, to] = getRangeSafe();
     const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
-    const [u, m, r] = await Promise.all([
+    const [u, r] = await Promise.all([
       client.adminStatsPlatformUsers({ from, to, limit: 1000 }),
-      client.adminStatsMonthly({ from, to, limit: 50000 }),
       client.adminStatsRecharges({ from, to, limit: 1000 }),
     ]);
     userRows.value = u.rows ?? [];
-    monthlyRows.value = m.rows ?? [];
     rechargeRows.value = r.rows ?? [];
+    await loadMonthlyRows(client, from, to, true);
     if (authState.role === "admin") {
       const usersResp = await client.adminUsersDetails(5000);
       allPlatformUsers.value = (usersResp.users ?? [])
@@ -377,6 +440,18 @@ function openUser(username: string) {
 }
 
 loadAll();
+
+watch(
+  () => filteredMonthlyRows.value.length,
+  () => {
+    const total = filteredMonthlyRows.value.length;
+    const size = Number(monthlyTablePageSize.value || 50);
+    const maxPage = Math.max(1, Math.ceil(total / size));
+    if (monthlyTablePage.value > maxPage) {
+      monthlyTablePage.value = maxPage;
+    }
+  },
+);
 </script>
 
 <style scoped>
@@ -457,8 +532,19 @@ loadAll();
   gap: 10px;
   margin-bottom: 10px;
 }
+.monthly-load-more {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
 .monthly-user-autocomplete {
   width: 320px;
+}
+.table-pagination {
+  margin-top: 10px;
+  display: flex;
+  justify-content: flex-end;
 }
 .range-sep {
   color: #64748b;

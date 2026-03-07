@@ -1902,11 +1902,12 @@ export class ApiClient {
     return await this.getJson(`/api/admin/stats/platform-users/${encodeURIComponent(username)}/nodes?${q.toString()}`, this.adminHeaders());
   }
 
-  async adminStatsMonthly(params: { from?: string; to?: string; limit?: number }): Promise<{ from: string; to: string; rows: UsageMonthlySummary[] }> {
+  async adminStatsMonthly(params: { from?: string; to?: string; limit?: number; offset?: number }): Promise<{ from: string; to: string; rows: UsageMonthlySummary[]; has_more?: boolean }> {
     const q = new URLSearchParams();
     if (params.from) q.set("from", params.from);
     if (params.to) q.set("to", params.to);
     q.set("limit", String(params.limit ?? 20000));
+    q.set("offset", String(params.offset ?? 0));
     return await this.getJson(`/api/admin/stats/monthly?${q.toString()}`, this.adminHeaders());
   }
 
