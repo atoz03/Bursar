@@ -3000,7 +3000,8 @@ func (s *Server) handleAdminStatsMonthly(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	limit := parseLimit(c.Query("limit"), 20000, 200000)
+	limit := parseLimit(c.Query("limit"), 2000, 20000)
+	offset := parseOffset(c.Query("offset"), 0, 1000000)
 	visibleNodes, restricted, err := s.visibleNodeIDsForPowerUser(c)
 	if err != nil {
 		if strings.TrimSpace(err.Error()) == "forbidden" {
@@ -3011,10 +3012,10 @@ func (s *Server) handleAdminStatsMonthly(c *gin.Context) {
 		return
 	}
 	if restricted && len(visibleNodes) == 0 {
-		c.JSON(http.StatusOK, gin.H{"from": from.Format(time.RFC3339), "to": to.Format(time.RFC3339), "rows": []UsageMonthlySummary{}})
+		c.JSON(http.StatusOK, gin.H{"from": from.Format(time.RFC3339), "to": to.Format(time.RFC3339), "rows": []UsageMonthlySummary{}, "has_more": false})
 		return
 	}
-	rows, err := s.store.ListUsageMonthlyByUser(c.Request.Context(), from, to, limit, visibleNodes)
+	rows, hasMore, err := s.store.ListUsageMonthlyByUser(c.Request.Context(), from, to, limit, offset, visibleNodes)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -3033,8 +3034,11 @@ func (s *Server) handleAdminStatsMonthly(c *gin.Context) {
 			filtered = append(filtered, r)
 		}
 		rows = filtered
+		if len(rows) < limit {
+			hasMore = false
+		}
 	}
-	c.JSON(http.StatusOK, gin.H{"from": from.Format(time.RFC3339), "to": to.Format(time.RFC3339), "rows": rows})
+	c.JSON(http.StatusOK, gin.H{"from": from.Format(time.RFC3339), "to": to.Format(time.RFC3339), "rows": rows, "has_more": hasMore})
 }
 
 func (s *Server) handleAdminStatsRecharges(c *gin.Context) {
@@ -5052,6 +5056,22 @@ func parseLimit(v string, def int, max int) int {
 		}
 	}
 	if n <= 0 {
+		n = def
+	}
+	if n > max {
+		n = max
+	}
+	return n
+}
+
+func parseOffset(v string, def int, max int) int {
+	n := def
+	if x := strings.TrimSpace(v); x != "" {
+		if y, err := strconv.Atoi(x); err == nil {
+			n = y
+		}
+	}
+	if n < 0 {
 		n = def
 	}
 	if n > max {
