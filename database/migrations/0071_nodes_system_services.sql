@@ -1,0 +1,5 @@
+ALTER TABLE nodes
+    ADD COLUMN IF NOT EXISTS system_services_checked_at TIMESTAMP NULL;
+
+ALTER TABLE nodes
+    ADD COLUMN IF NOT EXISTS system_services JSONB NOT NULL DEFAULT '[]'::JSONB;

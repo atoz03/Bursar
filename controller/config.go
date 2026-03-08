@@ -68,6 +68,10 @@ type Config struct {
 	HARole    string `yaml:"ha_role"` // primary / standby
 	HAPeerURL string `yaml:"ha_peer_url"`
 	HAToken   string `yaml:"ha_token"`
+
+	// NFS 共享工作目录（控制器本机直接管理服务端真实路径，避免计算节点 NFS root_squash 导致 mkdir/chown 失败）
+	SharedNodeRoot    string `yaml:"shared_node_root"`
+	SharedClusterRoot string `yaml:"shared_cluster_root"`
 }
 
 func (c *Config) Validate() error {
@@ -144,6 +148,12 @@ func (c *Config) Validate() error {
 		if role != "" && role != "primary" && role != "standby" {
 			return errors.New("ha_role 仅支持 primary/standby")
 		}
+	}
+	if strings.TrimSpace(c.SharedNodeRoot) == "" {
+		c.SharedNodeRoot = filepath.FromSlash("/srv/gpu-ops/nodes")
+	}
+	if strings.TrimSpace(c.SharedClusterRoot) == "" {
+		c.SharedClusterRoot = filepath.FromSlash("/srv/gpu-ops/cluster")
 	}
 	return nil
 }

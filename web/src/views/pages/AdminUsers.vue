@@ -36,6 +36,7 @@
           <template #default="{ row }">
             <div class="expand-wrap">
               <el-descriptions :column="3" border>
+                <el-descriptions-item label="平台UID">{{ row.platform_uid ?? "-" }}</el-descriptions-item>
                 <el-descriptions-item label="真实姓名">{{ row.real_name || "-" }}</el-descriptions-item>
                 <el-descriptions-item label="导师">{{ row.advisor || "-" }}</el-descriptions-item>
                 <el-descriptions-item label="预计毕业">{{ fmtGrad(row.expected_graduation_year, row.expected_graduation_month) }}</el-descriptions-item>
@@ -59,6 +60,9 @@
               <span v-if="isExempt(row)" class="exempt-badge">豁</span>
             </span>
           </template>
+        </el-table-column>
+        <el-table-column label="平台UID" width="110">
+          <template #default="{ row }">{{ row.platform_uid ?? "-" }}</template>
         </el-table-column>
         <el-table-column prop="real_name" label="真实姓名" width="120" />
         <el-table-column label="账号类型" width="110">
@@ -103,6 +107,9 @@
       <el-table :data="deletedRows" stripe height="280" empty-text="暂无数据">
         <el-table-column prop="deleted_id" label="删除ID" width="90" />
         <el-table-column prop="username" label="平台账号" width="150" />
+        <el-table-column label="平台UID" width="110">
+          <template #default="{ row }">{{ row.platform_uid ?? "-" }}</template>
+        </el-table-column>
         <el-table-column prop="real_name" label="真实姓名" width="120" />
         <el-table-column prop="student_id" label="学号" width="140" />
         <el-table-column prop="email" label="邮箱" min-width="220" />
@@ -110,6 +117,9 @@
         <el-table-column prop="deleted_by" label="删除人" width="120" />
         <el-table-column label="删除时间" width="180">
           <template #default="{ row }">{{ fmtTime(row.deleted_at) }}</template>
+        </el-table-column>
+        <el-table-column label="UID释放" min-width="220">
+          <template #default="{ row }">{{ fmtUIDRelease(row) }}</template>
         </el-table-column>
         <el-table-column label="操作" width="150" fixed="right">
           <template #default="{ row }">
@@ -200,6 +210,7 @@
       <el-skeleton v-else-if="profileLoading" :rows="6" animated />
       <el-descriptions v-else-if="profileData" :column="2" border>
         <el-descriptions-item label="平台账号">{{ profileData.username }}</el-descriptions-item>
+        <el-descriptions-item label="平台UID">{{ profileData.platform_uid ?? "-" }}</el-descriptions-item>
         <el-descriptions-item label="真实姓名">{{ profileData.real_name || "-" }}</el-descriptions-item>
         <el-descriptions-item label="学号">{{ profileData.student_id || "-" }}</el-descriptions-item>
         <el-descriptions-item label="邮箱">{{ profileData.email || "-" }}</el-descriptions-item>
@@ -299,6 +310,9 @@
         </div>
         <el-table :data="duplicateActiveRows" stripe max-height="220" empty-text="暂无数据">
           <el-table-column prop="username" label="平台账号" width="150" />
+          <el-table-column label="平台UID" width="110">
+            <template #default="{ row }">{{ row.platform_uid ?? "-" }}</template>
+          </el-table-column>
           <el-table-column prop="real_name" label="真实姓名" width="120" />
           <el-table-column prop="student_id" label="学号" width="140" />
           <el-table-column prop="email" label="邮箱" min-width="220" />
@@ -310,11 +324,17 @@
         <el-table :data="duplicateDeletedRows" stripe max-height="220" empty-text="暂无数据">
           <el-table-column prop="deleted_id" label="删除ID" width="90" />
           <el-table-column prop="username" label="平台账号" width="150" />
+          <el-table-column label="平台UID" width="110">
+            <template #default="{ row }">{{ row.platform_uid ?? "-" }}</template>
+          </el-table-column>
           <el-table-column prop="real_name" label="真实姓名" width="120" />
           <el-table-column prop="student_id" label="学号" width="140" />
           <el-table-column prop="email" label="邮箱" min-width="220" />
           <el-table-column label="删除时间" width="180">
             <template #default="{ row }">{{ fmtTime(row.deleted_at) }}</template>
+          </el-table-column>
+          <el-table-column label="UID释放" min-width="220">
+            <template #default="{ row }">{{ fmtUIDRelease(row) }}</template>
           </el-table-column>
         </el-table>
       </template>
@@ -344,7 +364,11 @@ const keyword = ref("");
 const filteredRows = computed(() => {
   const k = keyword.value.trim().toLowerCase();
   if (!k) return rows.value;
-  return rows.value.filter((x) => (x.username ?? "").toLowerCase().includes(k));
+  return rows.value.filter((x) => {
+    const uname = (x.username ?? "").toLowerCase();
+    const uid = String(x.platform_uid ?? "");
+    return uname.includes(k) || uid.includes(k);
+  });
 });
 
 const rechargeVisible = ref(false);
@@ -366,6 +390,7 @@ const profileLoading = ref(false);
 const profileError = ref("");
 const profileData = ref<{
   username: string;
+  platform_uid?: number;
   email: string;
   real_name: string;
   student_id: string;
@@ -480,6 +505,40 @@ function fmtGrad(year: number, month: number): string {
 
 function fmtTime(v: string): string {
   return formatServerDateTime(v);
+}
+
+function fmtDurationFromSeconds(seconds?: number): string {
+  const total = Number(seconds ?? 0);
+  if (!Number.isFinite(total) || total <= 0) return "已可释放";
+  const days = Math.floor(total / 86400);
+  const years = Math.floor(days / 365);
+  const remDaysAfterYears = days % 365;
+  const months = Math.floor(remDaysAfterYears / 30);
+  const remDays = remDaysAfterYears % 30;
+  const hours = Math.floor((total % 86400) / 3600);
+  const parts: string[] = [];
+  if (years > 0) parts.push(`${years}年`);
+  if (months > 0) parts.push(`${months}个月`);
+  if (remDays > 0) parts.push(`${remDays}天`);
+  if (parts.length === 0) parts.push(`${hours}小时`);
+  return parts.slice(0, 3).join("");
+}
+
+function fmtUIDRelease(row: DeletedUserAccount): string {
+  const uid = Number(row.platform_uid ?? 0);
+  if (!Number.isFinite(uid) || uid <= 0) return "-";
+  const releaseAt = String(row.uid_release_at || "").trim();
+  const remaining = Number(row.uid_release_remaining_seconds ?? NaN);
+  if (releaseAt) {
+    return `${fmtDurationFromSeconds(remaining)}（至 ${fmtTime(releaseAt)}）`;
+  }
+  const deletedAt = String(row.deleted_at || "").trim();
+  if (!deletedAt) return "-";
+  const release = new Date(deletedAt);
+  if (Number.isNaN(release.getTime())) return "-";
+  release.setFullYear(release.getFullYear() + 3);
+  const remainingSeconds = Math.max(0, Math.floor((release.getTime() - Date.now()) / 1000));
+  return `${fmtDurationFromSeconds(remainingSeconds)}（至 ${fmtTime(release.toISOString())}）`;
 }
 
 function unbindSourceText(sourceType: string): string {
@@ -889,7 +948,7 @@ async function unblockUser(row: AdminUserDetail) {
 
 async function deleteUser(row: AdminUserDetail) {
   try {
-    await ElMessageBox.confirm(`确认删除平台账号 ${row.username} 吗？删除后可在“已删除平台账号”中恢复。`, "二次确认", { type: "warning", confirmButtonText: "确认删除", cancelButtonText: "取消" });
+    await ElMessageBox.confirm(`确认删除平台账号 ${row.username} 吗？删除后可在“已删除平台账号”中恢复，平台 UID 将在删除满 3 年后释放。`, "二次确认", { type: "warning", confirmButtonText: "确认删除", cancelButtonText: "取消" });
   } catch {
     return;
   }

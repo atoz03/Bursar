@@ -48,6 +48,11 @@ const (
 	appSettingBindFirstCooldownMinutes   = "bind_first_cooldown_minutes"
 	appSettingBindRepeatCooldownMinutes  = "bind_repeat_cooldown_minutes"
 	appSettingBindContentionFreezeMinute = "bind_contention_freeze_minutes"
+	platformUIDPreferredMin              = 20000
+	platformUIDPreferredMax              = 60000
+	platformUIDFallbackMin               = 1000
+	platformUIDHardMax                   = 65533
+	platformUIDReleaseRetentionYears     = 3
 )
 
 var (
@@ -64,6 +69,14 @@ var (
 	errNodeBindChallengeNotFound      = errors.New("node_bind_challenge_not_found")
 	errNodeBindChallengeMismatch      = errors.New("node_bind_challenge_mismatch")
 	errNodeBindAlreadyBound           = errors.New("node_bind_already_bound")
+	platformUIDSensitiveValues        = map[int]struct{}{
+		65534: {},
+		65535: {},
+	}
+	platformUIDInventoryFiles = []string{
+		"/home/gpuops/gpu-ops/my_ssh_keys/node_uid_gid_used_ids.txt",
+		"my_ssh_keys/node_uid_gid_used_ids.txt",
+	}
 )
 
 type Store struct {
@@ -1841,23 +1854,32 @@ func (s *Store) ListUserNodeAccountsWithFilter(
 		return fmt.Sprintf("$%d", len(args))
 	}
 	if billingUsername != "" {
-		conds = append(conds, "billing_username="+addArg(billingUsername))
+		conds = append(conds, "una.billing_username="+addArg(billingUsername))
 	}
 	if nodeID != "" {
-		conds = append(conds, "node_id="+addArg(nodeID))
+		conds = append(conds, "una.node_id="+addArg(nodeID))
 	}
 	if localUsername != "" {
-		conds = append(conds, "local_username="+addArg(localUsername))
+		conds = append(conds, "una.local_username="+addArg(localUsername))
 	}
 	where := ""
 	if len(conds) > 0 {
 		where = "WHERE " + strings.Join(conds, " AND ")
 	}
 	query := `
-SELECT node_id, local_username, billing_username, created_at, updated_at
-FROM user_node_accounts
+SELECT una.node_id,
+       una.local_username,
+       una.billing_username,
+       nlu.last_login_at,
+       nlu.updated_at,
+       una.created_at,
+       una.updated_at
+FROM user_node_accounts una
+LEFT JOIN node_local_users nlu
+  ON nlu.node_id=una.node_id
+ AND nlu.local_username=una.local_username
 ` + where + `
-ORDER BY billing_username, node_id, local_username
+ORDER BY una.billing_username, una.node_id, una.local_username
 LIMIT ` + addArg(limit)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -1867,8 +1889,18 @@ LIMIT ` + addArg(limit)
 	out := make([]UserNodeAccount, 0)
 	for rows.Next() {
 		var v UserNodeAccount
-		if err := rows.Scan(&v.NodeID, &v.LocalUsername, &v.BillingUsername, &v.CreatedAt, &v.UpdatedAt); err != nil {
+		var lastLoginAt sql.NullTime
+		var nodeLocalUpdatedAt sql.NullTime
+		if err := rows.Scan(&v.NodeID, &v.LocalUsername, &v.BillingUsername, &lastLoginAt, &nodeLocalUpdatedAt, &v.CreatedAt, &v.UpdatedAt); err != nil {
 			return nil, err
+		}
+		if lastLoginAt.Valid {
+			t := asBeijingWallTime(lastLoginAt.Time)
+			v.NodeLastLoginAt = &t
+		}
+		if nodeLocalUpdatedAt.Valid {
+			t := asBeijingWallTime(nodeLocalUpdatedAt.Time)
+			v.NodeLocalUpdatedAt = &t
 		}
 		out = append(out, v)
 	}
@@ -2986,6 +3018,74 @@ func (s *Store) IsAdminAccount(ctx context.Context, username string) (bool, erro
 		return false, err
 	}
 	return exists, nil
+}
+
+func (s *Store) IsPrivilegedAccount(ctx context.Context, username string) (bool, error) {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return false, errors.New("username 不能为空")
+	}
+	var exists bool
+	if err := s.db.QueryRowContext(ctx, `
+SELECT EXISTS(
+  SELECT 1 FROM admin_accounts WHERE username=$1
+  UNION ALL
+  SELECT 1 FROM power_users WHERE username=$1
+)`, username).Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
+func (s *Store) LookupAnyAccountPlatformUID(ctx context.Context, username string) (int, bool, error) {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return 0, false, errors.New("username 不能为空")
+	}
+	var uid sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `
+SELECT platform_uid
+FROM (
+  SELECT platform_uid, 0 AS priority FROM user_accounts WHERE username=$1
+  UNION ALL
+  SELECT platform_uid, 1 AS priority FROM power_users WHERE username=$1
+  UNION ALL
+  SELECT platform_uid, 2 AS priority FROM admin_accounts WHERE username=$1
+) t
+WHERE platform_uid IS NOT NULL
+ORDER BY priority ASC
+LIMIT 1`, username).Scan(&uid)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	if !uid.Valid || uid.Int64 <= 0 {
+		return 0, false, nil
+	}
+	return int(uid.Int64), true, nil
+}
+
+func (s *Store) GetNodeLocalUserIdentity(ctx context.Context, nodeID string, localUsername string) (int, int, bool, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	if nodeID == "" || localUsername == "" {
+		return 0, 0, false, errors.New("node_id/local_username 不能为空")
+	}
+	var uid sql.NullInt64
+	var gid sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `
+SELECT uid, primary_gid
+FROM node_local_users
+WHERE node_id=$1 AND local_username=$2`, nodeID, localUsername).Scan(&uid, &gid)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, 0, false, nil
+	}
+	if err != nil {
+		return 0, 0, false, err
+	}
+	return int(uid.Int64), int(gid.Int64), true, nil
 }
 
 func (s *Store) IsNodeLocalMappedToAdmin(ctx context.Context, nodeID string, localUsername string) (bool, string, error) {
@@ -5108,6 +5208,75 @@ WHERE node_id=$1 AND local_username=$2`, ch.NodeID, ch.LocalUsername); err != ni
 	return s.GetUserBindChallengeByIDTx(ctx, tx, ch.ChallengeID)
 }
 
+func (s *Store) ValidateUserBindChallengeClaim(
+	ctx context.Context,
+	challengeToken string,
+	nodeID string,
+	localUsername string,
+	now time.Time,
+) (UserNodeBindChallenge, error) {
+	challengeToken = strings.TrimSpace(challengeToken)
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	if challengeToken == "" {
+		return UserNodeBindChallenge{}, errNodeBindChallengeNotFound
+	}
+	if now.IsZero() {
+		now = nowInBeijing()
+	}
+	var ch UserNodeBindChallenge
+	if err := scanUserNodeBindChallengeRow(&ch, s.db.QueryRowContext(ctx, `
+SELECT challenge_id, request_id, billing_username, node_id, local_username, challenge_token, status, fail_reason,
+       expires_at, claimed_at, verified_at, cooldown_until, failure_processed, created_at, updated_at
+FROM user_node_bind_challenges
+WHERE challenge_token=$1`, challengeToken)); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return UserNodeBindChallenge{}, errNodeBindChallengeNotFound
+		}
+		return UserNodeBindChallenge{}, err
+	}
+	if nodeID != "" && ch.NodeID != nodeID {
+		return UserNodeBindChallenge{}, errNodeBindChallengeMismatch
+	}
+	if localUsername != "" && ch.LocalUsername != localUsername {
+		return UserNodeBindChallenge{}, errNodeBindChallengeMismatch
+	}
+	if ch.Status != "active" {
+		if ch.Status == "expired" || ch.Status == "failed" || ch.Status == "cancelled" {
+			return UserNodeBindChallenge{}, errNodeBindChallengeExpired
+		}
+		if ch.Status == "approved" {
+			return ch, nil
+		}
+		return UserNodeBindChallenge{}, errors.New("challenge 状态不合法")
+	}
+	if !ch.ExpiresAt.After(now) {
+		return UserNodeBindChallenge{}, errNodeBindChallengeExpired
+	}
+
+	var oldBilling string
+	err := s.db.QueryRowContext(ctx, `
+SELECT billing_username
+FROM user_node_accounts
+WHERE node_id=$1 AND local_username=$2`, ch.NodeID, ch.LocalUsername).Scan(&oldBilling)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return ch, nil
+	case err != nil:
+		return UserNodeBindChallenge{}, err
+	}
+	oldBilling = strings.TrimSpace(oldBilling)
+	if oldBilling != "" && oldBilling != ch.BillingUsername {
+		return UserNodeBindChallenge{}, &NodeAccountOwnershipConflictError{
+			NodeID:          ch.NodeID,
+			LocalUsername:   ch.LocalUsername,
+			ExistingBilling: oldBilling,
+			RequestedBy:     ch.BillingUsername,
+		}
+	}
+	return ch, nil
+}
+
 func (s *Store) GetUserBindChallengeByIDTx(ctx context.Context, tx *sql.Tx, challengeID int64) (UserNodeBindChallenge, error) {
 	if challengeID <= 0 {
 		return UserNodeBindChallenge{}, errors.New("challenge_id 不合法")
@@ -5329,6 +5498,8 @@ func (s *Store) UpsertNodeStatusTx(
 	sshActiveCount int,
 	diskQuotaInstalled bool,
 	diskQuotaMounts []string,
+	systemServicesCheckedAt *time.Time,
+	systemServices []NodeSystemServiceStatus,
 	costTotal float64,
 ) error {
 	nodeID = strings.TrimSpace(nodeID)
@@ -5360,6 +5531,16 @@ func (s *Store) UpsertNodeStatusTx(
 		}
 		cleanQuotaMounts = append(cleanQuotaMounts, v)
 	}
+	cleanSystemServices := normalizeNodeSystemServiceStatuses(systemServices)
+	systemServicesJSON, err := json.Marshal(cleanSystemServices)
+	if err != nil {
+		return err
+	}
+	var checkedAt any
+	if systemServicesCheckedAt != nil && !systemServicesCheckedAt.IsZero() {
+		ts := inBeijing(*systemServicesCheckedAt)
+		checkedAt = ts
+	}
 
 	month := lastSeenAt.Format("2006-01")
 	var prevRx int64
@@ -5386,14 +5567,14 @@ FOR UPDATE`, nodeID).Scan(&prevRx, &prevTx, &prevMonth, &prevRxMBMonth, &prevTxM
 		txMBMonth += float64(int64(netTxBytes)-prevTx) / 1024.0 / 1024.0
 	}
 
-	_, err := tx.ExecContext(ctx, `
+	_, err = tx.ExecContext(ctx, `
 INSERT INTO nodes(
   node_id, last_seen_at, last_report_id, last_report_ts, interval_seconds,
   cpu_model, cpu_count, gpu_model, gpu_count, os_version, kernel_version, agent_version, node_ip, node_mac, disk_total_gb, disk_used_gb, home_total_gb, home_used_gb, mnt_total_gb, mnt_used_gb,
   net_rx_bytes, net_tx_bytes, net_rx_mb_month, net_tx_mb_month, traffic_month,
-	  gpu_process_count, cpu_process_count, usage_records_count, ssh_active_count, disk_quota_installed, disk_quota_mounts, cost_total, updated_at
+	  gpu_process_count, cpu_process_count, usage_records_count, ssh_active_count, disk_quota_installed, disk_quota_mounts, system_services_checked_at, system_services, cost_total, updated_at
 )
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33::jsonb,$34,$35)
 ON CONFLICT (node_id) DO UPDATE SET
   last_seen_at=EXCLUDED.last_seen_at,
   last_report_id=EXCLUDED.last_report_id,
@@ -5425,13 +5606,15 @@ ON CONFLICT (node_id) DO UPDATE SET
   ssh_active_count=EXCLUDED.ssh_active_count,
   disk_quota_installed=EXCLUDED.disk_quota_installed,
   disk_quota_mounts=EXCLUDED.disk_quota_mounts,
+  system_services_checked_at=EXCLUDED.system_services_checked_at,
+  system_services=EXCLUDED.system_services,
 	  cost_total=EXCLUDED.cost_total,
 	  updated_at=EXCLUDED.updated_at
 		`, nodeID, lastSeenAt, reportID, reportTS, intervalSeconds,
 		cpuModel, cpuCount, gpuModel, gpuCount, osVersion, kernelVersion, agentVersion, nodeIP, nodeMAC,
 		diskTotalGB, diskUsedGB, homeTotalGB, homeUsedGB, mntTotalGB, mntUsedGB,
 		int64(netRxBytes), int64(netTxBytes), rxMBMonth, txMBMonth, month,
-		gpuProcCount, cpuProcCount, usageRecordsCount, sshActiveCount, diskQuotaInstalled, pq.Array(cleanQuotaMounts), costTotal, inBeijing(lastSeenAt))
+		gpuProcCount, cpuProcCount, usageRecordsCount, sshActiveCount, diskQuotaInstalled, pq.Array(cleanQuotaMounts), checkedAt, string(systemServicesJSON), costTotal, inBeijing(lastSeenAt))
 	return err
 }
 
@@ -5454,6 +5637,8 @@ SELECT n.node_id, n.last_seen_at, n.last_report_id, n.last_report_ts, n.interval
          ),
          ARRAY[]::TEXT[]
        ),
+       n.system_services_checked_at,
+       COALESCE(n.system_services, '[]'::jsonb) AS system_services,
        COALESCE(np.ssh_guard_enabled, FALSE) AS ssh_guard_enabled,
        COALESCE(np.ssh_exclusive_enabled, FALSE) AS ssh_exclusive_enabled,
        COALESCE(np.points_intercept_enabled, TRUE) AS points_intercept_enabled,
@@ -5509,6 +5694,8 @@ LIMIT $1`, limit)
 		var nodePrice sql.NullFloat64
 		var nodeModelPricesRaw []byte
 		var diskQuotaMountsRaw []sql.NullString
+		var systemServicesCheckedAt sql.NullTime
+		var systemServicesRaw []byte
 		if err := rows.Scan(
 			&n.NodeID,
 			&n.LastSeenAt,
@@ -5538,6 +5725,8 @@ LIMIT $1`, limit)
 			&n.SSHActiveCount,
 			&n.DiskQuotaInstalled,
 			pq.Array(&diskQuotaMountsRaw),
+			&systemServicesCheckedAt,
+			&systemServicesRaw,
 			&n.SSHGuardEnabled,
 			&n.SSHExclusiveEnabled,
 			&n.PointsInterceptEnabled,
@@ -5582,6 +5771,15 @@ LIMIT $1`, limit)
 			n.PointsOverdraftMemoryGB,
 		)
 		n.DiskQuotaMounts = normalizeNullStringArray(diskQuotaMountsRaw)
+		if systemServicesCheckedAt.Valid {
+			ts := inBeijing(systemServicesCheckedAt.Time)
+			n.SystemServicesCheckedAt = &ts
+		}
+		systemServices, err := parseNodeSystemServicesRaw(systemServicesRaw)
+		if err != nil {
+			return nil, err
+		}
+		n.SystemServices = systemServices
 		if diskQuotaMountpoint.Valid {
 			n.DiskQuotaMountpoint = strings.TrimSpace(diskQuotaMountpoint.String)
 		}
@@ -5630,6 +5828,8 @@ func (s *Store) GetNodeStatus(ctx context.Context, nodeID string) (NodeStatus, e
 	var diskQuotaMountsRaw []sql.NullString
 	var nodePrice sql.NullFloat64
 	var nodeModelPricesRaw []byte
+	var systemServicesCheckedAt sql.NullTime
+	var systemServicesRaw []byte
 	err := s.db.QueryRowContext(ctx, `
 SELECT n.node_id, n.last_seen_at, n.last_report_id, n.last_report_ts, n.interval_seconds,
        n.cpu_model, n.cpu_count, n.gpu_model, n.gpu_count, n.os_version, n.kernel_version, n.agent_version, n.node_ip, n.node_mac, n.disk_total_gb, n.disk_used_gb, n.home_total_gb, n.home_used_gb, n.mnt_total_gb, n.mnt_used_gb,
@@ -5645,6 +5845,8 @@ SELECT n.node_id, n.last_seen_at, n.last_report_id, n.last_report_ts, n.interval
          ),
          ARRAY[]::TEXT[]
        ),
+       n.system_services_checked_at,
+       COALESCE(n.system_services, '[]'::jsonb) AS system_services,
        COALESCE(np.ssh_guard_enabled, FALSE) AS ssh_guard_enabled,
        COALESCE(np.ssh_exclusive_enabled, FALSE) AS ssh_exclusive_enabled,
        COALESCE(np.points_intercept_enabled, TRUE) AS points_intercept_enabled,
@@ -5690,6 +5892,8 @@ WHERE n.node_id=$1`, nodeID).Scan(
 		&n.SSHActiveCount,
 		&n.DiskQuotaInstalled,
 		pq.Array(&diskQuotaMountsRaw),
+		&systemServicesCheckedAt,
+		&systemServicesRaw,
 		&n.SSHGuardEnabled,
 		&n.SSHExclusiveEnabled,
 		&n.PointsInterceptEnabled,
@@ -5733,6 +5937,15 @@ WHERE n.node_id=$1`, nodeID).Scan(
 		n.PointsOverdraftMemoryGB,
 	)
 	n.DiskQuotaMounts = normalizeNullStringArray(diskQuotaMountsRaw)
+	if systemServicesCheckedAt.Valid {
+		ts := inBeijing(systemServicesCheckedAt.Time)
+		n.SystemServicesCheckedAt = &ts
+	}
+	systemServices, err := parseNodeSystemServicesRaw(systemServicesRaw)
+	if err != nil {
+		return n, err
+	}
+	n.SystemServices = systemServices
 	if diskQuotaMountpoint.Valid {
 		n.DiskQuotaMountpoint = strings.TrimSpace(diskQuotaMountpoint.String)
 	}
@@ -6180,6 +6393,43 @@ func parseNodeModelPriceOverridesRaw(raw []byte) (map[string]float64, error) {
 		return nil, err
 	}
 	return normalizeNodeModelPriceOverrides(m)
+}
+
+func parseNodeSystemServicesRaw(raw []byte) ([]NodeSystemServiceStatus, error) {
+	if len(raw) == 0 {
+		return []NodeSystemServiceStatus{}, nil
+	}
+	var items []NodeSystemServiceStatus
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return nil, err
+	}
+	return normalizeNodeSystemServiceStatuses(items), nil
+}
+
+func normalizeNodeSystemServiceStatuses(in []NodeSystemServiceStatus) []NodeSystemServiceStatus {
+	if len(in) == 0 {
+		return []NodeSystemServiceStatus{}
+	}
+	seen := make(map[string]struct{}, len(in))
+	out := make([]NodeSystemServiceStatus, 0, len(in))
+	for _, item := range in {
+		name := strings.TrimSpace(item.Name)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		item.Name = name
+		item.LoadState = strings.TrimSpace(item.LoadState)
+		item.UnitFileState = strings.TrimSpace(item.UnitFileState)
+		item.ActiveState = strings.TrimSpace(item.ActiveState)
+		item.SubState = strings.TrimSpace(item.SubState)
+		item.Healthy = item.Deployed && strings.EqualFold(item.ActiveState, "active")
+		out = append(out, item)
+	}
+	return out
 }
 
 func normalizeNodeModelPriceOverrides(in map[string]float64) (map[string]float64, error) {
@@ -6674,6 +6924,14 @@ func (s *Store) ReplaceNodeLocalUsersTx(ctx context.Context, tx *sql.Tx, nodeID 
 		if localUsername == "" {
 			continue
 		}
+		var uidArg any = nil
+		if u.UID != nil && *u.UID > 0 {
+			uidArg = *u.UID
+		}
+		var primaryGIDArg any = nil
+		if u.PrimaryGID != nil && *u.PrimaryGID > 0 {
+			primaryGIDArg = *u.PrimaryGID
+		}
 		homeUsedGB := u.HomeUsedGB
 		if homeUsedGB < 0 {
 			homeUsedGB = 0
@@ -6681,14 +6939,149 @@ func (s *Store) ReplaceNodeLocalUsersTx(ctx context.Context, tx *sql.Tx, nodeID 
 		hasSudo := u.HasSudo
 		hasDocker := u.HasDocker
 		if _, err := tx.ExecContext(ctx, `
-INSERT INTO node_local_users(node_id, local_username, home_created_at, last_login_at, home_used_gb, has_sudo, has_docker, updated_at)
-VALUES($1,$2,$3,$4,$5,$6,$7,NOW())`,
-			nodeID, localUsername, u.HomeCreatedAt, u.LastLoginAt, homeUsedGB, hasSudo, hasDocker,
+INSERT INTO node_local_users(node_id, local_username, uid, primary_gid, home_created_at, last_login_at, home_used_gb, has_sudo, has_docker, updated_at)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())`,
+			nodeID, localUsername, uidArg, primaryGIDArg, u.HomeCreatedAt, u.LastLoginAt, homeUsedGB, hasSudo, hasDocker,
 		); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (s *Store) ListNodeLocalUsernamesByNodeTx(ctx context.Context, tx *sql.Tx, nodeID string, limit int) ([]string, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return nil, errors.New("node_id 不能为空")
+	}
+	if limit <= 0 || limit > 200000 {
+		limit = 50000
+	}
+	rows, err := tx.QueryContext(ctx, `
+SELECT local_username
+FROM node_local_users
+WHERE node_id=$1
+ORDER BY local_username
+LIMIT $2`, nodeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]string, 0)
+	for rows.Next() {
+		var local string
+		if err := rows.Scan(&local); err != nil {
+			return nil, err
+		}
+		local = strings.TrimSpace(local)
+		if local != "" {
+			out = append(out, local)
+		}
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) CleanupMissingNodeReportedUsersTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	nodeID string,
+	previousLocalUsers []string,
+	currentUsers []NodeLocalUser,
+) (int, int, int, int, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return 0, 0, 0, 0, errors.New("node_id 不能为空")
+	}
+	prevSet := make(map[string]struct{}, len(previousLocalUsers))
+	for _, local := range previousLocalUsers {
+		local = strings.TrimSpace(local)
+		if local == "" {
+			continue
+		}
+		prevSet[local] = struct{}{}
+	}
+	if len(prevSet) == 0 {
+		return 0, 0, 0, 0, nil
+	}
+	currentSet := make(map[string]struct{}, len(currentUsers))
+	for _, u := range currentUsers {
+		local := strings.TrimSpace(u.LocalUsername)
+		if local == "" {
+			continue
+		}
+		currentSet[local] = struct{}{}
+	}
+
+	removedMappings := 0
+	clearedCPULimits := 0
+	clearedMemoryLimits := 0
+	clearedGPUVisibility := 0
+	for local := range prevSet {
+		if _, ok := currentSet[local]; ok {
+			continue
+		}
+		oldBilling, mapped, err := s.getUserNodeAccountBillingTx(ctx, tx, nodeID, local)
+		if err != nil {
+			return 0, 0, 0, 0, err
+		}
+		if mapped {
+			res, err := tx.ExecContext(ctx, `
+DELETE FROM user_node_accounts
+WHERE node_id=$1 AND local_username=$2 AND billing_username=$3`, nodeID, local, oldBilling)
+			if err != nil {
+				return 0, 0, 0, 0, err
+			}
+			affected, err := res.RowsAffected()
+			if err != nil {
+				return 0, 0, 0, 0, err
+			}
+			if affected > 0 {
+				if err := s.insertUserNodeAccountAuditTx(
+					ctx,
+					tx,
+					nodeID,
+					local,
+					oldBilling,
+					"",
+					"mapping_delete",
+					"node_sync",
+					"node_report",
+					"节点上报该本地账号已不存在，自动清理映射",
+				); err != nil {
+					return 0, 0, 0, 0, err
+				}
+				removedMappings++
+			}
+		}
+		if res, err := tx.ExecContext(ctx, `
+DELETE FROM node_user_cpu_limits
+WHERE node_id=$1 AND local_username=$2`, nodeID, local); err != nil {
+			return 0, 0, 0, 0, err
+		} else if affected, err := res.RowsAffected(); err != nil {
+			return 0, 0, 0, 0, err
+		} else if affected > 0 {
+			clearedCPULimits += int(affected)
+		}
+		if res, err := tx.ExecContext(ctx, `
+DELETE FROM node_user_memory_limits
+WHERE node_id=$1 AND local_username=$2`, nodeID, local); err != nil {
+			return 0, 0, 0, 0, err
+		} else if affected, err := res.RowsAffected(); err != nil {
+			return 0, 0, 0, 0, err
+		} else if affected > 0 {
+			clearedMemoryLimits += int(affected)
+		}
+		if res, err := tx.ExecContext(ctx, `
+DELETE FROM node_user_gpu_visibility
+WHERE node_id=$1 AND local_username=$2`, nodeID, local); err != nil {
+			return 0, 0, 0, 0, err
+		} else if affected, err := res.RowsAffected(); err != nil {
+			return 0, 0, 0, 0, err
+		} else if affected > 0 {
+			clearedGPUVisibility += int(affected)
+		}
+	}
+	return removedMappings, clearedCPULimits, clearedMemoryLimits, clearedGPUVisibility, nil
 }
 
 func (s *Store) ReplaceNodeUserDiskQuotasTx(ctx context.Context, tx *sql.Tx, nodeID string, quotas []NodeUserDiskQuota) error {
@@ -6820,6 +7213,8 @@ func (s *Store) ListNodeLocalUsersWithPlatformMapping(ctx context.Context, nodeI
 	rows, err := s.db.QueryContext(ctx, `
 SELECT nlu.node_id,
        nlu.local_username,
+       nlu.uid,
+       nlu.primary_gid,
        COALESCE(una.billing_username, '') AS platform_username,
        (una.billing_username IS NOT NULL) AS mapping_exists,
        (
@@ -6877,6 +7272,8 @@ LIMIT $2`, nodeID, limit)
 	out := make([]NodeLocalUser, 0)
 	for rows.Next() {
 		var u NodeLocalUser
+		var uidRaw sql.NullInt64
+		var primaryGIDRaw sql.NullInt64
 		var cpuQuotaPercent sql.NullFloat64
 		var cpuQuotaUpdatedAt sql.NullTime
 		var memoryLimitGB sql.NullFloat64
@@ -6886,6 +7283,8 @@ LIMIT $2`, nodeID, limit)
 		if err := rows.Scan(
 			&u.NodeID,
 			&u.LocalUsername,
+			&uidRaw,
+			&primaryGIDRaw,
 			&u.PlatformUsername,
 			&u.MappingExists,
 			&u.PlatformExists,
@@ -6908,6 +7307,14 @@ LIMIT $2`, nodeID, limit)
 			&u.UpdatedAt,
 		); err != nil {
 			return nil, err
+		}
+		if uidRaw.Valid && uidRaw.Int64 > 0 {
+			v := int(uidRaw.Int64)
+			u.UID = &v
+		}
+		if primaryGIDRaw.Valid && primaryGIDRaw.Int64 > 0 {
+			v := int(primaryGIDRaw.Int64)
+			u.PrimaryGID = &v
 		}
 		if cpuQuotaPercent.Valid {
 			v := cpuQuotaPercent.Float64
@@ -7619,6 +8026,96 @@ LIMIT $2`, nodeID, limit)
 	return out, rows.Err()
 }
 
+func (s *Store) ListNodeUserGPUVisibility(
+	ctx context.Context,
+	nodeID string,
+	billingUsername string,
+	limit int,
+) ([]NodeUserGPUVisibility, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	billingUsername = strings.TrimSpace(billingUsername)
+	if limit <= 0 || limit > 10000 {
+		limit = 1000
+	}
+	conds := make([]string, 0, 2)
+	args := make([]any, 0, 4)
+	addArg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	if nodeID != "" {
+		conds = append(conds, "l.node_id="+addArg(nodeID))
+	}
+	if billingUsername != "" {
+		conds = append(conds, "una.billing_username="+addArg(billingUsername))
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = "WHERE " + strings.Join(conds, " AND ")
+	}
+	query := `
+SELECT l.node_id,
+       l.local_username,
+       COALESCE(una.billing_username, '') AS billing_username,
+       (una.billing_username IS NOT NULL) AS mapping_exists,
+       (
+         EXISTS(SELECT 1 FROM user_accounts ua WHERE ua.username=una.billing_username)
+         OR EXISTS(SELECT 1 FROM admin_accounts aa WHERE aa.username=una.billing_username)
+         OR EXISTS(SELECT 1 FROM power_users pu WHERE pu.username=una.billing_username)
+       ) AS platform_exists,
+       (adm.username IS NOT NULL) AS admin_mapping,
+       COALESCE(adm.username, '') AS admin_username,
+       array_agg(l.gpu_index ORDER BY l.gpu_index)::BIGINT[] AS gpu_indices,
+       (array_agg(l.reason ORDER BY l.updated_at DESC, l.gpu_index ASC))[1] AS reason,
+       (array_agg(l.updated_by ORDER BY l.updated_at DESC, l.gpu_index ASC))[1] AS updated_by,
+       MAX(l.updated_at) AS updated_at
+FROM node_user_gpu_visibility l
+LEFT JOIN user_node_accounts una
+  ON una.node_id=l.node_id
+ AND una.local_username=l.local_username
+LEFT JOIN admin_accounts adm
+  ON adm.username=una.billing_username
+` + where + `
+GROUP BY l.node_id, l.local_username, una.billing_username, adm.username
+ORDER BY MAX(l.updated_at) DESC, l.node_id ASC, l.local_username ASC
+LIMIT ` + addArg(limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]NodeUserGPUVisibility, 0)
+	for rows.Next() {
+		var x NodeUserGPUVisibility
+		var gpuIndicesRaw pq.Int64Array
+		if err := rows.Scan(
+			&x.NodeID,
+			&x.LocalUsername,
+			&x.BillingUsername,
+			&x.MappingExists,
+			&x.PlatformExists,
+			&x.AdminMapping,
+			&x.AdminUsername,
+			&gpuIndicesRaw,
+			&x.Reason,
+			&x.UpdatedBy,
+			&x.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		x.GPUIndices = make([]int, 0, len(gpuIndicesRaw))
+		for _, idx := range gpuIndicesRaw {
+			if idx >= 0 {
+				x.GPUIndices = append(x.GPUIndices, int(idx))
+			}
+		}
+		sort.Ints(x.GPUIndices)
+		normalizeNodeUserGPUVisibilityTimes(&x)
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) InsertNodeSecurityEventTx(
 	ctx context.Context,
 	tx *sql.Tx,
@@ -8071,11 +8568,29 @@ func (s *Store) CreateAdminAccount(ctx context.Context, username string, passwor
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `
-INSERT INTO admin_accounts(username, password_hash)
-VALUES($1,$2)
-ON CONFLICT (username) DO NOTHING`, username, string(hash))
-	return err
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		uid, _, err := s.allocatePlatformUIDTx(ctx, tx, time.Now(), nil)
+		if err != nil {
+			return err
+		}
+		res, err := tx.ExecContext(ctx, `
+INSERT INTO admin_accounts(username, password_hash, platform_uid)
+VALUES($1,$2,$3)
+ON CONFLICT (username) DO NOTHING`, username, string(hash), uid)
+		if err != nil {
+			return err
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			_, err = s.EnsureUserPlatformUIDTx(ctx, tx, username)
+			return err
+		}
+		_, err = s.EnsureUserPlatformUIDTx(ctx, tx, username)
+		return err
+	})
 }
 
 func (s *Store) VerifyAdminPassword(ctx context.Context, username string, password string) (bool, error) {
@@ -8152,13 +8667,20 @@ SELECT EXISTS(
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `
-INSERT INTO power_users(username, password_hash, can_view_board, can_view_nodes, can_manage_nodes, can_manage_points, can_review_requests, created_by, updated_by)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$8)`, username, string(hash), canViewBoard, canViewNodes, canManageNodes, canManagePoints, canReview, createdBy)
-	if err != nil {
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		uid, _, err := s.allocatePlatformUIDTx(ctx, tx, time.Now(), nil)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `
+INSERT INTO power_users(username, password_hash, platform_uid, can_view_board, can_view_nodes, can_manage_nodes, can_manage_points, can_review_requests, created_by, updated_by)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)`, username, string(hash), uid, canViewBoard, canViewNodes, canManageNodes, canManagePoints, canReview, createdBy)
+		if err != nil {
+			return err
+		}
+		_, err = s.EnsureUserPlatformUIDTx(ctx, tx, username)
 		return err
-	}
-	return nil
+	})
 }
 
 func (s *Store) VerifyPowerUserPassword(ctx context.Context, username string, password string) (PowerUser, bool, error) {
@@ -8167,12 +8689,26 @@ func (s *Store) VerifyPowerUserPassword(ctx context.Context, username string, pa
 		return PowerUser{}, false, errors.New("username 不能为空")
 	}
 	var hash string
+	var uidRaw sql.NullInt64
 	var out PowerUser
 	err := s.db.QueryRowContext(ctx, `
-SELECT password_hash, username, can_view_board, can_view_nodes, can_manage_nodes, COALESCE(can_manage_points,false), can_review_requests, created_by, updated_by, last_login_at, created_at, updated_at
-FROM power_users
-WHERE username=$1`, username).Scan(
-		&hash, &out.Username, &out.CanViewBoard, &out.CanViewNodes, &out.CanManageNodes, &out.CanManagePoints, &out.CanReviewRequests, &out.CreatedBy, &out.UpdatedBy, &out.LastLoginAt, &out.CreatedAt, &out.UpdatedAt,
+SELECT pu.password_hash,
+       pu.username,
+       COALESCE(ua.platform_uid, pu.platform_uid) AS platform_uid,
+       pu.can_view_board,
+       pu.can_view_nodes,
+       pu.can_manage_nodes,
+       COALESCE(pu.can_manage_points,false),
+       pu.can_review_requests,
+       pu.created_by,
+       pu.updated_by,
+       pu.last_login_at,
+       pu.created_at,
+       pu.updated_at
+FROM power_users pu
+LEFT JOIN user_accounts ua ON ua.username=pu.username
+WHERE pu.username=$1`, username).Scan(
+		&hash, &out.Username, &uidRaw, &out.CanViewBoard, &out.CanViewNodes, &out.CanManageNodes, &out.CanManagePoints, &out.CanReviewRequests, &out.CreatedBy, &out.UpdatedBy, &out.LastLoginAt, &out.CreatedAt, &out.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -8182,6 +8718,10 @@ WHERE username=$1`, username).Scan(
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)); err != nil {
 		return PowerUser{}, false, nil
+	}
+	if uidRaw.Valid && uidRaw.Int64 > 0 {
+		v := int(uidRaw.Int64)
+		out.PlatformUID = &v
 	}
 	_, _ = s.db.ExecContext(ctx, `UPDATE power_users SET last_login_at=NOW(), updated_at=NOW() WHERE username=$1`, username)
 	return out, true, nil
@@ -8193,7 +8733,8 @@ func (s *Store) ListPowerUsers(ctx context.Context, limit int) ([]PowerUser, err
 	}
 	rows, err := s.db.QueryContext(ctx, `
 SELECT pu.username,
-       EXISTS(SELECT 1 FROM user_accounts ua WHERE ua.username=pu.username) AS is_platform_user,
+       COALESCE(ua.platform_uid, pu.platform_uid) AS platform_uid,
+       (ua.username IS NOT NULL) AS is_platform_user,
        pu.can_view_board,
        pu.can_view_nodes,
        pu.can_manage_nodes,
@@ -8205,7 +8746,8 @@ SELECT pu.username,
        pu.created_at,
        pu.updated_at
 FROM power_users pu
-ORDER BY username
+LEFT JOIN user_accounts ua ON ua.username=pu.username
+ORDER BY pu.username
 LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
@@ -8214,8 +8756,13 @@ LIMIT $1`, limit)
 	out := make([]PowerUser, 0)
 	for rows.Next() {
 		var p PowerUser
-		if err := rows.Scan(&p.Username, &p.IsPlatformUser, &p.CanViewBoard, &p.CanViewNodes, &p.CanManageNodes, &p.CanManagePoints, &p.CanReviewRequests, &p.CreatedBy, &p.UpdatedBy, &p.LastLoginAt, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		var uidRaw sql.NullInt64
+		if err := rows.Scan(&p.Username, &uidRaw, &p.IsPlatformUser, &p.CanViewBoard, &p.CanViewNodes, &p.CanManageNodes, &p.CanManagePoints, &p.CanReviewRequests, &p.CreatedBy, &p.UpdatedBy, &p.LastLoginAt, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, err
+		}
+		if uidRaw.Valid && uidRaw.Int64 > 0 {
+			v := int(uidRaw.Int64)
+			p.PlatformUID = &v
 		}
 		out = append(out, p)
 	}
@@ -8249,18 +8796,23 @@ func (s *Store) PromotePlatformUserToPowerUser(ctx context.Context, username str
 			}
 			return err
 		}
+		platformUID, err := s.EnsureUserPlatformUIDTx(ctx, tx, username)
+		if err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `
-INSERT INTO power_users(username, password_hash, can_view_board, can_view_nodes, can_manage_nodes, can_manage_points, can_review_requests, created_by, updated_by)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$8)
+INSERT INTO power_users(username, password_hash, platform_uid, can_view_board, can_view_nodes, can_manage_nodes, can_manage_points, can_review_requests, created_by, updated_by)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)
 ON CONFLICT (username) DO UPDATE SET
   password_hash=EXCLUDED.password_hash,
+  platform_uid=EXCLUDED.platform_uid,
   can_view_board=EXCLUDED.can_view_board,
   can_view_nodes=EXCLUDED.can_view_nodes,
   can_manage_nodes=EXCLUDED.can_manage_nodes,
   can_manage_points=EXCLUDED.can_manage_points,
   can_review_requests=EXCLUDED.can_review_requests,
   updated_by=EXCLUDED.updated_by,
-  updated_at=NOW()`, username, pwdHash, canViewBoard, canViewNodes, canManageNodes, canManagePoints, canReview, updatedBy); err != nil {
+  updated_at=NOW()`, username, pwdHash, platformUID, canViewBoard, canViewNodes, canManageNodes, canManagePoints, canReview, updatedBy); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `
@@ -8427,6 +8979,559 @@ func (s *Store) resolveInitialGeneralBalanceTx(
 	return initial, nil
 }
 
+func platformUIDInventoryCandidates() []string {
+	out := make([]string, 0, len(platformUIDInventoryFiles)+1)
+	if envPath := strings.TrimSpace(os.Getenv("PLATFORM_UID_RESERVED_FILE")); envPath != "" {
+		out = append(out, envPath)
+	}
+	for _, p := range platformUIDInventoryFiles {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		dup := false
+		for _, existing := range out {
+			if existing == p {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func decorateDeletedUserAccountUIDRelease(out *DeletedUserAccount, now time.Time) {
+	if out == nil {
+		return
+	}
+	if out.PlatformUID == nil || *out.PlatformUID <= 0 || out.RestoredAt != nil {
+		out.UIDReleaseAt = nil
+		out.UIDReleaseRemainingSec = nil
+		return
+	}
+	releaseAt := out.DeletedAt.AddDate(platformUIDReleaseRetentionYears, 0, 0)
+	out.UIDReleaseAt = &releaseAt
+	remainingSec := int64(0)
+	if releaseAt.After(now) {
+		remainingSec = int64(releaseAt.Sub(now) / time.Second)
+	}
+	out.UIDReleaseRemainingSec = &remainingSec
+}
+
+func loadReservedUIDsFromInventoryFiles() map[int]struct{} {
+	out := map[int]struct{}{}
+	for _, p := range platformUIDInventoryCandidates() {
+		absPath := p
+		if !filepath.IsAbs(absPath) {
+			if resolved, err := filepath.Abs(absPath); err == nil {
+				absPath = resolved
+			}
+		}
+		raw, err := os.ReadFile(absPath)
+		if err != nil {
+			continue
+		}
+		for _, ln := range strings.Split(string(raw), "\n") {
+			line := strings.TrimSpace(ln)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			fields := strings.Fields(line)
+			if len(fields) == 0 {
+				continue
+			}
+			id, err := strconv.Atoi(strings.TrimSpace(fields[0]))
+			if err != nil || id <= 0 {
+				continue
+			}
+			out[id] = struct{}{}
+		}
+	}
+	return out
+}
+
+func nextAvailablePlatformUID(used map[int]struct{}) (int, bool) {
+	if used == nil {
+		used = map[int]struct{}{}
+	}
+	ranges := [][2]int{
+		{platformUIDPreferredMin, platformUIDPreferredMax},
+		{platformUIDFallbackMin, platformUIDPreferredMin - 1},
+		{platformUIDPreferredMax + 1, platformUIDHardMax},
+	}
+	for _, rg := range ranges {
+		start, end := rg[0], rg[1]
+		if start > end {
+			continue
+		}
+		if start < platformUIDFallbackMin {
+			start = platformUIDFallbackMin
+		}
+		for id := start; id <= end; id++ {
+			if _, sensitive := platformUIDSensitiveValues[id]; sensitive {
+				continue
+			}
+			if _, occupied := used[id]; occupied {
+				continue
+			}
+			return id, true
+		}
+	}
+	return 0, false
+}
+
+func (s *Store) lockPlatformUIDTablesTx(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, `LOCK TABLE user_accounts IN SHARE ROW EXCLUSIVE MODE`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `LOCK TABLE power_users IN SHARE ROW EXCLUSIVE MODE`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `LOCK TABLE admin_accounts IN SHARE ROW EXCLUSIVE MODE`); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) isPlatformUIDOccupiedByOtherTx(ctx context.Context, tx *sql.Tx, uid int, username string) (bool, error) {
+	if uid <= 0 {
+		return false, nil
+	}
+	var occupied bool
+	if err := tx.QueryRowContext(ctx, `
+SELECT EXISTS(
+  SELECT 1 FROM user_accounts WHERE platform_uid=$1 AND username<>$2
+  UNION ALL
+  SELECT 1 FROM power_users WHERE platform_uid=$1 AND username<>$2
+  UNION ALL
+  SELECT 1 FROM admin_accounts WHERE platform_uid=$1 AND username<>$2
+)`, uid, username).Scan(&occupied); err != nil {
+		return false, err
+	}
+	return occupied, nil
+}
+
+func (s *Store) collectUsedPlatformUIDsTx(ctx context.Context, tx *sql.Tx, now time.Time) (map[int]struct{}, error) {
+	used := map[int]struct{}{}
+	for id := range platformUIDSensitiveValues {
+		used[id] = struct{}{}
+	}
+	for id := range loadReservedUIDsFromInventoryFiles() {
+		used[id] = struct{}{}
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+SELECT platform_uid FROM user_accounts WHERE platform_uid IS NOT NULL
+UNION
+SELECT platform_uid FROM power_users WHERE platform_uid IS NOT NULL
+UNION
+SELECT platform_uid FROM admin_accounts WHERE platform_uid IS NOT NULL`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var id sql.NullInt64
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		if id.Valid && id.Int64 > 0 {
+			used[int(id.Int64)] = struct{}{}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+
+	cutoff := now.AddDate(-platformUIDReleaseRetentionYears, 0, 0)
+	rows, err = tx.QueryContext(ctx, `
+SELECT platform_uid
+FROM deleted_user_accounts
+WHERE platform_uid IS NOT NULL
+  AND restored_at IS NULL
+  AND deleted_at > $1`, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var id sql.NullInt64
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		if id.Valid && id.Int64 > 0 {
+			used[int(id.Int64)] = struct{}{}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+
+	rows, err = tx.QueryContext(ctx, `
+SELECT uid
+FROM node_local_users
+WHERE uid IS NOT NULL
+UNION
+SELECT primary_gid
+FROM node_local_users
+WHERE primary_gid IS NOT NULL`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var id sql.NullInt64
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		if id.Valid && id.Int64 > 0 {
+			used[int(id.Int64)] = struct{}{}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	return used, nil
+}
+
+func (s *Store) allocatePlatformUIDTx(ctx context.Context, tx *sql.Tx, now time.Time, used map[int]struct{}) (int, map[int]struct{}, error) {
+	if err := s.lockPlatformUIDTablesTx(ctx, tx); err != nil {
+		return 0, nil, err
+	}
+	if used == nil {
+		var err error
+		used, err = s.collectUsedPlatformUIDsTx(ctx, tx, now)
+		if err != nil {
+			return 0, nil, err
+		}
+	}
+	uid, ok := nextAvailablePlatformUID(used)
+	if !ok {
+		return 0, nil, errors.New("无法分配可用 platform_uid：可用 UID 已耗尽")
+	}
+	used[uid] = struct{}{}
+	return uid, used, nil
+}
+
+func (s *Store) ensureAnyAccountPlatformUIDTx(ctx context.Context, tx *sql.Tx, username string) (int, bool, error) {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return 0, false, errors.New("username 不能为空")
+	}
+	if err := s.lockPlatformUIDTablesTx(ctx, tx); err != nil {
+		return 0, false, err
+	}
+
+	type accountUIDRow struct {
+		exists bool
+		uid    sql.NullInt64
+	}
+
+	readRow := func(query string) (accountUIDRow, error) {
+		var out accountUIDRow
+		err := tx.QueryRowContext(ctx, query, username).Scan(&out.uid)
+		if errors.Is(err, sql.ErrNoRows) {
+			return out, nil
+		}
+		if err != nil {
+			return out, err
+		}
+		out.exists = true
+		return out, nil
+	}
+
+	userRow, err := readRow(`
+SELECT platform_uid
+FROM user_accounts
+WHERE username=$1
+FOR UPDATE`)
+	if err != nil {
+		return 0, false, err
+	}
+	powerRow, err := readRow(`
+SELECT platform_uid
+FROM power_users
+WHERE username=$1
+FOR UPDATE`)
+	if err != nil {
+		return 0, false, err
+	}
+	adminRow, err := readRow(`
+SELECT platform_uid
+FROM admin_accounts
+WHERE username=$1
+FOR UPDATE`)
+	if err != nil {
+		return 0, false, err
+	}
+
+	if !userRow.exists && !powerRow.exists && !adminRow.exists {
+		return 0, false, sql.ErrNoRows
+	}
+
+	targetUID := 0
+	if userRow.uid.Valid && userRow.uid.Int64 > 0 {
+		targetUID = int(userRow.uid.Int64)
+	} else if powerRow.uid.Valid && powerRow.uid.Int64 > 0 {
+		targetUID = int(powerRow.uid.Int64)
+	} else if adminRow.uid.Valid && adminRow.uid.Int64 > 0 {
+		targetUID = int(adminRow.uid.Int64)
+	}
+	if _, sensitive := platformUIDSensitiveValues[targetUID]; sensitive {
+		targetUID = 0
+	}
+	if targetUID > 0 {
+		occupied, err := s.isPlatformUIDOccupiedByOtherTx(ctx, tx, targetUID, username)
+		if err != nil {
+			return 0, false, err
+		}
+		if occupied {
+			targetUID = 0
+		}
+	}
+	if targetUID == 0 {
+		uid, _, err := s.allocatePlatformUIDTx(ctx, tx, time.Now(), nil)
+		if err != nil {
+			return 0, false, err
+		}
+		targetUID = uid
+	}
+
+	updated := false
+	apply := func(table string) error {
+		res, err := tx.ExecContext(ctx, fmt.Sprintf(`
+UPDATE %s
+SET platform_uid=$2,
+    updated_at=NOW()
+WHERE username=$1
+  AND platform_uid IS DISTINCT FROM $2`, table), username, targetUID)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n > 0 {
+			updated = true
+		}
+		return nil
+	}
+	if userRow.exists {
+		if err := apply("user_accounts"); err != nil {
+			return 0, false, err
+		}
+	}
+	if powerRow.exists {
+		if err := apply("power_users"); err != nil {
+			return 0, false, err
+		}
+	}
+	if adminRow.exists {
+		if err := apply("admin_accounts"); err != nil {
+			return 0, false, err
+		}
+	}
+	return targetUID, updated, nil
+}
+
+func (s *Store) EnsureUserPlatformUIDTx(ctx context.Context, tx *sql.Tx, username string) (int, error) {
+	uid, _, err := s.ensureAnyAccountPlatformUIDTx(ctx, tx, username)
+	if err != nil {
+		return 0, err
+	}
+	return uid, nil
+}
+
+func (s *Store) EnsureUserPlatformUID(ctx context.Context, username string) (int, error) {
+	var uid int
+	err := s.WithTx(ctx, func(tx *sql.Tx) error {
+		var txErr error
+		uid, txErr = s.EnsureUserPlatformUIDTx(ctx, tx, username)
+		return txErr
+	})
+	if err != nil {
+		return 0, err
+	}
+	return uid, nil
+}
+
+func (s *Store) BackfillMissingPlatformUIDs(ctx context.Context, limit int) (int, error) {
+	if limit <= 0 || limit > 200000 {
+		limit = 200000
+	}
+	assigned := 0
+	err := s.WithTx(ctx, func(tx *sql.Tx) error {
+		if err := s.lockPlatformUIDTablesTx(ctx, tx); err != nil {
+			return err
+		}
+		rows, err := tx.QueryContext(ctx, `
+WITH account_uids AS (
+  SELECT username, platform_uid FROM user_accounts
+  UNION ALL
+  SELECT username, platform_uid FROM power_users
+  UNION ALL
+  SELECT username, platform_uid FROM admin_accounts
+),
+dup_uids AS (
+  SELECT platform_uid
+  FROM account_uids
+  WHERE platform_uid IS NOT NULL
+    AND platform_uid > 0
+  GROUP BY platform_uid
+  HAVING COUNT(DISTINCT username) > 1
+),
+need_fix AS (
+  SELECT au.username
+  FROM account_uids au
+  GROUP BY au.username
+  HAVING COUNT(*) FILTER (WHERE au.platform_uid IS NULL OR au.platform_uid <= 0) > 0
+     OR COUNT(DISTINCT au.platform_uid) FILTER (WHERE au.platform_uid IS NOT NULL AND au.platform_uid > 0) > 1
+     OR BOOL_OR(au.platform_uid IN (65534, 65535))
+     OR BOOL_OR(au.platform_uid IN (SELECT platform_uid FROM dup_uids))
+)
+SELECT username
+FROM need_fix
+ORDER BY username
+LIMIT $1`, limit)
+		if err != nil {
+			return err
+		}
+		usernames := make([]string, 0)
+		for rows.Next() {
+			var username string
+			if err := rows.Scan(&username); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			username = strings.TrimSpace(username)
+			if username != "" {
+				usernames = append(usernames, username)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		if len(usernames) == 0 {
+			return nil
+		}
+		for _, username := range usernames {
+			_, changed, err := s.ensureAnyAccountPlatformUIDTx(ctx, tx, username)
+			if err != nil {
+				return err
+			}
+			if changed {
+				assigned++
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return assigned, nil
+}
+
+func (s *Store) BackfillMissingDeletedPlatformUIDs(ctx context.Context, limit int) (int, error) {
+	if limit <= 0 || limit > 200000 {
+		limit = 200000
+	}
+	assigned := 0
+	err := s.WithTx(ctx, func(tx *sql.Tx) error {
+		if err := s.lockPlatformUIDTablesTx(ctx, tx); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `LOCK TABLE deleted_user_accounts IN SHARE ROW EXCLUSIVE MODE`); err != nil {
+			return err
+		}
+
+		rows, err := tx.QueryContext(ctx, `
+SELECT deleted_id
+FROM deleted_user_accounts
+WHERE restored_at IS NULL
+  AND platform_uid IS NULL
+ORDER BY deleted_at ASC, deleted_id ASC
+LIMIT $1
+FOR UPDATE`, limit)
+		if err != nil {
+			return err
+		}
+		ids := make([]int64, 0)
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			if id > 0 {
+				ids = append(ids, id)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		if len(ids) == 0 {
+			return nil
+		}
+
+		used, err := s.collectUsedPlatformUIDsTx(ctx, tx, time.Now())
+		if err != nil {
+			return err
+		}
+		for _, id := range ids {
+			uid, nextUsed, err := s.allocatePlatformUIDTx(ctx, tx, time.Now(), used)
+			if err != nil {
+				return err
+			}
+			used = nextUsed
+			res, err := tx.ExecContext(ctx, `
+UPDATE deleted_user_accounts
+SET platform_uid=$2
+WHERE deleted_id=$1
+  AND restored_at IS NULL
+  AND platform_uid IS NULL`, id, uid)
+			if err != nil {
+				return err
+			}
+			n, err := res.RowsAffected()
+			if err != nil {
+				return err
+			}
+			if n > 0 {
+				assigned++
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return assigned, nil
+}
+
 func (s *Store) CreateUserAccountTx(ctx context.Context, tx *sql.Tx, in UserAccount, password string, defaultBalance float64) error {
 	in.Username = strings.TrimSpace(in.Username)
 	in.Email = strings.TrimSpace(strings.ToLower(in.Email))
@@ -8483,12 +9588,16 @@ func (s *Store) CreateUserAccountTx(ctx context.Context, tx *sql.Tx, in UserAcco
 	if err != nil {
 		return err
 	}
+	platformUID, _, err := s.allocatePlatformUIDTx(ctx, tx, time.Now(), nil)
+	if err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO user_accounts(
-  username, email, password_hash, real_name, student_id, advisor, expected_graduation_year, expected_graduation_month, phone, role
+  username, email, password_hash, real_name, student_id, advisor, expected_graduation_year, expected_graduation_month, phone, platform_uid, role
 )
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'user')`,
-		in.Username, in.Email, string(hash), in.RealName, in.StudentID, in.Advisor, in.ExpectedGraduationYear, in.ExpectedGraduationMonth, in.Phone); err != nil {
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'user')`,
+		in.Username, in.Email, string(hash), in.RealName, in.StudentID, in.Advisor, in.ExpectedGraduationYear, in.ExpectedGraduationMonth, in.Phone, platformUID); err != nil {
 		return err
 	}
 	initialBalance, err := s.resolveInitialGeneralBalanceTx(ctx, tx, in.Username, in.StudentID, defaultBalance)
@@ -9450,12 +10559,16 @@ func (s *Store) createUserAccountWithHashTx(ctx context.Context, tx *sql.Tx, in 
 	if in.ExpectedGraduationMonth < 1 || in.ExpectedGraduationMonth > 12 {
 		return errors.New("expected_graduation_month 不合法")
 	}
+	platformUID, _, err := s.allocatePlatformUIDTx(ctx, tx, time.Now(), nil)
+	if err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO user_accounts(
-  username, email, password_hash, real_name, student_id, advisor, expected_graduation_year, expected_graduation_month, phone, role
+  username, email, password_hash, real_name, student_id, advisor, expected_graduation_year, expected_graduation_month, phone, platform_uid, role
 )
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'user')`,
-		in.Username, in.Email, in.PasswordHash, in.RealName, in.StudentID, in.Advisor, in.ExpectedGraduationYear, in.ExpectedGraduationMonth, in.Phone,
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'user')`,
+		in.Username, in.Email, in.PasswordHash, in.RealName, in.StudentID, in.Advisor, in.ExpectedGraduationYear, in.ExpectedGraduationMonth, in.Phone, platformUID,
 	); err != nil {
 		return err
 	}
@@ -9687,13 +10800,18 @@ func (s *Store) GetUserAccountByUsername(ctx context.Context, username string) (
 		return UserAccount{}, errors.New("username 不能为空")
 	}
 	var out UserAccount
+	var platformUID sql.NullInt64
 	err := s.db.QueryRowContext(ctx, `
-SELECT username, email, real_name, student_id, advisor, expected_graduation_year, expected_graduation_month, phone, role, last_login_at, created_at, updated_at
+SELECT username, email, real_name, student_id, advisor, expected_graduation_year, expected_graduation_month, phone, platform_uid, role, last_login_at, created_at, updated_at
 FROM user_accounts
 WHERE username=$1`, username).Scan(
 		&out.Username, &out.Email, &out.RealName, &out.StudentID, &out.Advisor, &out.ExpectedGraduationYear, &out.ExpectedGraduationMonth,
-		&out.Phone, &out.Role, &out.LastLoginAt, &out.CreatedAt, &out.UpdatedAt,
+		&out.Phone, &platformUID, &out.Role, &out.LastLoginAt, &out.CreatedAt, &out.UpdatedAt,
 	)
+	if platformUID.Valid && platformUID.Int64 > 0 {
+		v := int(platformUID.Int64)
+		out.PlatformUID = &v
+	}
 	return out, err
 }
 
@@ -9761,6 +10879,7 @@ func (s *Store) ArchiveUserAccountTx(ctx context.Context, tx *sql.Tx, username s
 		ExpectedGraduationYear  int
 		ExpectedGraduationMonth int
 		Phone                   string
+		PlatformUID             sql.NullInt64
 		Role                    string
 		LastLoginAt             sql.NullTime
 		AccountCreatedAt        sql.NullTime
@@ -9773,13 +10892,13 @@ func (s *Store) ArchiveUserAccountTx(ctx context.Context, tx *sql.Tx, username s
 	var r rowData
 	err := tx.QueryRowContext(ctx, `
 SELECT username, email, student_id, password_hash, real_name, advisor,
-       expected_graduation_year, expected_graduation_month, phone, role,
+       expected_graduation_year, expected_graduation_month, phone, platform_uid, role,
        last_login_at, created_at, updated_at
 FROM user_accounts
 WHERE username=$1
 FOR UPDATE`, username).Scan(
 		&r.Username, &r.Email, &r.StudentID, &r.PasswordHash, &r.RealName, &r.Advisor,
-		&r.ExpectedGraduationYear, &r.ExpectedGraduationMonth, &r.Phone, &r.Role,
+		&r.ExpectedGraduationYear, &r.ExpectedGraduationMonth, &r.Phone, &r.PlatformUID, &r.Role,
 		&r.LastLoginAt, &r.AccountCreatedAt, &r.AccountUpdatedAt,
 	)
 	if err != nil {
@@ -9830,18 +10949,19 @@ ORDER BY node_id, local_username`, username); qErr != nil {
 	}
 
 	var out DeletedUserAccount
+	var archivedPlatformUID sql.NullInt64
 	var restoredAt sql.NullTime
 	var restoredBy sql.NullString
 	err = tx.QueryRowContext(ctx, `
 INSERT INTO deleted_user_accounts(
   username, email, student_id, password_hash, real_name, advisor, expected_graduation_year, expected_graduation_month,
-  phone, role, last_login_at, account_created_at, account_updated_at, balance, carryover_balance, user_status, blocked_at, deleted_by, delete_reason, node_accounts_json
+  phone, platform_uid, role, last_login_at, account_created_at, account_updated_at, balance, carryover_balance, user_status, blocked_at, deleted_by, delete_reason, node_accounts_json
 )
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::jsonb)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21::jsonb)
 RETURNING deleted_id, username, email, student_id, real_name, advisor, expected_graduation_year, expected_graduation_month,
-          phone, role, balance, carryover_balance, user_status, deleted_at, deleted_by, delete_reason, restored_at, restored_by`,
+          phone, platform_uid, role, balance, carryover_balance, user_status, deleted_at, deleted_by, delete_reason, restored_at, restored_by`,
 		r.Username, r.Email, r.StudentID, r.PasswordHash, r.RealName, r.Advisor, r.ExpectedGraduationYear, r.ExpectedGraduationMonth,
-		r.Phone, r.Role, r.LastLoginAt, r.AccountCreatedAt, r.AccountUpdatedAt,
+		r.Phone, r.PlatformUID, r.Role, r.LastLoginAt, r.AccountCreatedAt, r.AccountUpdatedAt,
 		func() float64 {
 			if r.Balance.Valid {
 				return r.Balance.Float64
@@ -9863,9 +10983,9 @@ RETURNING deleted_id, username, email, student_id, real_name, advisor, expected_
 		r.BlockedAt, deletedBy, reason, nodeAccountsJSON,
 	).Scan(
 		&out.DeletedID, &out.Username, &out.Email, &out.StudentID, &out.RealName, &out.Advisor, &out.ExpectedGraduationYear, &out.ExpectedGraduationMonth,
-		&out.Phone, &out.Role, &out.Balance, &out.CarryoverBalance, &out.UserStatus, &out.DeletedAt, &out.DeletedBy, &out.DeleteReason, &restoredAt, &restoredBy,
+		&out.Phone, &archivedPlatformUID, &out.Role, &out.Balance, &out.CarryoverBalance, &out.UserStatus, &out.DeletedAt, &out.DeletedBy, &out.DeleteReason, &restoredAt, &restoredBy,
 	)
-	if err != nil && isColumnMissingErr(err, "node_accounts_json") {
+	if err != nil && (isColumnMissingErr(err, "node_accounts_json") || isColumnMissingErr(err, "platform_uid")) {
 		// 兼容旧库：尚未升级 node_accounts_json 字段时，降级为旧写法。
 		err = tx.QueryRowContext(ctx, `
 INSERT INTO deleted_user_accounts(
@@ -9898,6 +11018,11 @@ RETURNING deleted_id, username, email, student_id, real_name, advisor, expected_
 	if err != nil {
 		return DeletedUserAccount{}, err
 	}
+	if archivedPlatformUID.Valid && archivedPlatformUID.Int64 > 0 {
+		v := int(archivedPlatformUID.Int64)
+		out.PlatformUID = &v
+	}
+	decorateDeletedUserAccountUIDRelease(&out, time.Now())
 
 	// 删除顺序必须“先子后父”：
 	// 某些已部署实例可能存在历史外键（例如 users.username -> user_accounts.username），
@@ -10019,6 +11144,7 @@ func (s *Store) RestoreDeletedUserAccountTx(ctx context.Context, tx *sql.Tx, del
 	}
 	type deletedRow struct {
 		DeletedUserAccount
+		PlatformUIDRaw   sql.NullInt64
 		PasswordHash     string
 		LastLoginAt      sql.NullTime
 		AccountCreatedAt sql.NullTime
@@ -10031,16 +11157,16 @@ func (s *Store) RestoreDeletedUserAccountTx(ctx context.Context, tx *sql.Tx, del
 	var restoredByPrev sql.NullString
 	err := tx.QueryRowContext(ctx, `
 SELECT deleted_id, username, email, student_id, real_name, advisor, expected_graduation_year, expected_graduation_month,
-       phone, role, balance, carryover_balance, user_status, deleted_at, deleted_by, delete_reason, restored_at, restored_by,
+       phone, platform_uid, role, balance, carryover_balance, user_status, deleted_at, deleted_by, delete_reason, restored_at, restored_by,
        password_hash, last_login_at, account_created_at, account_updated_at, blocked_at, COALESCE(node_accounts_json::text, '[]')
 FROM deleted_user_accounts
 WHERE deleted_id=$1
 FOR UPDATE`, deletedID).Scan(
 		&r.DeletedID, &r.Username, &r.Email, &r.StudentID, &r.RealName, &r.Advisor, &r.ExpectedGraduationYear, &r.ExpectedGraduationMonth,
-		&r.Phone, &r.Role, &r.Balance, &r.CarryoverBalance, &r.UserStatus, &r.DeletedAt, &r.DeletedBy, &r.DeleteReason, &restoredAt, &restoredByPrev,
+		&r.Phone, &r.PlatformUIDRaw, &r.Role, &r.Balance, &r.CarryoverBalance, &r.UserStatus, &r.DeletedAt, &r.DeletedBy, &r.DeleteReason, &restoredAt, &restoredByPrev,
 		&r.PasswordHash, &r.LastLoginAt, &r.AccountCreatedAt, &r.AccountUpdatedAt, &r.BlockedAt, &r.NodeAccountsJSON,
 	)
-	if err != nil && isColumnMissingErr(err, "node_accounts_json") {
+	if err != nil && (isColumnMissingErr(err, "node_accounts_json") || isColumnMissingErr(err, "platform_uid")) {
 		err = tx.QueryRowContext(ctx, `
 SELECT deleted_id, username, email, student_id, real_name, advisor, expected_graduation_year, expected_graduation_month,
        phone, role, balance, carryover_balance, user_status, deleted_at, deleted_by, delete_reason, restored_at, restored_by,
@@ -10057,6 +11183,10 @@ FOR UPDATE`, deletedID).Scan(
 	if err != nil {
 		return DeletedUserAccount{}, err
 	}
+	if r.PlatformUIDRaw.Valid && r.PlatformUIDRaw.Int64 > 0 {
+		v := int(r.PlatformUIDRaw.Int64)
+		r.PlatformUID = &v
+	}
 	if restoredAt.Valid {
 		return DeletedUserAccount{}, errors.New("该删除记录已恢复，不能重复恢复")
 	}
@@ -10067,16 +11197,45 @@ FOR UPDATE`, deletedID).Scan(
 	if len(dup) > 0 {
 		return DeletedUserAccount{}, fmt.Errorf("恢复失败，以下字段与现有/待审核冲突：%s", strings.Join(dup, "、"))
 	}
+	platformUID := 0
+	if r.PlatformUID != nil && *r.PlatformUID > 0 {
+		candidate := *r.PlatformUID
+		if _, sensitive := platformUIDSensitiveValues[candidate]; !sensitive {
+			var occupied bool
+			if err := tx.QueryRowContext(ctx, `
+SELECT EXISTS(
+  SELECT 1 FROM user_accounts WHERE platform_uid=$1
+  UNION ALL
+  SELECT 1 FROM power_users WHERE platform_uid=$1
+  UNION ALL
+  SELECT 1 FROM admin_accounts WHERE platform_uid=$1
+)`, candidate).Scan(&occupied); err != nil {
+				return DeletedUserAccount{}, err
+			}
+			if !occupied {
+				platformUID = candidate
+			}
+		}
+	}
+	if platformUID == 0 {
+		allocatedUID, _, allocErr := s.allocatePlatformUIDTx(ctx, tx, time.Now(), nil)
+		if allocErr != nil {
+			return DeletedUserAccount{}, allocErr
+		}
+		platformUID = allocatedUID
+	}
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO user_accounts(
-  username, email, password_hash, real_name, student_id, advisor, expected_graduation_year, expected_graduation_month, phone, role, last_login_at
+  username, email, password_hash, real_name, student_id, advisor, expected_graduation_year, expected_graduation_month, phone, platform_uid, role, last_login_at
 )
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-		r.Username, strings.ToLower(r.Email), r.PasswordHash, r.RealName, r.StudentID, r.Advisor, r.ExpectedGraduationYear, r.ExpectedGraduationMonth, r.Phone, r.Role, r.LastLoginAt,
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+		r.Username, strings.ToLower(r.Email), r.PasswordHash, r.RealName, r.StudentID, r.Advisor, r.ExpectedGraduationYear, r.ExpectedGraduationMonth, r.Phone, platformUID, r.Role, r.LastLoginAt,
 	)
 	if err != nil {
 		return DeletedUserAccount{}, err
 	}
+	restoredUID := platformUID
+	r.PlatformUID = &restoredUID
 	status := strings.TrimSpace(r.UserStatus)
 	if status == "" {
 		status = "normal"
@@ -10131,6 +11290,7 @@ WHERE deleted_id=$1`, deletedID, now, restoredBy); err != nil {
 	out := r.DeletedUserAccount
 	out.RestoredAt = &now
 	out.RestoredBy = &restoredBy
+	decorateDeletedUserAccountUIDRelease(&out, now)
 	return out, nil
 }
 
@@ -10140,7 +11300,7 @@ func (s *Store) ListDeletedUserAccounts(ctx context.Context, includeRestored boo
 	}
 	query := `
 SELECT deleted_id, username, email, student_id, real_name, advisor, expected_graduation_year, expected_graduation_month,
-       phone, role, balance, carryover_balance, user_status, deleted_at, deleted_by, delete_reason, restored_at, restored_by
+       phone, platform_uid, role, balance, carryover_balance, user_status, deleted_at, deleted_by, delete_reason, restored_at, restored_by
 FROM deleted_user_accounts`
 	args := []any{}
 	if !includeRestored {
@@ -10154,15 +11314,21 @@ FROM deleted_user_accounts`
 	}
 	defer rows.Close()
 	out := make([]DeletedUserAccount, 0)
+	now := time.Now()
 	for rows.Next() {
 		var r DeletedUserAccount
+		var platformUID sql.NullInt64
 		var restoredAt sql.NullTime
 		var restoredBy sql.NullString
 		if err := rows.Scan(
 			&r.DeletedID, &r.Username, &r.Email, &r.StudentID, &r.RealName, &r.Advisor, &r.ExpectedGraduationYear, &r.ExpectedGraduationMonth,
-			&r.Phone, &r.Role, &r.Balance, &r.CarryoverBalance, &r.UserStatus, &r.DeletedAt, &r.DeletedBy, &r.DeleteReason, &restoredAt, &restoredBy,
+			&r.Phone, &platformUID, &r.Role, &r.Balance, &r.CarryoverBalance, &r.UserStatus, &r.DeletedAt, &r.DeletedBy, &r.DeleteReason, &restoredAt, &restoredBy,
 		); err != nil {
 			return nil, err
+		}
+		if platformUID.Valid && platformUID.Int64 > 0 {
+			v := int(platformUID.Int64)
+			r.PlatformUID = &v
 		}
 		if restoredAt.Valid {
 			v := restoredAt.Time
@@ -10172,6 +11338,7 @@ FROM deleted_user_accounts`
 			v := restoredBy.String
 			r.RestoredBy = &v
 		}
+		decorateDeletedUserAccountUIDRelease(&r, now)
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -10212,7 +11379,7 @@ func (s *Store) FindPlatformUsersByIdentity(ctx context.Context, username string
 	whereActive, activeArgs := buildWhere(1)
 	activeArgs = append(activeArgs, limit)
 	activeRows, err := s.db.QueryContext(ctx, `
-SELECT username, email, real_name, student_id, advisor, expected_graduation_year, expected_graduation_month, phone, role, last_login_at, created_at, updated_at
+SELECT username, email, real_name, student_id, advisor, expected_graduation_year, expected_graduation_month, phone, platform_uid, role, last_login_at, created_at, updated_at
 FROM user_accounts
 WHERE `+whereActive+`
 ORDER BY username
@@ -10224,8 +11391,13 @@ LIMIT $`+strconv.Itoa(len(activeArgs)), activeArgs...)
 	active := make([]UserAccount, 0)
 	for activeRows.Next() {
 		var x UserAccount
-		if err := activeRows.Scan(&x.Username, &x.Email, &x.RealName, &x.StudentID, &x.Advisor, &x.ExpectedGraduationYear, &x.ExpectedGraduationMonth, &x.Phone, &x.Role, &x.LastLoginAt, &x.CreatedAt, &x.UpdatedAt); err != nil {
+		var platformUID sql.NullInt64
+		if err := activeRows.Scan(&x.Username, &x.Email, &x.RealName, &x.StudentID, &x.Advisor, &x.ExpectedGraduationYear, &x.ExpectedGraduationMonth, &x.Phone, &platformUID, &x.Role, &x.LastLoginAt, &x.CreatedAt, &x.UpdatedAt); err != nil {
 			return nil, nil, err
+		}
+		if platformUID.Valid && platformUID.Int64 > 0 {
+			v := int(platformUID.Int64)
+			x.PlatformUID = &v
 		}
 		active = append(active, x)
 	}
@@ -10237,7 +11409,7 @@ LIMIT $`+strconv.Itoa(len(activeArgs)), activeArgs...)
 	deletedArgs = append(deletedArgs, limit)
 	archRows, err := s.db.QueryContext(ctx, `
 SELECT deleted_id, username, email, student_id, real_name, advisor, expected_graduation_year, expected_graduation_month,
-       phone, role, balance, carryover_balance, user_status, deleted_at, deleted_by, delete_reason, restored_at, restored_by
+       phone, platform_uid, role, balance, carryover_balance, user_status, deleted_at, deleted_by, delete_reason, restored_at, restored_by
 FROM deleted_user_accounts
 WHERE (`+whereDeleted+`) AND restored_at IS NULL
 ORDER BY deleted_at DESC
@@ -10247,16 +11419,23 @@ LIMIT $`+strconv.Itoa(len(deletedArgs)), deletedArgs...)
 	}
 	defer archRows.Close()
 	deleted := make([]DeletedUserAccount, 0)
+	now := time.Now()
 	for archRows.Next() {
 		var x DeletedUserAccount
+		var platformUID sql.NullInt64
 		var restoredAt sql.NullTime
 		var restoredBy sql.NullString
 		if err := archRows.Scan(
 			&x.DeletedID, &x.Username, &x.Email, &x.StudentID, &x.RealName, &x.Advisor, &x.ExpectedGraduationYear, &x.ExpectedGraduationMonth,
-			&x.Phone, &x.Role, &x.Balance, &x.CarryoverBalance, &x.UserStatus, &x.DeletedAt, &x.DeletedBy, &x.DeleteReason, &restoredAt, &restoredBy,
+			&x.Phone, &platformUID, &x.Role, &x.Balance, &x.CarryoverBalance, &x.UserStatus, &x.DeletedAt, &x.DeletedBy, &x.DeleteReason, &restoredAt, &restoredBy,
 		); err != nil {
 			return nil, nil, err
 		}
+		if platformUID.Valid && platformUID.Int64 > 0 {
+			v := int(platformUID.Int64)
+			x.PlatformUID = &v
+		}
+		decorateDeletedUserAccountUIDRelease(&x, now)
 		deleted = append(deleted, x)
 	}
 	return active, deleted, archRows.Err()
@@ -11322,6 +12501,7 @@ exclusive_agg AS (
 union_users AS (
   SELECT
     ua.username,
+    ua.platform_uid,
     COALESCE(NULLIF(ua.role, ''), 'user') AS role,
     FALSE AS can_view_board,
     FALSE AS can_view_nodes,
@@ -11339,6 +12519,7 @@ union_users AS (
   UNION ALL
   SELECT
     aa.username,
+    COALESCE(ua.platform_uid, aa.platform_uid) AS platform_uid,
     'admin' AS role,
     TRUE AS can_view_board,
     TRUE AS can_view_nodes,
@@ -11351,9 +12532,11 @@ union_users AS (
     0 AS expected_graduation_month,
     '' AS phone
   FROM admin_accounts aa
+  LEFT JOIN user_accounts ua ON ua.username = aa.username
   UNION ALL
   SELECT
     pu.username,
+    COALESCE(ua.platform_uid, pu.platform_uid) AS platform_uid,
     'power_user' AS role,
     pu.can_view_board,
     pu.can_view_nodes,
@@ -11368,7 +12551,7 @@ union_users AS (
   FROM power_users pu
   LEFT JOIN user_accounts ua ON ua.username = pu.username
 )
-SELECT uu.username, uu.role, uu.can_view_board, uu.can_view_nodes, uu.can_review_requests,
+SELECT uu.username, uu.platform_uid, uu.role, uu.can_view_board, uu.can_view_nodes, uu.can_review_requests,
        uu.email, uu.student_id, uu.real_name, uu.advisor, uu.expected_graduation_year, uu.expected_graduation_month, uu.phone,
        COALESCE(u.balance, 0) AS general_balance,
        COALESCE(u.carryover_balance, 0) AS carryover_balance,
@@ -11389,12 +12572,17 @@ LIMIT $1`, limit)
 	out := make([]AdminUserDetail, 0)
 	for rows.Next() {
 		var d AdminUserDetail
+		var uidRaw sql.NullInt64
 		if err := rows.Scan(
-			&d.Username, &d.Role, &d.CanViewBoard, &d.CanViewNodes, &d.CanReviewRequest,
+			&d.Username, &uidRaw, &d.Role, &d.CanViewBoard, &d.CanViewNodes, &d.CanReviewRequest,
 			&d.Email, &d.StudentID, &d.RealName, &d.Advisor, &d.ExpectedGradYear, &d.ExpectedGradMonth, &d.Phone,
 			&d.Balance, &d.CarryoverBalance, &d.ExclusiveBalance, &d.TotalBalance, &d.Status, &d.UsageRecords, &d.TotalCost, &d.LastUsageAt,
 		); err != nil {
 			return nil, err
+		}
+		if uidRaw.Valid && uidRaw.Int64 > 0 {
+			v := int(uidRaw.Int64)
+			d.PlatformUID = &v
 		}
 		accounts, err := s.ListUserNodeAccountsByBilling(ctx, d.Username, 5000)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -11426,6 +12614,7 @@ WITH exclusive_agg AS (
 union_users AS (
   SELECT
     ua.username,
+    ua.platform_uid,
     COALESCE(NULLIF(ua.email, ''), '') AS email,
     COALESCE(NULLIF(ua.real_name, ''), '') AS real_name,
     COALESCE(NULLIF(ua.student_id, ''), '') AS student_id,
@@ -11440,6 +12629,7 @@ union_users AS (
   UNION ALL
   SELECT
     aa.username,
+    COALESCE(ua.platform_uid, aa.platform_uid) AS platform_uid,
     COALESCE(NULLIF(ua.email, ''), '') AS email,
     COALESCE(NULLIF(ua.real_name, ''), '') AS real_name,
     COALESCE(NULLIF(ua.student_id, ''), '') AS student_id,
@@ -11453,6 +12643,7 @@ union_users AS (
   UNION ALL
   SELECT
     pu.username,
+    COALESCE(ua.platform_uid, pu.platform_uid) AS platform_uid,
     COALESCE(NULLIF(ua.email, ''), '') AS email,
     COALESCE(NULLIF(ua.real_name, ''), '') AS real_name,
     COALESCE(NULLIF(ua.student_id, ''), '') AS student_id,
@@ -11467,6 +12658,7 @@ union_users AS (
 )
 SELECT
   uu.username,
+  uu.platform_uid,
   uu.email,
   uu.real_name,
   uu.student_id,
@@ -11511,8 +12703,10 @@ LIMIT $3`, keyword, keywordField, limit)
 	out := make([]PointsUser, 0)
 	for rows.Next() {
 		var v PointsUser
+		var uidRaw sql.NullInt64
 		if err := rows.Scan(
 			&v.Username,
+			&uidRaw,
 			&v.Email,
 			&v.RealName,
 			&v.StudentID,
@@ -11529,6 +12723,10 @@ LIMIT $3`, keyword, keywordField, limit)
 		); err != nil {
 			return nil, err
 		}
+		if uidRaw.Valid && uidRaw.Int64 > 0 {
+			vv := int(uidRaw.Int64)
+			v.PlatformUID = &vv
+		}
 		v.Balance = v.GeneralBalance
 		out = append(out, v)
 	}
@@ -11542,6 +12740,7 @@ func (s *Store) ListRegularUserProfilesForPoints(ctx context.Context, limit int)
 	rows, err := s.db.QueryContext(ctx, `
 SELECT
   ua.username,
+  ua.platform_uid,
   ua.student_id,
   COALESCE(u.balance, 0) AS balance,
   COALESCE(u.carryover_balance, 0) AS carryover_balance,
@@ -11558,8 +12757,13 @@ LIMIT $1`, limit)
 	out := make([]PointsUser, 0)
 	for rows.Next() {
 		var v PointsUser
-		if err := rows.Scan(&v.Username, &v.StudentID, &v.Balance, &v.CarryoverBalance, &v.Status); err != nil {
+		var uidRaw sql.NullInt64
+		if err := rows.Scan(&v.Username, &uidRaw, &v.StudentID, &v.Balance, &v.CarryoverBalance, &v.Status); err != nil {
 			return nil, err
+		}
+		if uidRaw.Valid && uidRaw.Int64 > 0 {
+			vv := int(uidRaw.Int64)
+			v.PlatformUID = &vv
 		}
 		v.GeneralBalance = v.Balance
 		v.TotalBalance = v.Balance + v.CarryoverBalance

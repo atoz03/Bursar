@@ -18,6 +18,7 @@ import AdminRequests from "../views/pages/AdminRequests.vue";
 import AdminMailSettings from "../views/pages/AdminMailSettings.vue";
 import AdminBoard from "../views/pages/AdminBoard.vue";
 import AdminAccounts from "../views/pages/AdminAccounts.vue";
+import AdminAccountProvision from "../views/pages/AdminAccountProvision.vue";
 import AdminWhitelist from "../views/pages/AdminWhitelist.vue";
 import AdminAnnouncements from "../views/pages/AdminAnnouncements.vue";
 import AdminGuideline from "../views/pages/AdminGuideline.vue";
@@ -58,6 +59,7 @@ export const router = createRouter({
         { path: "admin/points", component: AdminPoints },
         { path: "admin/nodes", component: AdminNodes },
         { path: "admin/accounts", component: AdminAccounts },
+        { path: "admin/account-provision", component: AdminAccountProvision },
         { path: "admin/whitelist", component: AdminWhitelist },
         { path: "admin/announcements", component: AdminAnnouncements },
         { path: "admin/guideline", component: AdminGuideline },

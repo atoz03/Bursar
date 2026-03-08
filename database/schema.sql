@@ -101,6 +101,8 @@ CREATE TABLE IF NOT EXISTS nodes (
     ssh_active_count INT NOT NULL DEFAULT 0,
     disk_quota_installed BOOLEAN NOT NULL DEFAULT FALSE,
     disk_quota_mounts TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+    system_services_checked_at TIMESTAMP NULL,
+    system_services JSONB NOT NULL DEFAULT '[]'::JSONB,
     cost_total DECIMAL(12,4) NOT NULL DEFAULT 0.0,
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
@@ -108,6 +110,8 @@ CREATE TABLE IF NOT EXISTS nodes (
 CREATE TABLE IF NOT EXISTS node_local_users (
     node_id VARCHAR(50) NOT NULL,
     local_username VARCHAR(64) NOT NULL,
+    uid INT NULL,
+    primary_gid INT NULL,
     home_created_at TIMESTAMP NULL,
     last_login_at TIMESTAMP NULL,
     home_used_gb DOUBLE PRECISION NOT NULL DEFAULT 0,
@@ -117,6 +121,8 @@ CREATE TABLE IF NOT EXISTS node_local_users (
     PRIMARY KEY (node_id, local_username)
 );
 CREATE INDEX IF NOT EXISTS idx_node_local_users_node_updated ON node_local_users(node_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_node_local_users_uid ON node_local_users(uid) WHERE uid IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_node_local_users_primary_gid ON node_local_users(primary_gid) WHERE primary_gid IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS node_user_disk_quotas (
     node_id VARCHAR(50) NOT NULL,
@@ -240,14 +246,19 @@ CREATE INDEX IF NOT EXISTS idx_node_view_acl_power_username
 CREATE TABLE IF NOT EXISTS admin_accounts (
     username VARCHAR(50) PRIMARY KEY,
     password_hash TEXT NOT NULL,
+    platform_uid INT NULL,
     last_login_at TIMESTAMP NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+CREATE UNIQUE INDEX IF NOT EXISTS uq_admin_accounts_platform_uid
+    ON admin_accounts(platform_uid)
+    WHERE platform_uid IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS power_users (
     username VARCHAR(50) PRIMARY KEY,
     password_hash TEXT NOT NULL,
+    platform_uid INT NULL,
     can_view_board BOOLEAN NOT NULL DEFAULT TRUE,
     can_view_nodes BOOLEAN NOT NULL DEFAULT TRUE,
     can_manage_nodes BOOLEAN NOT NULL DEFAULT FALSE,
@@ -259,6 +270,9 @@ CREATE TABLE IF NOT EXISTS power_users (
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+CREATE UNIQUE INDEX IF NOT EXISTS uq_power_users_platform_uid
+    ON power_users(platform_uid)
+    WHERE platform_uid IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS admin_profiles (
     username VARCHAR(50) PRIMARY KEY,
@@ -474,6 +488,7 @@ CREATE TABLE IF NOT EXISTS user_accounts (
     expected_graduation_year INT NOT NULL,
     expected_graduation_month INT NOT NULL DEFAULT 12 CHECK (expected_graduation_month BETWEEN 1 AND 12),
     phone VARCHAR(40) NOT NULL,
+    platform_uid INT NULL,
     role VARCHAR(20) NOT NULL DEFAULT 'user',
     last_login_at TIMESTAMP NULL,
     reset_token_hash TEXT NULL,
@@ -484,6 +499,7 @@ CREATE TABLE IF NOT EXISTS user_accounts (
 
 CREATE INDEX IF NOT EXISTS idx_user_accounts_email ON user_accounts(email);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_user_accounts_student_id ON user_accounts(student_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_user_accounts_platform_uid ON user_accounts(platform_uid) WHERE platform_uid IS NOT NULL;
 
 -- 应用配置（如 SMTP）
 CREATE TABLE IF NOT EXISTS app_settings (
@@ -673,6 +689,7 @@ CREATE TABLE IF NOT EXISTS deleted_user_accounts (
     expected_graduation_year INT NOT NULL,
     expected_graduation_month INT NOT NULL DEFAULT 12 CHECK (expected_graduation_month BETWEEN 1 AND 12),
     phone VARCHAR(40) NOT NULL,
+    platform_uid INT NULL,
     role VARCHAR(20) NOT NULL DEFAULT 'user',
     last_login_at TIMESTAMP NULL,
     account_created_at TIMESTAMP NULL,
@@ -693,6 +710,9 @@ CREATE INDEX IF NOT EXISTS idx_deleted_user_accounts_restored_at ON deleted_user
 CREATE INDEX IF NOT EXISTS idx_deleted_user_accounts_username ON deleted_user_accounts(username);
 CREATE INDEX IF NOT EXISTS idx_deleted_user_accounts_email ON deleted_user_accounts(email);
 CREATE INDEX IF NOT EXISTS idx_deleted_user_accounts_student_id ON deleted_user_accounts(student_id);
+CREATE INDEX IF NOT EXISTS idx_deleted_user_accounts_platform_uid_active
+ON deleted_user_accounts(platform_uid, deleted_at DESC)
+WHERE platform_uid IS NOT NULL AND restored_at IS NULL;
 
 -- SSH 白名单（允许不注册直接登录）
 CREATE TABLE IF NOT EXISTS ssh_whitelist (

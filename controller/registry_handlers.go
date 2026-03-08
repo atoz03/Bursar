@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/mail"
 	"sort"
@@ -85,12 +86,6 @@ func (s *Server) handleRegistryResolve(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	if !sshGuardEnabled {
-		// 关闭“未注册拦截”时，只保留黑名单/豁免判断；普通未注册账号放行。
-		c.JSON(http.StatusOK, gin.H{"registered": true, "billing_username": localUsername, "guard_enabled": false})
-		return
-	}
-
 	var billing string
 	found := false
 	if err := s.store.WithTx(ctx, func(tx *sql.Tx) error {
@@ -99,6 +94,36 @@ func (s *Server) handleRegistryResolve(c *gin.Context) {
 		return txErr
 	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	if found {
+		aligned, platformUID, err := s.isNodeLocalIdentityAlignedWithPlatformUID(ctx, nodeID, localUsername, billing)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if !aligned {
+			payload := gin.H{
+				"registered":         false,
+				"billing_username":   billing,
+				"identity_pending":   true,
+				"initializing":       true,
+				"deny_until_aligned": true,
+			}
+			if platformUID > 0 {
+				payload["platform_uid"] = platformUID
+			}
+			c.JSON(http.StatusOK, payload)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"registered": true, "billing_username": billing, "platform_uid": platformUID})
+		return
+	}
+
+	if !sshGuardEnabled {
+		// 关闭“未注册拦截”时，只保留黑名单/豁免判断；普通未注册账号放行。
+		c.JSON(http.StatusOK, gin.H{"registered": true, "billing_username": localUsername, "guard_enabled": false})
 		return
 	}
 
@@ -141,6 +166,36 @@ type registryBindClaimReq struct {
 	LocalUsername string `json:"local_username"`
 }
 
+func (s *Server) writeRegistryBindClaimError(c *gin.Context, nodeID string, localUsername string, err error) bool {
+	switch {
+	case errors.Is(err, errNodeBindChallengeNotFound):
+		c.JSON(http.StatusNotFound, gin.H{"error": "challenge 不存在或已失效", "reason": "challenge_not_found"})
+		return true
+	case errors.Is(err, errNodeBindChallengeMismatch):
+		c.JSON(http.StatusForbidden, gin.H{"error": "challenge 与当前节点账号不匹配", "reason": "challenge_mismatch"})
+		return true
+	case errors.Is(err, errNodeBindChallengeExpired):
+		s.sweepNodeBindFailures(c.Request.Context(), nodeID)
+		c.JSON(http.StatusGone, gin.H{"error": "challenge 已过期，请在网页重新申请", "reason": "challenge_expired"})
+		return true
+	case errors.Is(err, errNodeBindAlreadyBound):
+		c.JSON(http.StatusConflict, gin.H{"error": "该节点账号已绑定到当前平台账号", "reason": "mapping_exists_same_user"})
+		return true
+	}
+	var conflictErr *NodeAccountOwnershipConflictError
+	if errors.As(err, &conflictErr) {
+		c.JSON(http.StatusConflict, gin.H{
+			"error":          "节点账号已被其他平台账号绑定，禁止换绑。请先走解绑审批流程。",
+			"reason":         "mapping_exists_other_user",
+			"node_id":        conflictErr.NodeID,
+			"local_username": conflictErr.LocalUsername,
+		})
+		return true
+	}
+	c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	return true
+}
+
 func (s *Server) handleRegistryBindClaim(c *gin.Context) {
 	var req registryBindClaimReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -161,6 +216,33 @@ func (s *Server) handleRegistryBindClaim(c *gin.Context) {
 		return
 	}
 	now := time.Now()
+	preparedChallenge, err := s.store.ValidateUserBindChallengeClaim(
+		c.Request.Context(),
+		req.Token,
+		req.NodeID,
+		req.LocalUsername,
+		now,
+	)
+	if err != nil {
+		s.writeRegistryBindClaimError(c, req.NodeID, req.LocalUsername, err)
+		return
+	}
+	platformUID, err := s.ensureBillingPlatformUID(c.Request.Context(), preparedChallenge.BillingUsername)
+	if err != nil {
+		log.Printf("bind claim prepare platform uid failed node=%s local=%s billing=%s err=%v", req.NodeID, req.LocalUsername, preparedChallenge.BillingUsername, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "分配平台 UID 失败: " + err.Error()})
+		return
+	}
+	if platformUID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "绑定目标不是普通平台用户，无法分配平台 UID"})
+		return
+	}
+	if err := s.ensureSharedWorkspaceDirsOnController(c.Request.Context(), preparedChallenge.NodeID, preparedChallenge.BillingUsername, platformUID); err != nil {
+		log.Printf("bind claim prepare shared workspace failed node=%s local=%s billing=%s uid=%d err=%v", preparedChallenge.NodeID, preparedChallenge.LocalUsername, preparedChallenge.BillingUsername, platformUID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "准备共享工作目录失败: " + err.Error()})
+		return
+	}
+
 	var challenge UserNodeBindChallenge
 	if err := s.store.WithTx(c.Request.Context(), func(tx *sql.Tx) error {
 		var txErr error
@@ -174,36 +256,21 @@ func (s *Server) handleRegistryBindClaim(c *gin.Context) {
 		)
 		return txErr
 	}); err != nil {
-		switch {
-		case errors.Is(err, errNodeBindChallengeNotFound):
-			c.JSON(http.StatusNotFound, gin.H{"error": "challenge 不存在或已失效", "reason": "challenge_not_found"})
-			return
-		case errors.Is(err, errNodeBindChallengeMismatch):
-			c.JSON(http.StatusForbidden, gin.H{"error": "challenge 与当前节点账号不匹配", "reason": "challenge_mismatch"})
-			return
-		case errors.Is(err, errNodeBindChallengeExpired):
-			s.sweepNodeBindFailures(c.Request.Context(), req.NodeID)
-			c.JSON(http.StatusGone, gin.H{"error": "challenge 已过期，请在网页重新申请", "reason": "challenge_expired"})
-			return
-		case errors.Is(err, errNodeBindAlreadyBound):
-			c.JSON(http.StatusConflict, gin.H{"error": "该节点账号已绑定到当前平台账号", "reason": "mapping_exists_same_user"})
-			return
-		}
-		var conflictErr *NodeAccountOwnershipConflictError
-		if errors.As(err, &conflictErr) {
-			c.JSON(http.StatusConflict, gin.H{
-				"error":          "节点账号已被其他平台账号绑定，禁止换绑。请先走解绑审批流程。",
-				"reason":         "mapping_exists_other_user",
-				"node_id":        conflictErr.NodeID,
-				"local_username": conflictErr.LocalUsername,
-			})
-			return
-		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		s.writeRegistryBindClaimError(c, req.NodeID, req.LocalUsername, err)
 		return
 	}
 
 	successReason := fmt.Sprintf("绑定 challenge 校验成功：billing=%s node=%s local=%s", challenge.BillingUsername, challenge.NodeID, challenge.LocalUsername)
+	const claimSuccessIdentitySyncDelaySeconds = 0
+	const claimSuccessDiskQuotaDelaySeconds = claimSuccessIdentitySyncDelaySeconds + 2
+	s.enqueueNodeIdentitySyncWithDelay(
+		challenge.NodeID,
+		challenge.LocalUsername,
+		platformUID,
+		challenge.BillingUsername,
+		successReason+"；对齐节点账号 UID/GID",
+		claimSuccessIdentitySyncDelaySeconds,
+	)
 	s.enqueueCPUQuotaAction(challenge.NodeID, challenge.LocalUsername, 0, successReason+"；解除临时 CPU 限速", true)
 	if memoryAction, ok := s.nextMemoryLimitAction(challenge.NodeID, challenge.LocalUsername, 0, successReason+"；解除临时内存限额", true); ok {
 		s.enqueueNodeAction(challenge.NodeID, memoryAction)
@@ -215,20 +282,34 @@ func (s *Server) handleRegistryBindClaim(c *gin.Context) {
 			Reason:   successReason + "；解除临时 GPU 隐藏",
 		})
 	}
+	if err := s.enqueueDefaultNodeDiskQuotaForMapping(
+		c.Request.Context(),
+		challenge.NodeID,
+		challenge.LocalUsername,
+		challenge.BillingUsername,
+		challenge.BillingUsername,
+		successReason+"；自动应用节点默认磁盘配额",
+		claimSuccessDiskQuotaDelaySeconds,
+	); err != nil {
+		log.Printf("enqueue default disk quota after bind claim failed node=%s local=%s billing=%s err=%v", challenge.NodeID, challenge.LocalUsername, challenge.BillingUsername, err)
+	}
 	s.enqueueNodeAction(challenge.NodeID, Action{
 		Type:   "force_sync",
 		Reason: successReason + "；刷新 SSH 校验缓存",
 	})
 
 	c.JSON(http.StatusOK, gin.H{
-		"ok":               true,
-		"request_id":       challenge.RequestID,
-		"challenge_id":     challenge.ChallengeID,
-		"billing_username": challenge.BillingUsername,
-		"node_id":          challenge.NodeID,
-		"local_username":   challenge.LocalUsername,
-		"status":           challenge.Status,
-		"message":          "绑定校验成功，映射已生效",
+		"ok":                     true,
+		"request_id":             challenge.RequestID,
+		"challenge_id":           challenge.ChallengeID,
+		"billing_username":       challenge.BillingUsername,
+		"platform_uid":           platformUID,
+		"node_id":                challenge.NodeID,
+		"local_username":         challenge.LocalUsername,
+		"status":                 challenge.Status,
+		"initializing":           true,
+		"estimated_wait_seconds": 45 + claimSuccessIdentitySyncDelaySeconds,
+		"message":                "绑定校验成功，正在立即初始化 UID/GID；期间会短暂清理进程并断开会话，待节点完成对齐后再重新登录 SSH",
 	})
 }
 
@@ -624,6 +705,37 @@ func (s *Server) handleAdminRequestReview(c *gin.Context, newStatus string) {
 			})
 		}
 	}
+	if newStatus == "approved" && strings.TrimSpace(updated.RequestType) == "bind" {
+		nodeID := strings.TrimSpace(updated.NodeID)
+		localUsername := strings.TrimSpace(updated.LocalUsername)
+		billing := strings.TrimSpace(updated.BillingUsername)
+		if nodeID != "" && localUsername != "" && billing != "" {
+			platformUID, uidErr := s.ensureBillingPlatformUID(c.Request.Context(), billing)
+			if uidErr != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "分配平台 UID 失败: " + uidErr.Error()})
+				return
+			}
+			if platformUID <= 0 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "绑定目标不是普通平台用户，无法分配平台 UID"})
+				return
+			}
+			if err := s.ensureSharedWorkspaceDirsOnController(c.Request.Context(), nodeID, billing, platformUID); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "准备共享工作目录失败: " + err.Error()})
+				return
+			}
+			s.enqueueNodeIdentitySync(
+				nodeID,
+				localUsername,
+				platformUID,
+				billing,
+				fmt.Sprintf("管理员 %s 审批通过绑定申请后对齐节点账号 UID/GID", reviewedBy),
+			)
+			s.enqueueNodeAction(nodeID, Action{
+				Type:   "force_sync",
+				Reason: fmt.Sprintf("管理员 %s 审批通过绑定申请：刷新节点本地用户缓存", reviewedBy),
+			})
+		}
+	}
 	c.JSON(http.StatusOK, gin.H{"ok": true, "request": updated})
 }
 
@@ -1006,6 +1118,31 @@ func (s *Server) handleAdminRequestsBatchReview(c *gin.Context) {
 					s.enqueueNodeAction(nodeID, Action{
 						Type:   "force_sync",
 						Reason: fmt.Sprintf("管理员 %s 批量审批解绑通过：刷新节点 SSH 策略缓存", reviewedBy),
+					})
+				}
+			}
+			if req.NewStatus == "approved" && strings.TrimSpace(updated.RequestType) == "bind" {
+				nodeID := strings.TrimSpace(updated.NodeID)
+				localUsername := strings.TrimSpace(updated.LocalUsername)
+				billing := strings.TrimSpace(updated.BillingUsername)
+				if nodeID != "" && localUsername != "" && billing != "" {
+					platformUID, uidErr := s.store.EnsureUserPlatformUIDTx(c.Request.Context(), tx, billing)
+					if uidErr != nil {
+						return uidErr
+					}
+					if platformUID <= 0 {
+						return errors.New("绑定目标不是普通平台用户，无法分配平台 UID")
+					}
+					s.enqueueNodeIdentitySync(
+						nodeID,
+						localUsername,
+						platformUID,
+						billing,
+						fmt.Sprintf("管理员 %s 批量审批绑定通过后对齐节点账号 UID/GID", reviewedBy),
+					)
+					s.enqueueNodeAction(nodeID, Action{
+						Type:   "force_sync",
+						Reason: fmt.Sprintf("管理员 %s 批量审批绑定通过：刷新节点本地用户缓存", reviewedBy),
 					})
 				}
 			}

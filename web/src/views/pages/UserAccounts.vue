@@ -204,12 +204,35 @@
         <span v-if="showFirstGuideRedDots" class="menu-red-dot inline-dot" />
       </div>
       <div class="section-block mb">
+        <el-alert
+          v-if="hasPendingAccounts"
+          title="检测到账号仍在等待节点确认 UID/GID：只有状态变为“已就绪”后，才表示节点侧身份已经对齐并可正常 SSH 登录。"
+          type="warning"
+          :closable="false"
+          show-icon
+          class="mb"
+        />
         <div class="section-surface mb">
           <el-table :data="rows" stripe class="table">
             <el-table-column prop="node_id" label="节点编号" width="160" />
             <el-table-column prop="local_username" label="节点账号" width="200" />
             <el-table-column prop="billing_username" label="平台账号" width="180" />
-            <el-table-column prop="updated_at" label="更新时间" min-width="190" :formatter="tableTimeFormatter" />
+            <el-table-column label="状态" width="220">
+              <template #default="{ row }">
+                <div class="mapping-state-cell">
+                  <el-tag v-if="row.identity_aligned" type="success" effect="light">已就绪</el-tag>
+                  <el-tag v-else-if="row.identity_initializing" type="warning" effect="light">初始化中</el-tag>
+                  <el-tag v-else type="info" effect="light">待同步</el-tag>
+                  <div v-if="row.identity_initializing" class="mini mapping-state-tip">
+                    正在同步 UID/GID，完成前无法 SSH 登录
+                  </div>
+                  <div v-else-if="!row.identity_aligned" class="mini mapping-state-tip">
+                    节点尚未回传最新 UID/GID 快照，请稍后自动刷新
+                  </div>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column prop="created_at" label="生效时间" min-width="190" :formatter="tableTimeFormatter" />
             <el-table-column label="操作" min-width="320">
               <template #default="{ row }">
                 <el-button size="small" type="danger" :disabled="isUnbindSubmitBlocked(row)" @click="remove(row)">申请解绑</el-button>
@@ -222,16 +245,23 @@
           <template #header>
             <div class="head">
               <div>
-                <strong>已映射节点价格与 /home 配额</strong>
+                <strong>已映射节点价格与存储配额</strong>
                 <div class="mini">仅展示你已成功映射的节点账号。</div>
               </div>
             </div>
           </template>
+          <el-alert
+            title="兼容性提醒：如果少数应用在绑定或账号调整后无法正常启动，可先尝试删除 /home/{用户名}/.cache、/home/{用户名}/.config、/home/{用户名}/.local、/home/{用户名}/.vscode-server 等缓存目录后再重试，以此类推。请将 {用户名} 替换为你的节点账号。原理是删除旧缓存文件，让应用按新的系统身份重新生成并重新适配。"
+            type="warning"
+            :closable="false"
+            show-icon
+            class="mb"
+          />
           <div class="quota-tip-box mb">
             <div class="quota-tip-head">存储使用提醒</div>
             <p class="quota-tip-line">
               请重点关注 <span class="blue-keyword">CPU 单价</span>、<span class="blue-keyword">GPU 单价</span> 和
-              <span class="blue-keyword">/home 配额</span>。超过 <span class="blue-keyword">/home 配额</span> 后会
+              <span class="blue-keyword">配额分区</span>。超过 <span class="blue-keyword">配额分区</span> 的硬限制后会
               <span class="blue-keyword">禁止写入</span>。
             </p>
             <p class="quota-tip-line">
@@ -249,6 +279,9 @@
           <el-table :data="mappedNodeInfos" stripe size="small">
             <el-table-column prop="node_id" label="节点编号" width="120" />
             <el-table-column prop="local_username" label="节点账号" width="150" />
+            <el-table-column label="配额分区" width="110">
+              <template #default="{ row }">{{ quotaMountLabel(row) }}</template>
+            </el-table-column>
             <el-table-column label="GPU 单价(积分/卡分钟)" min-width="210">
               <template #default="{ row }">
                 <div>{{ formatPrice(row.effective_gpu_price_per_minute) }}</div>
@@ -261,13 +294,13 @@
                 <div class="mini">来源：{{ formatPriceSource(row.cpu_price_source, "cpu") }}</div>
               </template>
             </el-table-column>
-            <el-table-column label="/home 已用" min-width="130">
+            <el-table-column label="配额已用" min-width="130">
               <template #default="{ row }">{{ formatMBToGB(row.home_quota_used_mb) }}</template>
             </el-table-column>
-            <el-table-column label="/home 软配额" min-width="130">
+            <el-table-column label="软配额" min-width="130">
               <template #default="{ row }">{{ formatMBToGB(row.home_quota_soft_mb) }}</template>
             </el-table-column>
-            <el-table-column label="/home 硬配额" min-width="130">
+            <el-table-column label="硬配额" min-width="130">
               <template #default="{ row }">{{ formatMBToGB(row.home_quota_hard_mb) }}</template>
             </el-table-column>
             <el-table-column label="写入状态" width="120">
@@ -400,6 +433,7 @@ const openRequesting = ref(false);
 const openReason = ref("");
 const firstGuideRead = ref(false);
 let challengeCountdownTimer: ReturnType<typeof setInterval> | null = null;
+let autoRefreshTimer: ReturnType<typeof setInterval> | null = null;
 const USER_ACCOUNTS_GUIDE_KEY_PREFIX = "gpuops.user_accounts.guide_seen";
 const openReasonPlaceholder = [
   "请详细填写（至少 20 字）：",
@@ -458,6 +492,11 @@ function formatPriceSource(source: string, kind: "gpu" | "cpu"): string {
   if (s === "config_default_cpu_price") return "默认CPU单价";
   if (s === "config_default_gpu_price") return "默认GPU单价";
   return kind === "gpu" ? "GPU默认" : "CPU默认";
+}
+
+function quotaMountLabel(row: UserMappedNodeInfo): string {
+  const mountpoint = String(row.home_quota_mountpoint || "").trim();
+  return mountpoint || "-";
 }
 
 function homeQuotaTagType(row: UserMappedNodeInfo): "success" | "warning" | "danger" | "info" {
@@ -542,6 +581,7 @@ const hasNewProvisionMessage = computed(() =>
 );
 const showFirstGuideRedDots = computed(() => !firstGuideRead.value);
 const headerNeedAttention = computed(() => hasNewProvisionMessage.value || showFirstGuideRedDots.value);
+const hasPendingAccounts = computed(() => (rows.value || []).some((x) => !x.identity_aligned));
 
 const decryptPayload = computed(() => {
   const fromQuery = String(route.query.payload || "");
@@ -569,6 +609,10 @@ onUnmounted(() => {
   if (challengeCountdownTimer) {
     clearInterval(challengeCountdownTimer);
     challengeCountdownTimer = null;
+  }
+  if (autoRefreshTimer) {
+    clearInterval(autoRefreshTimer);
+    autoRefreshTimer = null;
   }
 });
 
@@ -699,9 +743,25 @@ function client() {
   return new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
 }
 
-async function reload() {
-  loading.value = true;
-  error.value = "";
+function syncAutoRefreshTimer() {
+  const shouldPoll = !!activeChallenge.value || hasPendingAccounts.value;
+  if (shouldPoll && !autoRefreshTimer) {
+    autoRefreshTimer = setInterval(() => {
+      void reload(true);
+    }, 5000);
+    return;
+  }
+  if (!shouldPoll && autoRefreshTimer) {
+    clearInterval(autoRefreshTimer);
+    autoRefreshTimer = null;
+  }
+}
+
+async function reload(silent = false) {
+  if (!silent) {
+    loading.value = true;
+    error.value = "";
+  }
   try {
     const r = await client().userAccounts();
     rows.value = r.accounts ?? [];
@@ -713,10 +773,15 @@ async function reload() {
     const reqs = await client().userRequests(200);
     userRequests.value = reqs.requests ?? [];
     userOpenRequests.value = userRequests.value.filter((x) => String(x.request_type || "") === "open");
+    syncAutoRefreshTimer();
   } catch (e: any) {
-    error.value = e?.message ?? String(e);
+    if (!silent) {
+      error.value = e?.message ?? String(e);
+    }
   } finally {
-    loading.value = false;
+    if (!silent) {
+      loading.value = false;
+    }
   }
 }
 
@@ -954,6 +1019,15 @@ reload();
 .unbind-block-tip {
   color: #b45309;
   margin-top: 4px;
+}
+.mapping-state-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mapping-state-tip {
+  color: #92400e;
+  line-height: 1.4;
 }
 .section-inline-title {
   display: flex;

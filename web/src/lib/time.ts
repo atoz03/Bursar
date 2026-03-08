@@ -1,8 +1,7 @@
-const BEIJING_OFFSET_MINUTES = 8 * 60;
 const ZONED_DATE_TIME_RE =
-  /^(\d{4})-(\d{2})-(\d{2})[ t](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?(?:z|[+-]\d{2}:?\d{2})$/i;
+  /^(\d{4})-(\d{2})-(\d{2})[ t](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(?:z|[+-]\d{2}:?\d{2})$/i;
 const NAIVE_DATE_TIME_RE =
-  /^(\d{4})-(\d{2})-(\d{2})[ t](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$/i;
+  /^(\d{4})-(\d{2})-(\d{2})[ t](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?$/i;
 const NAIVE_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 type DateParts = {
@@ -29,6 +28,7 @@ function pad4(v: number): string {
 function parseNaiveDateTimeParts(text: string): DateTimeParts | null {
   const m = text.match(NAIVE_DATE_TIME_RE);
   if (!m) return null;
+  const fraction = String(m[7] || "");
   return {
     year: Number(m[1]),
     month: Number(m[2]),
@@ -36,7 +36,7 @@ function parseNaiveDateTimeParts(text: string): DateTimeParts | null {
     hour: Number(m[4]),
     minute: Number(m[5]),
     second: Number(m[6]),
-    millis: Number(String(m[7] || "").padEnd(3, "0") || 0),
+    millis: Number(fraction.slice(0, 3).padEnd(3, "0") || 0),
   };
 }
 
@@ -50,31 +50,45 @@ function parseNaiveDateParts(text: string): DateParts | null {
   };
 }
 
-function buildBeijingEpochMs(parts: DateTimeParts): number {
-  return (
-    Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second, parts.millis) -
-    BEIJING_OFFSET_MINUTES * 60_000
-  );
+function extractDisplayDateTimePartsFromText(text: string): DateTimeParts | null {
+  const zoned = text.match(ZONED_DATE_TIME_RE);
+  if (zoned) {
+    const fraction = String(zoned[7] || "");
+    return {
+      year: Number(zoned[1]),
+      month: Number(zoned[2]),
+      day: Number(zoned[3]),
+      hour: Number(zoned[4]),
+      minute: Number(zoned[5]),
+      second: Number(zoned[6]),
+      millis: Number(fraction.slice(0, 3).padEnd(3, "0") || 0),
+    };
+  }
+  return parseNaiveDateTimeParts(text);
 }
 
-function formatBeijingDateTimeParts(parts: DateTimeParts): string {
+function buildLocalEpochMs(parts: DateTimeParts): number {
+  return new Date(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second, parts.millis).getTime();
+}
+
+function formatDateTimeParts(parts: DateTimeParts): string {
   return `${pad4(parts.year)}-${pad2(parts.month)}-${pad2(parts.day)} ${pad2(parts.hour)}:${pad2(parts.minute)}:${pad2(parts.second)}`;
 }
 
-function formatBeijingDateParts(parts: DateParts): string {
+function formatDateParts(parts: DateParts): string {
   return `${pad4(parts.year)}-${pad2(parts.month)}-${pad2(parts.day)}`;
 }
 
-function formatBeijingEpochMs(ms: number): DateTimeParts {
-  const shifted = new Date(ms + BEIJING_OFFSET_MINUTES * 60_000);
+function formatLocalEpochMs(ms: number): DateTimeParts {
+  const d = new Date(ms);
   return {
-    year: shifted.getUTCFullYear(),
-    month: shifted.getUTCMonth() + 1,
-    day: shifted.getUTCDate(),
-    hour: shifted.getUTCHours(),
-    minute: shifted.getUTCMinutes(),
-    second: shifted.getUTCSeconds(),
-    millis: shifted.getUTCMilliseconds(),
+    year: d.getFullYear(),
+    month: d.getMonth() + 1,
+    day: d.getDate(),
+    hour: d.getHours(),
+    minute: d.getMinutes(),
+    second: d.getSeconds(),
+    millis: d.getMilliseconds(),
   };
 }
 
@@ -90,12 +104,12 @@ function parseInputEpochMs(input: string | number | Date): number {
 
   const naiveDateTime = parseNaiveDateTimeParts(text);
   if (naiveDateTime) {
-    return buildBeijingEpochMs(naiveDateTime);
+    return buildLocalEpochMs(naiveDateTime);
   }
 
   const naiveDate = parseNaiveDateParts(text);
   if (naiveDate) {
-    return buildBeijingEpochMs({
+    return buildLocalEpochMs({
       ...naiveDate,
       hour: 0,
       minute: 0,
@@ -116,14 +130,14 @@ export function formatServerDateTime(input: string | number | Date | null | unde
   if (input === null || input === undefined || input === "") return "-";
   if (typeof input === "string") {
     const text = String(input || "").trim();
-    const naiveDateTime = parseNaiveDateTimeParts(text);
-    if (naiveDateTime) {
-      return formatBeijingDateTimeParts(naiveDateTime);
+    const displayDateTime = extractDisplayDateTimePartsFromText(text);
+    if (displayDateTime) {
+      return formatDateTimeParts(displayDateTime);
     }
   }
   const ms = parseInputEpochMs(input);
   if (!Number.isFinite(ms)) return String(input);
-  return formatBeijingDateTimeParts(formatBeijingEpochMs(ms));
+  return formatDateTimeParts(formatLocalEpochMs(ms));
 }
 
 export function formatServerDate(input: string | number | Date | null | undefined): string {
@@ -132,30 +146,30 @@ export function formatServerDate(input: string | number | Date | null | undefine
     const text = String(input || "").trim();
     const naiveDate = parseNaiveDateParts(text);
     if (naiveDate) {
-      return formatBeijingDateParts(naiveDate);
+      return formatDateParts(naiveDate);
     }
-    const naiveDateTime = parseNaiveDateTimeParts(text);
-    if (naiveDateTime) {
-      return formatBeijingDateParts(naiveDateTime);
+    const displayDateTime = extractDisplayDateTimePartsFromText(text);
+    if (displayDateTime) {
+      return formatDateParts(displayDateTime);
     }
   }
   const ms = parseInputEpochMs(input);
   if (!Number.isFinite(ms)) return String(input);
-  return formatBeijingDateParts(formatBeijingEpochMs(ms));
+  return formatDateParts(formatLocalEpochMs(ms));
 }
 
 export function formatServerHMS(input: string | number | Date | null | undefined): string {
   if (input === null || input === undefined || input === "") return "-";
   if (typeof input === "string") {
     const text = String(input || "").trim();
-    const naiveDateTime = parseNaiveDateTimeParts(text);
-    if (naiveDateTime) {
-      return `${pad2(naiveDateTime.hour)}:${pad2(naiveDateTime.minute)}:${pad2(naiveDateTime.second)}`;
+    const displayDateTime = extractDisplayDateTimePartsFromText(text);
+    if (displayDateTime) {
+      return `${pad2(displayDateTime.hour)}:${pad2(displayDateTime.minute)}:${pad2(displayDateTime.second)}`;
     }
   }
   const ms = parseInputEpochMs(input);
   if (!Number.isFinite(ms)) return String(input);
-  const parts = formatBeijingEpochMs(ms);
+  const parts = formatLocalEpochMs(ms);
   return `${pad2(parts.hour)}:${pad2(parts.minute)}:${pad2(parts.second)}`;
 }
 
@@ -164,7 +178,7 @@ export function getServerTodayDateText(): string {
 }
 
 export function getServerCurrentYear(): number {
-  return formatBeijingEpochMs(Date.now()).year;
+  return formatLocalEpochMs(Date.now()).year;
 }
 
 export function shiftServerDateText(base: string, days: number): string {
@@ -192,7 +206,7 @@ export function toServerDateStartEpochMs(v: string): number {
   const s = String(v || "").trim();
   const date = parseNaiveDateParts(s);
   if (!date) return Number.NaN;
-  return buildBeijingEpochMs({ ...date, hour: 0, minute: 0, second: 0, millis: 0 });
+  return buildLocalEpochMs({ ...date, hour: 0, minute: 0, second: 0, millis: 0 });
 }
 
 export function toServerDateEndEpochMs(v: string): number {

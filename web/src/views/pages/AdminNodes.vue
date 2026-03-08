@@ -121,25 +121,57 @@
         <el-table-column prop="node_id" label="节点ID" width="210" fixed>
           <template #default="{ row }">
             <div class="node-id-cell">
-              <el-button link class="node-id-link" @click="openNodeDetail(row)">{{ row.node_id }}</el-button>
-              <span
-                v-if="hasNodeSecurityRisk(row)"
-                class="risk-emoji"
-                :title="nodeRiskTooltip(row)"
-              >
-                {{ nodeRiskEmoji(row) }}
-              </span>
-              <el-tag
-                size="small"
-                effect="plain"
-                :type="nodeStatusTagType(row)"
-                class="node-status-tag"
-              >
-                {{ nodeStatusText(row) }}
-              </el-tag>
-              <el-tag v-if="row.ssh_exclusive_enabled" size="small" type="danger" effect="dark" class="node-status-tag">
-                独享中
-              </el-tag>
+              <div class="node-id-head">
+                <el-button link class="node-id-link" @click="openNodeDetail(row)">{{ row.node_id }}</el-button>
+                <span
+                  v-if="hasNodeSecurityRisk(row)"
+                  class="risk-emoji"
+                  :title="nodeRiskTooltip(row)"
+                >
+                  {{ nodeRiskEmoji(row) }}
+                </span>
+              </div>
+              <div class="node-status-cluster">
+                <el-tag
+                  size="small"
+                  effect="plain"
+                  :type="nodeStatusTagType(row)"
+                  class="node-status-tag"
+                  :class="{ 'node-status-tag-clickable': canClickNodeHeartbeatTag(row) }"
+                  @click="onNodeHeartbeatTagClick(row)"
+                >
+                  {{ nodeStatusText(row) }}
+                </el-tag>
+                <el-tooltip
+                  v-if="nodeServiceHealthText(row)"
+                  placement="top"
+                >
+                  <template #content>
+                    <div class="service-tooltip">
+                      <div>{{ nodeServiceHealthTooltipTitle(row) }}</div>
+                      <div
+                        v-for="line in nodeServiceHealthTooltipLines(row)"
+                        :key="`${row.node_id}-${line}`"
+                      >
+                        {{ line }}
+                      </div>
+                    </div>
+                  </template>
+                  <el-tag
+                    size="small"
+                    effect="plain"
+                    :type="nodeServiceHealthTagType(row)"
+                    class="node-status-tag"
+                    :class="{ 'node-status-tag-clickable': canClickNodeServiceTag(row) }"
+                    @click="onNodeServiceTagClick(row)"
+                  >
+                    {{ nodeServiceHealthText(row) }}
+                  </el-tag>
+                </el-tooltip>
+                <el-tag v-if="row.ssh_exclusive_enabled" size="small" type="danger" effect="dark" class="node-status-tag">
+                  独享中
+                </el-tag>
+              </div>
             </div>
           </template>
         </el-table-column>
@@ -435,6 +467,19 @@
           <el-descriptions-item label="节点MAC">{{ detailData.node.node_mac || "-" }}</el-descriptions-item>
           <el-descriptions-item label="最后心跳">{{ formatTime(detailData.node.last_seen_at) }}</el-descriptions-item>
           <el-descriptions-item label="最新快照">{{ formatTime(detailData.latest.report_ts) }}</el-descriptions-item>
+          <el-descriptions-item label="服务巡检">
+            <div class="node-service-detail">
+              <el-tag
+                v-if="nodeServiceHealthText(detailData.node)"
+                size="small"
+                effect="plain"
+                :type="nodeServiceHealthTagType(detailData.node)"
+              >
+                {{ nodeServiceHealthText(detailData.node) }}
+              </el-tag>
+              <span class="node-service-detail-time">巡检于 {{ formatTime(detailData.node.system_services_checked_at) }}</span>
+            </div>
+          </el-descriptions-item>
           <el-descriptions-item label="CPU型号">{{ detailData.node.cpu_model || "-" }}</el-descriptions-item>
           <el-descriptions-item label="CPU数量">{{ detailData.node.cpu_count || 0 }}</el-descriptions-item>
           <el-descriptions-item label="CPU利用率(估算)">{{ cpuUtilNow.toFixed(2) }}%</el-descriptions-item>
@@ -1406,6 +1451,7 @@ import {
   type NodeSecurityEvent,
   type NodeSecurityEventSummary,
   type NodeStatus,
+  type NodeSystemServiceStatus,
   type NodeSuspiciousUser,
 } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
@@ -1472,8 +1518,8 @@ const nodeDiskQuotaMounts = ref<string[]>([]);
 const nodeDiskQuotaPreferredMountpoint = ref("");
 const nodeDiskQuotaMountpoint = ref("");
 const nodeDiskQuotaEnabled = ref(false);
-const nodeDiskQuotaDefaultSoftGB = ref(0);
-const nodeDiskQuotaDefaultHardGB = ref(0);
+const nodeDiskQuotaDefaultSoftGB = ref(20);
+const nodeDiskQuotaDefaultHardGB = ref(22);
 const nodeDiskQuotaApplyAllOnSave = ref(false);
 type DiskQuotaUserRow = NodeLocalUser & { edit_soft_gb: number; edit_hard_gb: number };
 const nodeDiskQuotaUsers = ref<DiskQuotaUserRow[]>([]);
@@ -1533,7 +1579,7 @@ const platformProfile = ref<{
 } | null>(null);
 let detailTimer: ReturnType<typeof setTimeout> | null = null;
 let sshResolveSeq = 0;
-const DETAIL_AUTO_REFRESH_MS = 5 * 60 * 1000;
+const DETAIL_AUTO_REFRESH_MS = 10 * 1000;
 
 const totalGpuProcesses = computed(() => rows.value.reduce((sum, node) => sum + node.gpu_process_count, 0));
 const totalCpuProcesses = computed(() => rows.value.reduce((sum, node) => sum + node.cpu_process_count, 0));
@@ -1794,6 +1840,8 @@ async function deleteGPUVisibilitySafe(nodeId: string, local: string) {
 }
 
 const DISK_QUOTA_MB_PER_GB = 1024;
+const DEFAULT_NODE_DISK_QUOTA_SOFT_GB = 20;
+const DEFAULT_NODE_DISK_QUOTA_HARD_GB = 22;
 
 function mbToQuotaGB(v?: number): number {
   const n = Number(v ?? 0);
@@ -1899,31 +1947,150 @@ function agentVersionOutdatedTip(node: NodeStatus): string {
   return `该节点 Agent 版本为 ${formatAgentMajorMinor(current)}，当前集群最新为 ${latestText}；判定依据为主次版本（vX.Y）。`;
 }
 
-function getNodeStatus(node: NodeStatus): "online" | "offline" {
+function latestNodeHeartbeat(node: NodeStatus) {
   const candidates = [
     dayjs(String(node?.last_seen_at || "")),
     dayjs(String(node?.last_report_ts || "")),
     dayjs(String(node?.updated_at || "")),
   ].filter((t) => t.isValid());
-  // 按你的使用习惯：只要节点有可用上报时间，就视为在线。
-  // 避免“能看到节点信息却被判离线”的体验问题。
-  if (candidates.length > 0) return "online";
-  if (Number(node?.gpu_process_count || 0) > 0 || Number(node?.cpu_process_count || 0) > 0 || Number(node?.ssh_active_count || 0) > 0) {
-    return "online";
-  }
-  return "offline";
+  if (candidates.length === 0) return null;
+  return candidates.sort((a, b) => a.valueOf() - b.valueOf())[candidates.length - 1];
+}
+
+function nodeHeartbeatTimeoutSeconds(node: NodeStatus): number {
+  const interval = Number(node?.interval_seconds || 0);
+  const scaled = Number.isFinite(interval) && interval > 0 ? interval * 3 : 0;
+  return Math.max(5 * 60, scaled);
+}
+
+function getNodeStatus(node: NodeStatus): "online" | "offline" {
+  const latest = latestNodeHeartbeat(node);
+  if (!latest) return "offline";
+  return dayjs().diff(latest, "second") <= nodeHeartbeatTimeoutSeconds(node) ? "online" : "offline";
 }
 
 function nodeStatusText(node: NodeStatus): string {
   const st = getNodeStatus(node);
   if (st === "online") return "上报在线";
-  return "上报离线";
+  return "上报超时";
 }
 
 function nodeStatusTagType(node: NodeStatus): "success" | "info" | "warning" {
   const st = getNodeStatus(node);
   if (st === "online") return "success";
+  return "warning";
+}
+
+function canClickNodeHeartbeatTag(node: NodeStatus): boolean {
+  return getNodeStatus(node) === "online" && syncingNodeId.value !== String(node.node_id || "").trim();
+}
+
+type NodeServiceHealthState = "healthy" | "degraded" | "stale" | "unknown" | "not_deployed";
+
+function normalizeSystemServices(node: NodeStatus): NodeSystemServiceStatus[] {
+  return (node.system_services || []).filter((item) => String(item?.name || "").trim() !== "");
+}
+
+function deployedSystemServices(node: NodeStatus): NodeSystemServiceStatus[] {
+  return normalizeSystemServices(node).filter((item) => !!item.deployed);
+}
+
+function unhealthySystemServices(node: NodeStatus): NodeSystemServiceStatus[] {
+  return deployedSystemServices(node).filter((item) => !item.healthy);
+}
+
+function canFallbackNodeServiceHealthy(node: NodeStatus): boolean {
+  return getNodeStatus(node) === "online";
+}
+
+function nodeServiceHealthState(node: NodeStatus): NodeServiceHealthState {
+  const services = normalizeSystemServices(node);
+  if (services.length === 0) {
+    if (canFallbackNodeServiceHealthy(node)) return "healthy";
+    return "unknown";
+  }
+  const deployed = deployedSystemServices(node);
+  if (deployed.length === 0) return "not_deployed";
+  const checkedAt = dayjs(String(node.system_services_checked_at || ""));
+  if (!checkedAt.isValid()) return "unknown";
+  if (dayjs().diff(checkedAt, "minute") > 45) return "stale";
+  if (unhealthySystemServices(node).length > 0) return "degraded";
+  return "healthy";
+}
+
+function nodeServiceHealthText(node: NodeStatus): string {
+  const state = nodeServiceHealthState(node);
+  const deployed = deployedSystemServices(node);
+  const unhealthy = unhealthySystemServices(node);
+  if (state === "healthy") return "服务正常";
+  if (state === "degraded") return `服务异常 ${unhealthy.length}/${deployed.length}`;
+  if (state === "stale") return "服务陈旧";
+  if (state === "not_deployed") return "未部署服务";
+  return "服务未检";
+}
+
+function nodeServiceHealthTagType(node: NodeStatus): "success" | "info" | "warning" | "danger" {
+  const state = nodeServiceHealthState(node);
+  if (state === "healthy") return "success";
+  if (state === "degraded") return "danger";
+  if (state === "stale") return "warning";
   return "info";
+}
+
+function canClickNodeServiceTag(node: NodeStatus): boolean {
+  return nodeServiceHealthState(node) === "unknown" && syncingNodeId.value !== String(node.node_id || "").trim();
+}
+
+function displaySystemServiceName(name: string): string {
+  const raw = String(name || "").trim();
+  if (!raw) return "-";
+  return raw.replace(/\.service$/i, "").replace(/\.timer$/i, ".timer");
+}
+
+function displaySystemServiceState(item: NodeSystemServiceStatus): string {
+  if (!item.deployed) return "未部署";
+  const active = String(item.active_state || "").trim();
+  const sub = String(item.sub_state || "").trim();
+  if (active === "active") return sub ? `运行中/${sub}` : "运行中";
+  if (active === "inactive") return sub ? `已停/${sub}` : "已停";
+  if (active === "failed") return sub ? `失败/${sub}` : "失败";
+  if (active === "activating") return "启动中";
+  if (active === "deactivating") return "停止中";
+  return active || sub || "未知";
+}
+
+function nodeServiceHealthTooltipTitle(node: NodeStatus): string {
+  if (normalizeSystemServices(node).length === 0 && canFallbackNodeServiceHealthy(node)) {
+    return "服务巡检：未单独上报，按在线 Agent 兜底判定";
+  }
+  const checkedAt = formatTime(node.system_services_checked_at);
+  return `服务巡检：${checkedAt}`;
+}
+
+function nodeServiceHealthTooltipLines(node: NodeStatus): string[] {
+  const services = normalizeSystemServices(node);
+  if (services.length === 0) {
+    if (canFallbackNodeServiceHealthy(node)) {
+      return [
+        `系统版本: ${String(node.os_version || "-").trim() || "-"}`,
+        `内核版本: ${String(node.kernel_version || "-").trim() || "-"}`,
+        `Agent版本: ${displayAgentVersion(node.agent_version)}`,
+        "当前节点持续在线，按 gpu-node-agent 正在运行处理",
+      ];
+    }
+    return ["暂无服务巡检数据"];
+  }
+  return services.map((item) => `${displaySystemServiceName(item.name)}: ${displaySystemServiceState(item)}`);
+}
+
+async function onNodeHeartbeatTagClick(node: NodeStatus) {
+  if (!canClickNodeHeartbeatTag(node)) return;
+  await syncNodeNow(String(node.node_id || "").trim());
+}
+
+async function onNodeServiceTagClick(node: NodeStatus) {
+  if (!canClickNodeServiceTag(node)) return;
+  await syncNodeNow(String(node.node_id || "").trim());
 }
 
 function hasNodeSecurityEvents(node: NodeStatus): boolean {
@@ -2108,8 +2275,8 @@ async function loadNodeDiskQuotaDialog(nodeId: string, withLoading = true) {
     nodeDiskQuotaPreferredMountpoint.value = String(r.preferred_mountpoint || "");
     nodeDiskQuotaEnabled.value = !!r.enabled;
     nodeDiskQuotaMountpoint.value = String(r.mountpoint || r.effective_mountpoint || nodeDiskQuotaPreferredMountpoint.value || "");
-    nodeDiskQuotaDefaultSoftGB.value = mbToQuotaGB(Number(r.effective_soft_mb ?? r.default_soft_mb ?? 0));
-    nodeDiskQuotaDefaultHardGB.value = mbToQuotaGB(Number(r.effective_hard_mb ?? r.default_hard_mb ?? 0));
+    nodeDiskQuotaDefaultSoftGB.value = mbToQuotaGB(Number(r.effective_soft_mb ?? r.default_soft_mb ?? quotaGBToMB(DEFAULT_NODE_DISK_QUOTA_SOFT_GB)));
+    nodeDiskQuotaDefaultHardGB.value = mbToQuotaGB(Number(r.effective_hard_mb ?? r.default_hard_mb ?? quotaGBToMB(DEFAULT_NODE_DISK_QUOTA_HARD_GB)));
     nodeDiskQuotaUsers.value = toDiskQuotaUserRows(
       Array.isArray(r.users) ? r.users : [],
       nodeDiskQuotaDefaultSoftGB.value,
@@ -3356,9 +3523,17 @@ onBeforeUnmount(() => {
 
 .node-id-cell {
   display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  font-weight: 500;
+}
+
+.node-id-head {
+  display: inline-flex;
   align-items: center;
   gap: 8px;
-  font-weight: 500;
+  min-width: 0;
 }
 
 .risk-emoji {
@@ -3366,8 +3541,24 @@ onBeforeUnmount(() => {
   line-height: 1;
 }
 
+.node-status-cluster {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
 .node-status-tag {
-  margin-left: 2px;
+  margin-left: 0;
+}
+
+.node-status-tag-clickable {
+  cursor: pointer;
+}
+
+.node-status-tag-clickable:hover {
+  border-color: var(--primary-color);
+  color: var(--primary-color);
 }
 
 .node-guard-switch-wrap {
@@ -3468,6 +3659,26 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+.service-tooltip {
+  display: grid;
+  gap: 4px;
+  max-width: 320px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.node-service-detail {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.node-service-detail-time {
+  color: var(--text-tertiary);
+  font-size: 12px;
 }
 
 .agent-version-outdated-icon {

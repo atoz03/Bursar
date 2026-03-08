@@ -35,45 +35,53 @@ type NodeAgent struct {
 
 	cacheMu sync.Mutex
 
-	localUsersCache           []NodeLocalUser
-	localUsersCachedAt        time.Time
-	localUsersRefreshInterval time.Duration
-	localUsersCollectTimeout  time.Duration
-	diskQuotaInstalledCache   bool
-	diskQuotaMountsCache      []string
-	userDiskQuotasCache       []NodeUserDiskQuota
-	diskQuotaCachedAt         time.Time
-	diskQuotaRefreshInterval  time.Duration
-	gpuBusMapCache            map[string]int32
-	gpuBusMapCachedAt         time.Time
-	gpuBusMapCacheTTL         time.Duration
-	gpuInventoryModelCache    string
-	gpuInventoryCountCache    int
-	gpuInventoryCachedAt      time.Time
-	gpuInventoryCacheTTL      time.Duration
-	gpuCommandTimeout         time.Duration
+	localUsersCache               []NodeLocalUser
+	localUsersCachedAt            time.Time
+	localUsersRefreshInterval     time.Duration
+	localUsersCollectTimeout      time.Duration
+	systemServicesCache           []NodeSystemServiceStatus
+	systemServicesCachedAt        time.Time
+	systemServicesRefreshInterval time.Duration
+	systemServicesCollectTimeout  time.Duration
+	systemServiceUnits            []string
+	diskQuotaInstalledCache       bool
+	diskQuotaMountsCache          []string
+	userDiskQuotasCache           []NodeUserDiskQuota
+	diskQuotaCachedAt             time.Time
+	diskQuotaRefreshInterval      time.Duration
+	gpuBusMapCache                map[string]int32
+	gpuBusMapCachedAt             time.Time
+	gpuBusMapCacheTTL             time.Duration
+	gpuInventoryModelCache        string
+	gpuInventoryCountCache        int
+	gpuInventoryCachedAt          time.Time
+	gpuInventoryCacheTTL          time.Duration
+	gpuCommandTimeout             time.Duration
 }
 
 func main() {
 	setDefaultTimezone()
 
 	agent := &NodeAgent{
-		nodeID:                    strings.TrimSpace(os.Getenv("NODE_ID")),
-		controllerURL:             strings.TrimSpace(os.Getenv("CONTROLLER_URL")),
-		agentToken:                strings.TrimSpace(os.Getenv("AGENT_TOKEN")),
-		interval:                  60 * time.Second,
-		actionPoll:                1 * time.Second,
-		stateDir:                  strings.TrimSpace(os.Getenv("STATE_DIR")),
-		logger:                    log.New(os.Stdout, "[node-agent] ", log.LstdFlags|log.Lmicroseconds),
-		cpuMinPercent:             1.0,
-		numCPU:                    runtime.NumCPU(),
-		lastCPUSample:             map[int32]cpuSample{},
-		localUsersRefreshInterval: 15 * time.Minute,
-		localUsersCollectTimeout:  8 * time.Second,
-		diskQuotaRefreshInterval:  2 * time.Minute,
-		gpuBusMapCacheTTL:         10 * time.Minute,
-		gpuInventoryCacheTTL:      30 * time.Minute,
-		gpuCommandTimeout:         4 * time.Second,
+		nodeID:                        strings.TrimSpace(os.Getenv("NODE_ID")),
+		controllerURL:                 strings.TrimSpace(os.Getenv("CONTROLLER_URL")),
+		agentToken:                    strings.TrimSpace(os.Getenv("AGENT_TOKEN")),
+		interval:                      60 * time.Second,
+		actionPoll:                    1 * time.Second,
+		stateDir:                      strings.TrimSpace(os.Getenv("STATE_DIR")),
+		logger:                        log.New(os.Stdout, "[node-agent] ", log.LstdFlags|log.Lmicroseconds),
+		cpuMinPercent:                 1.0,
+		numCPU:                        runtime.NumCPU(),
+		lastCPUSample:                 map[int32]cpuSample{},
+		localUsersRefreshInterval:     15 * time.Minute,
+		localUsersCollectTimeout:      8 * time.Second,
+		systemServicesRefreshInterval: 30 * time.Minute,
+		systemServicesCollectTimeout:  8 * time.Second,
+		systemServiceUnits:            defaultSystemServiceUnits(),
+		diskQuotaRefreshInterval:      2 * time.Minute,
+		gpuBusMapCacheTTL:             10 * time.Minute,
+		gpuInventoryCacheTTL:          30 * time.Minute,
+		gpuCommandTimeout:             4 * time.Second,
 	}
 
 	if sec := strings.TrimSpace(os.Getenv("INTERVAL_SECONDS")); sec != "" {
@@ -100,6 +108,19 @@ func main() {
 		if v, err := strconv.Atoi(sec); err == nil && v > 0 {
 			agent.localUsersCollectTimeout = time.Duration(v) * time.Second
 		}
+	}
+	if sec := strings.TrimSpace(os.Getenv("SYSTEM_SERVICES_REFRESH_SECONDS")); sec != "" {
+		if v, err := strconv.Atoi(sec); err == nil && v > 0 {
+			agent.systemServicesRefreshInterval = time.Duration(v) * time.Second
+		}
+	}
+	if sec := strings.TrimSpace(os.Getenv("SYSTEM_SERVICES_COLLECT_TIMEOUT_SECONDS")); sec != "" {
+		if v, err := strconv.Atoi(sec); err == nil && v > 0 {
+			agent.systemServicesCollectTimeout = time.Duration(v) * time.Second
+		}
+	}
+	if raw := strings.TrimSpace(os.Getenv("SYSTEM_SERVICES_CHECK_UNITS")); raw != "" {
+		agent.systemServiceUnits = normalizeSystemServiceUnitList(raw)
 	}
 	if sec := strings.TrimSpace(os.Getenv("DISK_QUOTA_REFRESH_SECONDS")); sec != "" {
 		if v, err := strconv.Atoi(sec); err == nil && v > 0 {

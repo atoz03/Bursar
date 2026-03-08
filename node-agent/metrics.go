@@ -73,6 +73,7 @@ func (a *NodeAgent) CollectMetrics(ctx context.Context) (*MetricsData, error) {
 		metrics.NetTxBytes = ioStats[0].BytesSent
 	}
 	metrics.SSHUsers = a.getSSHUsers(ctx)
+	metrics.SystemServicesCheckedAt, metrics.SystemServices = a.collectSystemServicesCached(ctx)
 	localUsers := a.collectNodeLocalUsersCached(ctx)
 	quotaInstalled, quotaMounts, userQuotas := a.collectDiskQuotaSnapshotCached(ctx, localUsers)
 	metrics.DiskQuotaInstalled = quotaInstalled
@@ -280,34 +281,41 @@ func collectNodeLocalUsers(ctx context.Context) []NodeLocalUser {
 	if ctx.Err() != nil {
 		return nil
 	}
-	users := loadHomeUsers()
-	if len(users) == 0 {
+	userRecords := loadHomeUserRecords()
+	if len(userRecords) == 0 {
 		return nil
 	}
+	users := make([]string, 0, len(userRecords))
+	for _, rec := range userRecords {
+		users = append(users, rec.Username)
+	}
 	priv := collectPrivilegeMap(users)
-	out := make([]NodeLocalUser, 0, len(users))
-	for _, username := range users {
-		if ctx.Err() != nil {
-			break
-		}
+	out := make([]NodeLocalUser, 0, len(userRecords))
+	for _, rec := range userRecords {
+		username := rec.Username
 		homeDir := filepath.Join("/home", username)
 		var createdAt *string
-		if ts, ok := detectHomeCreatedAt(homeDir); ok {
-			v := formatRFC3339InBeijing(ts)
-			createdAt = &v
-		}
 		var lastLoginAt *string
-		loginCtx, cancelLogin := context.WithTimeout(ctx, 1200*time.Millisecond)
-		if ts, ok := detectLastLoginAt(loginCtx, username); ok {
-			v := formatRFC3339InBeijing(ts)
-			lastLoginAt = &v
+		homeUsedGB := 0.0
+		if ctx.Err() == nil {
+			if ts, ok := detectHomeCreatedAt(homeDir); ok {
+				v := formatRFC3339InBeijing(ts)
+				createdAt = &v
+			}
+			loginCtx, cancelLogin := context.WithTimeout(ctx, 1200*time.Millisecond)
+			if ts, ok := detectLastLoginAt(loginCtx, username); ok {
+				v := formatRFC3339InBeijing(ts)
+				lastLoginAt = &v
+			}
+			cancelLogin()
+			duCtx, cancelDU := context.WithTimeout(ctx, 1200*time.Millisecond)
+			homeUsedGB = detectHomeUsedGB(duCtx, homeDir)
+			cancelDU()
 		}
-		cancelLogin()
-		duCtx, cancelDU := context.WithTimeout(ctx, 1200*time.Millisecond)
-		homeUsedGB := detectHomeUsedGB(duCtx, homeDir)
-		cancelDU()
 		out = append(out, NodeLocalUser{
 			LocalUsername: username,
+			UID:           rec.UID,
+			PrimaryGID:    rec.PrimaryGID,
 			HomeCreatedAt: createdAt,
 			LastLoginAt:   lastLoginAt,
 			HomeUsedGB:    homeUsedGB,
@@ -435,12 +443,18 @@ func sudoersHasUserRule(content string, username string) bool {
 	return re.FindStringIndex(content) != nil
 }
 
-func loadHomeUsers() []string {
+type homeUserRecord struct {
+	Username   string
+	UID        int
+	PrimaryGID int
+}
+
+func loadHomeUserRecords() []homeUserRecord {
 	raw, err := os.ReadFile("/etc/passwd")
 	if err != nil {
 		return nil
 	}
-	out := make([]string, 0, 128)
+	out := make([]homeUserRecord, 0, 128)
 	seen := map[string]struct{}{}
 	for _, ln := range strings.Split(string(raw), "\n") {
 		ln = strings.TrimSpace(ln)
@@ -453,6 +467,7 @@ func loadHomeUsers() []string {
 		}
 		username := strings.TrimSpace(parts[0])
 		uidText := strings.TrimSpace(parts[2])
+		gidText := strings.TrimSpace(parts[3])
 		homeDir := strings.TrimSpace(parts[5])
 		shell := strings.TrimSpace(parts[6])
 		if username == "" || homeDir == "" {
@@ -465,6 +480,10 @@ func loadHomeUsers() []string {
 		if err != nil || uid < 1000 {
 			continue
 		}
+		gid, err := strconv.Atoi(gidText)
+		if err != nil || gid < 0 {
+			continue
+		}
 		if strings.Contains(shell, "nologin") || strings.Contains(shell, "false") {
 			continue
 		}
@@ -472,9 +491,27 @@ func loadHomeUsers() []string {
 			continue
 		}
 		seen[username] = struct{}{}
-		out = append(out, username)
+		out = append(out, homeUserRecord{
+			Username:   username,
+			UID:        uid,
+			PrimaryGID: gid,
+		})
 	}
-	sort.Strings(out)
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Username < out[j].Username
+	})
+	return out
+}
+
+func loadHomeUsers() []string {
+	records := loadHomeUserRecords()
+	if len(records) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(records))
+	for _, rec := range records {
+		out = append(out, rec.Username)
+	}
 	return out
 }
 

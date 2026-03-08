@@ -15,8 +15,11 @@
     <el-card class="form-card">
       <template #header>
         <div class="head">
-          <h2>平台账号注册申请</h2>
-          <p>先完成邮箱验证，再进入管理员审核，通过后会进行邮箱通知(注意查询邮箱垃圾箱)。</p>
+          <div class="head-top">
+            <h2>{{ t("平台账号注册申请", "Platform Registration") }}</h2>
+            <el-button text @click="toggleUiLanguage">{{ uiLocaleState.language === "en" ? "中" : "EN" }}</el-button>
+          </div>
+          <p>{{ t("先完成邮箱验证，再进入管理员审核，通过后会进行邮箱通知(注意查询邮箱垃圾箱)。", "Complete email verification first, then wait for admin review. Approval notices will be sent by email.") }}</p>
         </div>
       </template>
 
@@ -24,25 +27,25 @@
       <el-alert v-if="success" :title="success" type="success" show-icon class="mb" />
       <el-alert
         v-if="verifiedSubmitted"
-        title="请在审核通过后第一时间填写你已有的计算节点账号（节点账号页面），否则系统可能无法识别你的使用记录。"
+        :title="t('请在审核通过后第一时间填写你已有的计算节点账号（节点账号页面），否则系统可能无法识别你的使用记录。', 'After approval, add your existing node account mappings as soon as possible, otherwise your usage may not be recognized correctly.')"
         type="error"
         :closable="false"
         show-icon
         class="mb"
       />
       <el-alert
-        title="所有字段都必填。用户名、学号、邮箱不能和已注册账号、待审核申请或待验证申请重复。"
+        :title="t('所有字段都必填。用户名、学号、邮箱不能和已注册账号、待审核申请或待验证申请重复。', 'All fields are required. Username, student ID, and email must be unique across registered, pending-review, and pending-verification accounts.')"
         type="warning"
         :closable="false"
         show-icon
         class="mb"
       />
       <div class="rule-chips">
-        <span class="chip chip-orange">用户名：全平台唯一</span>
-        <span class="chip chip-cyan">学号：全平台唯一</span>
-        <span class="chip chip-blue">邮箱：仅允许 @example.org / @students.example.org</span>
+        <span class="chip chip-orange">{{ t("用户名：全平台唯一", "Username: globally unique") }}</span>
+        <span class="chip chip-cyan">{{ t("学号：全平台唯一", "Student ID: globally unique") }}</span>
+        <span class="chip chip-blue">{{ t("邮箱：仅允许 @example.org / @students.example.org", "Email: only @example.org / @students.example.org") }}</span>
       </div>
-      <div class="rule-note">提交前会自动校验重复项；并强制校验“邮箱前缀=学号（学号自动转大写）”。</div>
+      <div class="rule-note">{{ t("提交前会自动校验重复项；并强制校验“邮箱前缀=学号（学号自动转大写）”。", "Duplicates are checked before submit; email prefix must equal student ID and student ID is auto-uppercased.") }}</div>
 
       <el-form label-position="top" :disabled="submitted" class="register-form">
         <div class="section-grid">
@@ -50,24 +53,24 @@
             <div class="section-head">
               <span class="section-dot dot-account" />
               <div>
-                <h3>账号信息</h3>
-                <p>用于登录平台，注意唯一性。</p>
+                <h3>{{ t("账号信息", "Account Information") }}</h3>
+                <p>{{ t("用于登录平台，注意唯一性。", "Used to sign in. Must be unique.") }}</p>
               </div>
             </div>
             <el-row :gutter="18">
               <el-col :span="24">
                 <el-form-item required>
-                  <template #label><span class="required">*</span> 邮箱</template>
-                  <el-input v-model="form.email" placeholder="例如：26B123456@example.org" @blur="checkUnique('email')" />
-                  <div class="field-tip">必须使用 `@example.org` 或 `@students.example.org`；邮箱前缀必须与学号一致。</div>
+                  <template #label><span class="required">*</span> {{ t("邮箱", "Email") }}</template>
+                  <el-input v-model="form.email" :placeholder="t('例如：26B123456@example.org', 'Example: 26B123456@example.org')" @blur="checkUnique('email')" />
+                  <div class="field-tip">{{ t("必须使用 `@example.org` 或 `@students.example.org`；邮箱前缀必须与学号一致。", "Use only @example.org or @students.example.org; the email prefix must match your student ID.") }}</div>
                   <div v-if="fieldErrors.email" class="field-error">{{ fieldErrors.email }}</div>
                 </el-form-item>
               </el-col>
               <el-col :span="24">
                 <el-form-item required>
-                  <template #label><span class="required">*</span> 用户名</template>
-                  <el-input v-model="form.username" placeholder="例如：zs22B123456（不超过18字符）" @blur="checkUnique('username')" />
-                  <div class="field-tip">建议使用姓名缩写+学号，例如 zs22B123456，最多 18 个字符。</div>
+                  <template #label><span class="required">*</span> {{ t("用户名", "Username") }}</template>
+                  <el-input v-model="form.username" :placeholder="t('例如：zs22B123456（不超过18字符）', 'Example: zs22B123456 (max 18 chars)')" @blur="checkUnique('username')" />
+                  <div class="field-tip">{{ t("建议使用姓名缩写+学号，例如 zs22B123456，最多 18 个字符。", "Recommended: initials + student ID, for example zs22B123456, up to 18 characters.") }}</div>
                   <div v-if="fieldErrors.username" class="field-error">{{ fieldErrors.username }}</div>
                 </el-form-item>
               </el-col>
@@ -75,27 +78,27 @@
             <el-row :gutter="18">
               <el-col :span="24">
                 <el-form-item required>
-                  <template #label><span class="required">*</span> 密码</template>
-                  <el-input v-model="form.password" type="password" show-password placeholder="请设置强密码" />
+                  <template #label><span class="required">*</span> {{ t("密码", "Password") }}</template>
+                  <el-input v-model="form.password" type="password" show-password :placeholder="t('请设置强密码', 'Choose a strong password')" />
                   <div class="field-tip">{{ passwordRuleText }}</div>
                 </el-form-item>
               </el-col>
               <el-col :span="24">
                 <el-form-item required>
-                  <template #label><span class="required">*</span> 确认密码</template>
+                  <template #label><span class="required">*</span> {{ t("确认密码", "Confirm Password") }}</template>
                   <el-input v-model="confirmPassword" type="password" show-password />
                 </el-form-item>
               </el-col>
             </el-row>
             <el-form-item required>
-              <template #label><span class="required">*</span> 安全验证码（每次注册必做）</template>
+              <template #label><span class="required">*</span> {{ t("安全验证码（每次注册必做）", "Security Captcha (required for every registration)") }}</template>
               <div class="captcha-wrap">
                 <div class="captcha-question">{{ captchaQuestionLabel }}</div>
                 <el-radio-group v-model="captchaOption" class="captcha-options">
                   <el-radio-button v-for="(op, idx) in captchaOptions" :key="`${captchaId}-${idx}-${op}`" :label="idx">{{ op }}</el-radio-button>
                 </el-radio-group>
                 <div class="captcha-actions">
-                  <el-button text type="primary" :loading="captchaLoading" @click="loadCaptcha">换一题</el-button>
+                  <el-button text type="primary" :loading="captchaLoading" @click="loadCaptcha">{{ t("换一题", "Refresh") }}</el-button>
                 </div>
               </div>
             </el-form-item>
@@ -105,23 +108,23 @@
             <div class="section-head">
               <span class="section-dot dot-profile" />
               <div>
-                <h3>身份信息</h3>
-                <p>请填写真实资料，便于管理员审核。</p>
+                <h3>{{ t("身份信息", "Profile Information") }}</h3>
+                <p>{{ t("请填写真实资料，便于管理员审核。", "Use real information to help admin review.") }}</p>
               </div>
             </div>
             <el-row :gutter="18">
               <el-col :span="24">
                 <el-form-item required>
-                  <template #label><span class="required">*</span> 真实姓名</template>
-                  <el-input v-model="form.real_name" placeholder="请填写真实中文姓名，例如：张三" />
-                  <div class="field-tip">请使用真实姓名的汉字形式。</div>
+                  <template #label><span class="required">*</span> {{ t("真实姓名", "Real Name") }}</template>
+                  <el-input v-model="form.real_name" :placeholder="t('请填写真实中文姓名，例如：张三', 'Enter your real name')" />
+                  <div class="field-tip">{{ t("请使用真实姓名的汉字形式。", "Use your real legal name.") }}</div>
                 </el-form-item>
               </el-col>
               <el-col :span="24">
                 <el-form-item required>
-                  <template #label><span class="required">*</span> 学号</template>
-                  <el-input v-model="form.student_id" placeholder="注意全大写，例如26B123456" @input="onStudentInput" @blur="checkUnique('student_id')" />
-                  <div class="field-tip">输入小写会自动转为大写；并将用于校验邮箱前缀。</div>
+                  <template #label><span class="required">*</span> {{ t("学号", "Student ID") }}</template>
+                  <el-input v-model="form.student_id" :placeholder="t('注意全大写，例如26B123456', 'Uppercase only, for example 26B123456')" @input="onStudentInput" @blur="checkUnique('student_id')" />
+                  <div class="field-tip">{{ t("输入小写会自动转为大写；并将用于校验邮箱前缀。", "Lowercase input is auto-converted to uppercase and used to validate the email prefix.") }}</div>
                   <div v-if="fieldErrors.student_id" class="field-error">{{ fieldErrors.student_id }}</div>
                 </el-form-item>
               </el-col>
@@ -129,26 +132,26 @@
             <el-row :gutter="18">
               <el-col :span="24">
                 <el-form-item required>
-                  <template #label><span class="required">*</span> 导师</template>
+                  <template #label><span class="required">*</span> {{ t("导师", "Advisor") }}</template>
                   <el-input v-model="form.advisor" />
                 </el-form-item>
               </el-col>
               <el-col :span="24">
                 <el-form-item required>
-                  <template #label><span class="required">*</span> 预计毕业时间（年-月）</template>
+                  <template #label><span class="required">*</span> {{ t("预计毕业时间（年-月）", "Expected Graduation (YYYY-MM)") }}</template>
                   <el-date-picker
                     v-model="graduationYm"
                     type="month"
                     value-format="YYYY-MM"
                     format="YYYY-MM"
                     style="width: 100%"
-                    placeholder="请选择毕业年月"
+                    :placeholder="t('请选择毕业年月', 'Select graduation month')"
                   />
                 </el-form-item>
               </el-col>
             </el-row>
             <el-form-item required>
-              <template #label><span class="required">*</span> 电话</template>
+              <template #label><span class="required">*</span> {{ t("电话", "Phone") }}</template>
               <el-input v-model="form.phone" />
             </el-form-item>
           </section>
@@ -157,9 +160,9 @@
 
       <div class="agree-line">
         <el-checkbox v-model="acceptGuideline" :disabled="submitted">
-          我已阅读并同意
-          <button type="button" class="guideline-link" @click.prevent="guidelineVisible = true">《用户准则》</button>
-          ，自觉遵守平台规范，否则后果自负。
+          {{ t("我已阅读并同意", "I have read and agree to the") }}
+          <button type="button" class="guideline-link" @click.prevent="guidelineVisible = true">{{ t("《用户准则》", "User Guidelines") }}</button>
+          {{ t("，自觉遵守平台规范，否则后果自负。", "and will comply with the platform rules.") }}
         </el-checkbox>
       </div>
 
@@ -170,20 +173,20 @@
         @click="submit"
         class="submit-btn"
       >
-        {{ verifiedSubmitted ? "已提交，等待审核" : submitted ? "验证邮件已发送" : "提交注册申请" }}
+        {{ verifiedSubmitted ? t("已提交，等待审核", "Submitted, waiting for review") : submitted ? t("验证邮件已发送", "Verification email sent") : t("提交注册申请", "Submit Registration") }}
       </el-button>
 
       <div class="links">
-        <router-link to="/login">返回登录</router-link>
+        <router-link to="/login">{{ t("返回登录", "Back to Login") }}</router-link>
       </div>
     </el-card>
 
-    <el-dialog v-model="guidelineVisible" title="用户准则" width="760px">
+    <el-dialog v-model="guidelineVisible" :title="t('用户准则', 'User Guidelines')" width="760px">
       <div class="guideline-wrap">
         <div class="md-body" v-html="renderMarkdown(guidelineContent)" />
       </div>
       <template #footer>
-        <el-button @click="guidelineVisible = false">关闭</el-button>
+        <el-button @click="guidelineVisible = false">{{ t("关闭", "Close") }}</el-button>
       </template>
     </el-dialog>
   </div>
@@ -198,6 +201,7 @@ import { ElMessageBox } from "element-plus";
 import { renderMarkdown } from "../../lib/markdown";
 import { STRONG_PASSWORD_RULE_TEXT, checkStrongPassword } from "../../lib/passwordPolicy";
 import { getServerCurrentYear } from "../../lib/time";
+import { pickText, toggleUiLanguage, uiLocaleState } from "../../lib/uiLocale";
 
 type FieldKey = "username" | "email" | "student_id";
 const allowedEmailDomains = ["example.org", "students.example.org"];
@@ -234,7 +238,7 @@ const captchaId = ref("");
 const captchaQuestion = ref("");
 const captchaOptions = ref<number[]>([]);
 const captchaOption = ref<number | null>(null);
-const captchaQuestionLabel = computed(() => captchaQuestion.value || "验证码加载中...");
+const captchaQuestionLabel = computed(() => captchaQuestion.value || t("验证码加载中...", "Loading captcha..."));
 const fieldErrors = reactive<Record<FieldKey, string>>({
   username: "",
   email: "",
@@ -251,6 +255,10 @@ const form = reactive({
   expected_graduation_month: 6,
   phone: "",
 });
+
+function t(zh: string, en: string): string {
+  return pickText(zh, en);
+}
 
 function normalizeStudentIDInput(v: string): string {
   return String(v || "").trim().toUpperCase();
@@ -425,11 +433,11 @@ async function submit() {
       captcha_id: captchaId.value,
       captcha_option: Number(captchaOption.value),
     });
-    success.value = r.message || "验证邮件已发送，请前往邮箱点击链接完成提交。";
+    success.value = r.message || t("验证邮件已发送，请前往邮箱点击链接完成提交。", "Verification email sent. Open the link in your mailbox to finish submission.");
     submitted.value = true;
-    await ElMessageBox.alert(success.value, "验证邮件已发送", {
+    await ElMessageBox.alert(success.value, t("验证邮件已发送", "Verification Email Sent"), {
       type: "success",
-      confirmButtonText: "我知道了",
+      confirmButtonText: t("我知道了", "OK"),
     });
   } catch (e: any) {
     error.value = normalizeRegisterError(e?.message ?? String(e));
@@ -450,7 +458,7 @@ async function loadCaptcha() {
     captchaOption.value = null;
   } catch (e: any) {
     captchaId.value = "";
-    captchaQuestion.value = "验证码加载失败，请稍后重试";
+    captchaQuestion.value = t("验证码加载失败，请稍后重试", "Captcha failed to load. Try again later.");
     captchaOptions.value = [];
     error.value = normalizeRegisterError(e?.message ?? String(e));
   } finally {
@@ -462,9 +470,9 @@ async function loadGuideline() {
   try {
     const client = new ApiClient(settingsState.baseUrl);
     const r = await client.guideline();
-    guidelineContent.value = String(r.content || "").trim() || "暂无用户准则，请联系管理员。";
+    guidelineContent.value = String(r.content || "").trim() || t("暂无用户准则，请联系管理员。", "No guideline available yet. Contact the administrator.");
   } catch {
-    guidelineContent.value = "暂时无法加载用户准则，请稍后重试。";
+    guidelineContent.value = t("暂时无法加载用户准则，请稍后重试。", "Unable to load the user guidelines right now. Try again later.");
   }
 }
 
@@ -476,15 +484,15 @@ async function handleVerifyResultFromQuery() {
     success.value = msg || "邮箱验证成功，注册申请已提交，请耐心等待管理员审核。";
     submitted.value = true;
     verifiedSubmitted.value = true;
-    await ElMessageBox.alert(success.value, "提交成功", {
+    await ElMessageBox.alert(success.value, t("提交成功", "Submitted"), {
       type: "success",
-      confirmButtonText: "我知道了",
+      confirmButtonText: t("我知道了", "OK"),
     });
   } else {
     error.value = msg || "邮箱验证失败，请返回注册页重新提交申请。";
-    await ElMessageBox.alert(error.value, "邮箱验证失败", {
+    await ElMessageBox.alert(error.value, t("邮箱验证失败", "Email Verification Failed"), {
       type: "error",
-      confirmButtonText: "我知道了",
+      confirmButtonText: t("我知道了", "OK"),
     });
   }
   const nextQuery = { ...route.query } as Record<string, any>;
@@ -673,6 +681,12 @@ onMounted(() => {
   font-size: 32px;
   line-height: 1.2;
   letter-spacing: 0.2px;
+}
+.head-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 .head p {
   margin: 6px 0 0;
