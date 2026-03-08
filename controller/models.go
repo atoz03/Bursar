@@ -9,31 +9,43 @@ type MetricsData struct {
 	// ReportID 为单次上报的全局唯一 ID，用于幂等：控制器只处理一次，避免重试导致重复扣费。
 	ReportID string `json:"report_id"`
 	// IntervalSeconds 为 Agent 上报周期（秒）。为空时由控制器用 sample_interval_seconds 兜底。
-	IntervalSeconds    int                 `json:"interval_seconds,omitempty"`
-	CPUModel           string              `json:"cpu_model,omitempty"`
-	CPUCount           int                 `json:"cpu_count,omitempty"`
-	GPUModel           string              `json:"gpu_model,omitempty"`
-	GPUCount           int                 `json:"gpu_count,omitempty"`
-	DiskTotalGB        float64             `json:"disk_total_gb,omitempty"`
-	DiskUsedGB         float64             `json:"disk_used_gb,omitempty"`
-	HomeTotalGB        float64             `json:"home_total_gb,omitempty"`
-	HomeUsedGB         float64             `json:"home_used_gb,omitempty"`
-	MntTotalGB         float64             `json:"mnt_total_gb,omitempty"`
-	MntUsedGB          float64             `json:"mnt_used_gb,omitempty"`
-	OSVersion          string              `json:"os_version,omitempty"`
-	KernelVersion      string              `json:"kernel_version,omitempty"`
-	AgentVersion       string              `json:"agent_version,omitempty"`
-	NodeIP             string              `json:"node_ip,omitempty"`
-	NodeMAC            string              `json:"node_mac,omitempty"`
-	NetRxBytes         uint64              `json:"net_rx_bytes,omitempty"`
-	NetTxBytes         uint64              `json:"net_tx_bytes,omitempty"`
-	SecuritySignals    *SecuritySignals    `json:"security_signals,omitempty"`
-	SSHUsers           []string            `json:"ssh_users,omitempty"`
-	DiskQuotaInstalled bool                `json:"disk_quota_installed,omitempty"`
-	DiskQuotaMounts    []string            `json:"disk_quota_mounts,omitempty"`
-	UserDiskQuotas     []NodeUserDiskQuota `json:"user_disk_quotas,omitempty"`
-	LocalUsers         []NodeLocalUser     `json:"local_users,omitempty"`
-	Users              []UserProcess       `json:"users"`
+	IntervalSeconds         int                       `json:"interval_seconds,omitempty"`
+	CPUModel                string                    `json:"cpu_model,omitempty"`
+	CPUCount                int                       `json:"cpu_count,omitempty"`
+	GPUModel                string                    `json:"gpu_model,omitempty"`
+	GPUCount                int                       `json:"gpu_count,omitempty"`
+	DiskTotalGB             float64                   `json:"disk_total_gb,omitempty"`
+	DiskUsedGB              float64                   `json:"disk_used_gb,omitempty"`
+	HomeTotalGB             float64                   `json:"home_total_gb,omitempty"`
+	HomeUsedGB              float64                   `json:"home_used_gb,omitempty"`
+	MntTotalGB              float64                   `json:"mnt_total_gb,omitempty"`
+	MntUsedGB               float64                   `json:"mnt_used_gb,omitempty"`
+	OSVersion               string                    `json:"os_version,omitempty"`
+	KernelVersion           string                    `json:"kernel_version,omitempty"`
+	AgentVersion            string                    `json:"agent_version,omitempty"`
+	NodeIP                  string                    `json:"node_ip,omitempty"`
+	NodeMAC                 string                    `json:"node_mac,omitempty"`
+	NetRxBytes              uint64                    `json:"net_rx_bytes,omitempty"`
+	NetTxBytes              uint64                    `json:"net_tx_bytes,omitempty"`
+	SecuritySignals         *SecuritySignals          `json:"security_signals,omitempty"`
+	SSHUsers                []string                  `json:"ssh_users,omitempty"`
+	DiskQuotaInstalled      bool                      `json:"disk_quota_installed,omitempty"`
+	DiskQuotaMounts         []string                  `json:"disk_quota_mounts,omitempty"`
+	SystemServicesCheckedAt string                    `json:"system_services_checked_at,omitempty"`
+	SystemServices          []NodeSystemServiceStatus `json:"system_services,omitempty"`
+	UserDiskQuotas          []NodeUserDiskQuota       `json:"user_disk_quotas,omitempty"`
+	LocalUsers              []NodeLocalUser           `json:"local_users,omitempty"`
+	Users                   []UserProcess             `json:"users"`
+}
+
+type NodeSystemServiceStatus struct {
+	Name          string `json:"name"`
+	Deployed      bool   `json:"deployed"`
+	LoadState     string `json:"load_state,omitempty"`
+	UnitFileState string `json:"unit_file_state,omitempty"`
+	ActiveState   string `json:"active_state,omitempty"`
+	SubState      string `json:"sub_state,omitempty"`
+	Healthy       bool   `json:"healthy"`
 }
 
 type SecuritySignals struct {
@@ -79,7 +91,11 @@ type Action struct {
 	PIDs                    []int32                  `json:"pids,omitempty"`
 	Reason                  string                   `json:"reason,omitempty"`
 	Message                 string                   `json:"message,omitempty"`
+	DelaySeconds            int                      `json:"delay_seconds,omitempty"`             // >0 时节点侧先等待再执行该动作
 	PublicKey               string                   `json:"public_key,omitempty"`                // create_local_account 使用（ssh-ed25519 公钥）
+	SharedWorkspaceUsername string                   `json:"shared_workspace_username,omitempty"` // create_local_account 使用（同步创建 /shared 工作目录）
+	TargetUID               int                      `json:"target_uid,omitempty"`                // create_local_account 使用（为空时不调整 uid）
+	TargetPrimaryGID        int                      `json:"target_primary_gid,omitempty"`        // create_local_account 使用（为空时不调整主组 gid）
 	CPUQuotaPercent         float64                  `json:"cpu_quota_percent,omitempty"`         // set_cpu_quota 使用
 	MemoryLimitGB           float64                  `json:"memory_limit_gb,omitempty"`           // set_memory_limit 使用，0 表示解除限制
 	DiskQuotaMountpoint     string                   `json:"disk_quota_mountpoint,omitempty"`     // set_disk_quota 使用
@@ -132,51 +148,53 @@ type ProcessKillRecord struct {
 }
 
 type NodeStatus struct {
-	NodeID                  string             `json:"node_id"`
-	LastSeenAt              time.Time          `json:"last_seen_at"`
-	LastReportID            string             `json:"last_report_id"`
-	LastReportTS            time.Time          `json:"last_report_ts"`
-	IntervalSeconds         int                `json:"interval_seconds"`
-	CPUModel                string             `json:"cpu_model"`
-	CPUCount                int                `json:"cpu_count"`
-	GPUModel                string             `json:"gpu_model"`
-	GPUCount                int                `json:"gpu_count"`
-	DiskTotalGB             float64            `json:"disk_total_gb"`
-	DiskUsedGB              float64            `json:"disk_used_gb"`
-	HomeTotalGB             float64            `json:"home_total_gb"`
-	HomeUsedGB              float64            `json:"home_used_gb"`
-	MntTotalGB              float64            `json:"mnt_total_gb"`
-	MntUsedGB               float64            `json:"mnt_used_gb"`
-	OSVersion               string             `json:"os_version"`
-	KernelVersion           string             `json:"kernel_version"`
-	AgentVersion            string             `json:"agent_version"`
-	NodeIP                  string             `json:"node_ip"`
-	NodeMAC                 string             `json:"node_mac"`
-	NetRxMBMonth            float64            `json:"net_rx_mb_month"`
-	NetTxMBMonth            float64            `json:"net_tx_mb_month"`
-	GPUProcessCount         int                `json:"gpu_process_count"`
-	CPUProcessCount         int                `json:"cpu_process_count"`
-	UsageRecordsCount       int                `json:"usage_records_count"`
-	SSHActiveCount          int                `json:"ssh_active_count"`
-	DiskQuotaInstalled      bool               `json:"disk_quota_installed"`
-	DiskQuotaMounts         []string           `json:"disk_quota_mounts,omitempty"`
-	SSHGuardEnabled         bool               `json:"ssh_guard_enabled"`
-	SSHExclusiveEnabled     bool               `json:"ssh_exclusive_enabled"`
-	PointsInterceptEnabled  bool               `json:"points_intercept_enabled"`
-	PointsThrottleThreshold *float64           `json:"points_throttle_threshold,omitempty"`
-	PointsLimitedCPUQuota   *float64           `json:"points_limited_cpu_quota_percent,omitempty"`
-	PointsBlockedCPUQuota   *float64           `json:"points_blocked_cpu_quota_percent,omitempty"`
-	PointsOverdraftMemoryGB *float64           `json:"points_overdraft_memory_limit_gb,omitempty"`
-	DiskQuotaEnabled        bool               `json:"disk_quota_enabled"`
-	DiskQuotaMountpoint     string             `json:"disk_quota_mountpoint,omitempty"`
-	DiskQuotaSoftMB         *float64           `json:"disk_quota_soft_mb,omitempty"`
-	DiskQuotaHardMB         *float64           `json:"disk_quota_hard_mb,omitempty"`
-	NodePricePerMinute      *float64           `json:"node_price_per_minute,omitempty"`
-	NodeModelPriceOverrides map[string]float64 `json:"node_model_price_overrides,omitempty"`
-	SecurityEventCount7d    int                `json:"security_event_count_7d,omitempty"`
-	SuspiciousUserCount7d   int                `json:"suspicious_user_count_7d,omitempty"`
-	CostTotal               float64            `json:"cost_total"`
-	UpdatedAt               time.Time          `json:"updated_at"`
+	NodeID                  string                    `json:"node_id"`
+	LastSeenAt              time.Time                 `json:"last_seen_at"`
+	LastReportID            string                    `json:"last_report_id"`
+	LastReportTS            time.Time                 `json:"last_report_ts"`
+	IntervalSeconds         int                       `json:"interval_seconds"`
+	CPUModel                string                    `json:"cpu_model"`
+	CPUCount                int                       `json:"cpu_count"`
+	GPUModel                string                    `json:"gpu_model"`
+	GPUCount                int                       `json:"gpu_count"`
+	DiskTotalGB             float64                   `json:"disk_total_gb"`
+	DiskUsedGB              float64                   `json:"disk_used_gb"`
+	HomeTotalGB             float64                   `json:"home_total_gb"`
+	HomeUsedGB              float64                   `json:"home_used_gb"`
+	MntTotalGB              float64                   `json:"mnt_total_gb"`
+	MntUsedGB               float64                   `json:"mnt_used_gb"`
+	OSVersion               string                    `json:"os_version"`
+	KernelVersion           string                    `json:"kernel_version"`
+	AgentVersion            string                    `json:"agent_version"`
+	NodeIP                  string                    `json:"node_ip"`
+	NodeMAC                 string                    `json:"node_mac"`
+	NetRxMBMonth            float64                   `json:"net_rx_mb_month"`
+	NetTxMBMonth            float64                   `json:"net_tx_mb_month"`
+	GPUProcessCount         int                       `json:"gpu_process_count"`
+	CPUProcessCount         int                       `json:"cpu_process_count"`
+	UsageRecordsCount       int                       `json:"usage_records_count"`
+	SSHActiveCount          int                       `json:"ssh_active_count"`
+	DiskQuotaInstalled      bool                      `json:"disk_quota_installed"`
+	DiskQuotaMounts         []string                  `json:"disk_quota_mounts,omitempty"`
+	SystemServicesCheckedAt *time.Time                `json:"system_services_checked_at,omitempty"`
+	SystemServices          []NodeSystemServiceStatus `json:"system_services,omitempty"`
+	SSHGuardEnabled         bool                      `json:"ssh_guard_enabled"`
+	SSHExclusiveEnabled     bool                      `json:"ssh_exclusive_enabled"`
+	PointsInterceptEnabled  bool                      `json:"points_intercept_enabled"`
+	PointsThrottleThreshold *float64                  `json:"points_throttle_threshold,omitempty"`
+	PointsLimitedCPUQuota   *float64                  `json:"points_limited_cpu_quota_percent,omitempty"`
+	PointsBlockedCPUQuota   *float64                  `json:"points_blocked_cpu_quota_percent,omitempty"`
+	PointsOverdraftMemoryGB *float64                  `json:"points_overdraft_memory_limit_gb,omitempty"`
+	DiskQuotaEnabled        bool                      `json:"disk_quota_enabled"`
+	DiskQuotaMountpoint     string                    `json:"disk_quota_mountpoint,omitempty"`
+	DiskQuotaSoftMB         *float64                  `json:"disk_quota_soft_mb,omitempty"`
+	DiskQuotaHardMB         *float64                  `json:"disk_quota_hard_mb,omitempty"`
+	NodePricePerMinute      *float64                  `json:"node_price_per_minute,omitempty"`
+	NodeModelPriceOverrides map[string]float64        `json:"node_model_price_overrides,omitempty"`
+	SecurityEventCount7d    int                       `json:"security_event_count_7d,omitempty"`
+	SuspiciousUserCount7d   int                       `json:"suspicious_user_count_7d,omitempty"`
+	CostTotal               float64                   `json:"cost_total"`
+	UpdatedAt               time.Time                 `json:"updated_at"`
 }
 
 type NodePointsInterceptPolicy struct {
@@ -196,6 +214,8 @@ type NodeExclusiveGPUAssignment struct {
 type NodeLocalUser struct {
 	NodeID                 string     `json:"node_id,omitempty"`
 	LocalUsername          string     `json:"local_username"`
+	UID                    *int       `json:"uid,omitempty"`
+	PrimaryGID             *int       `json:"primary_gid,omitempty"`
 	PlatformUsername       string     `json:"platform_username,omitempty"`
 	MappingExists          bool       `json:"mapping_exists"`
 	PlatformExists         bool       `json:"platform_exists"`
@@ -321,11 +341,18 @@ type NodeMonthlyUserCost struct {
 // UserNodeAccount 表示“节点本地账号”到“计费账号”的映射。
 // 约定：node_id 为机器编号（可用端口号，例如 60000）；local_username 为该节点上的 Linux 用户名。
 type UserNodeAccount struct {
-	NodeID          string    `json:"node_id"`
-	LocalUsername   string    `json:"local_username"`
-	BillingUsername string    `json:"billing_username"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	NodeID               string     `json:"node_id"`
+	LocalUsername        string     `json:"local_username"`
+	BillingUsername      string     `json:"billing_username"`
+	PlatformUID          *int       `json:"platform_uid,omitempty"`
+	NodeUID              *int       `json:"node_uid,omitempty"`
+	NodePrimaryGID       *int       `json:"node_primary_gid,omitempty"`
+	NodeLastLoginAt      *time.Time `json:"node_last_login_at,omitempty"`
+	NodeLocalUpdatedAt   *time.Time `json:"node_local_updated_at,omitempty"`
+	IdentityAligned      bool       `json:"identity_aligned"`
+	IdentityInitializing bool       `json:"identity_initializing"`
+	CreatedAt            time.Time  `json:"created_at"`
+	UpdatedAt            time.Time  `json:"updated_at"`
 }
 
 type UserMappedNodeInfo struct {
@@ -596,11 +623,14 @@ type DeletedUserAccount struct {
 	ExpectedGraduationYear  int        `json:"expected_graduation_year"`
 	ExpectedGraduationMonth int        `json:"expected_graduation_month"`
 	Phone                   string     `json:"phone"`
+	PlatformUID             *int       `json:"platform_uid,omitempty"`
 	Role                    string     `json:"role"`
 	Balance                 float64    `json:"balance"`
 	CarryoverBalance        float64    `json:"carryover_balance"`
 	UserStatus              string     `json:"user_status"`
 	DeletedAt               time.Time  `json:"deleted_at"`
+	UIDReleaseAt            *time.Time `json:"uid_release_at,omitempty"`
+	UIDReleaseRemainingSec  *int64     `json:"uid_release_remaining_seconds,omitempty"`
 	DeletedBy               string     `json:"deleted_by"`
 	DeleteReason            string     `json:"delete_reason"`
 	RestoredAt              *time.Time `json:"restored_at,omitempty"`
@@ -625,6 +655,7 @@ type UserAccount struct {
 	ExpectedGraduationYear  int        `json:"expected_graduation_year"`
 	ExpectedGraduationMonth int        `json:"expected_graduation_month"`
 	Phone                   string     `json:"phone"`
+	PlatformUID             *int       `json:"platform_uid,omitempty"`
 	Role                    string     `json:"role"`
 	LastLoginAt             *time.Time `json:"last_login_at,omitempty"`
 	CreatedAt               time.Time  `json:"created_at"`
@@ -642,6 +673,7 @@ type MailSettings struct {
 
 type PowerUser struct {
 	Username          string     `json:"username"`
+	PlatformUID       *int       `json:"platform_uid,omitempty"`
 	IsPlatformUser    bool       `json:"is_platform_user"`
 	CanViewBoard      bool       `json:"can_view_board"`
 	CanViewNodes      bool       `json:"can_view_nodes"`
@@ -717,6 +749,7 @@ type AdminNote struct {
 
 type AdminUserDetail struct {
 	Username          string            `json:"username"`
+	PlatformUID       *int              `json:"platform_uid,omitempty"`
 	Role              string            `json:"role"`
 	CanViewBoard      bool              `json:"can_view_board"`
 	CanViewNodes      bool              `json:"can_view_nodes"`
@@ -809,6 +842,7 @@ type NodeRuntimeSnapshot struct {
 
 type PointsUser struct {
 	Username          string  `json:"username"`
+	PlatformUID       *int    `json:"platform_uid,omitempty"`
 	Email             string  `json:"email"`
 	RealName          string  `json:"real_name"`
 	StudentID         string  `json:"student_id"`

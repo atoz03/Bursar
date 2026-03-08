@@ -11,6 +11,9 @@ RUN_USER="${RUN_USER:-$(id -un)}"
 RUN_GROUP="${RUN_GROUP:-$(id -gn)}"
 BUILD_WEB="${BUILD_WEB:-0}"
 ENABLE_HOST_SECURITY="${ENABLE_HOST_SECURITY:-1}"
+ENABLE_SHARED_WORKSPACE_SUDOERS="${ENABLE_SHARED_WORKSPACE_SUDOERS:-1}"
+SHARED_NODE_ROOT="${SHARED_NODE_ROOT:-/srv/gpu-ops/nodes}"
+SHARED_CLUSTER_ROOT="${SHARED_CLUSTER_ROOT:-/srv/gpu-ops/cluster}"
 SSH_FAIL2BAN_MAXRETRY="${SSH_FAIL2BAN_MAXRETRY:-20}"
 SSH_FAIL2BAN_FINDTIME="${SSH_FAIL2BAN_FINDTIME:-5m}"
 SSH_FAIL2BAN_BANTIME="${SSH_FAIL2BAN_BANTIME:-12h}"
@@ -30,7 +33,12 @@ if [[ "$(id -u)" -ne 0 ]]; then
   SUDO="sudo"
 fi
 
-echo "[1/5] 编译 controller"
+INSTALL_BIN="$(command -v install)"
+CHOWN_BIN="$(command -v chown)"
+CHMOD_BIN="$(command -v chmod)"
+SUDOERS_PATH="/etc/sudoers.d/${SERVICE_NAME}-shared-workspace"
+
+echo "[1/6] 编译 controller"
 TMP_BIN="$(mktemp /tmp/gpu-controller.XXXXXX)"
 trap 'rm -f "${TMP_BIN}"' EXIT
 (
@@ -39,16 +47,28 @@ trap 'rm -f "${TMP_BIN}"' EXIT
 )
 
 if [[ "${BUILD_WEB}" == "1" ]]; then
-  echo "[2/5] 构建前端 web"
+  echo "[2/6] 构建前端 web"
   pnpm -C "${ROOT_DIR}/web" build
 else
-  echo "[2/5] 跳过前端构建（BUILD_WEB=${BUILD_WEB}）"
+  echo "[2/6] 跳过前端构建（BUILD_WEB=${BUILD_WEB}）"
 fi
 
-echo "[3/5] 安装二进制到 ${BIN_PATH}"
+echo "[3/6] 安装二进制到 ${BIN_PATH}"
 ${SUDO} install -m 0755 "${TMP_BIN}" "${BIN_PATH}"
 
-echo "[4/5] 写入 systemd 服务 ${SERVICE_NAME}"
+if [[ "${ENABLE_SHARED_WORKSPACE_SUDOERS}" == "1" ]]; then
+  echo "[4/6] 写入共享工作目录 sudoers"
+  ${SUDO} tee "${SUDOERS_PATH}" >/dev/null <<EOF_SUDOERS
+${RUN_USER} ALL=(root) NOPASSWD: ${INSTALL_BIN} -d -m 0755 -o * -g * ${SHARED_NODE_ROOT}/*/*, ${INSTALL_BIN} -d -m 0755 -o * -g * ${SHARED_CLUSTER_ROOT}/*, ${CHOWN_BIN} * ${SHARED_NODE_ROOT}/*/*, ${CHOWN_BIN} * ${SHARED_CLUSTER_ROOT}/*, ${CHMOD_BIN} 0755 ${SHARED_NODE_ROOT}/*/*, ${CHMOD_BIN} 0755 ${SHARED_CLUSTER_ROOT}/*
+EOF_SUDOERS
+  ${SUDO} chmod 440 "${SUDOERS_PATH}"
+  ${SUDO} chown root:root "${SUDOERS_PATH}"
+  ${SUDO} visudo -cf "${SUDOERS_PATH}" >/dev/null
+else
+  echo "[4/6] 跳过共享工作目录 sudoers（ENABLE_SHARED_WORKSPACE_SUDOERS=${ENABLE_SHARED_WORKSPACE_SUDOERS}）"
+fi
+
+echo "[5/6] 写入 systemd 服务 ${SERVICE_NAME}"
 ${SUDO} tee "/etc/systemd/system/${SERVICE_NAME}.service" >/dev/null <<EOF_SERVICE
 [Unit]
 Description=GPU Ops Controller
@@ -68,14 +88,14 @@ RestartSec=2
 WantedBy=multi-user.target
 EOF_SERVICE
 
-echo "[5/5] 重载并启用服务"
+echo "[6/6] 重载并启用服务"
 ${SUDO} systemctl daemon-reload
 ${SUDO} systemctl enable --now "${SERVICE_NAME}"
 ${SUDO} systemctl --no-pager --full status "${SERVICE_NAME}" || true
 ${SUDO} journalctl -u "${SERVICE_NAME}" -n 40 --no-pager || true
 
 if [[ "${ENABLE_HOST_SECURITY}" == "1" ]]; then
-  echo "[6/6] 安装控制器主机安全基线（fail2ban）"
+  echo "[7/7] 安装控制器主机安全基线（fail2ban）"
   if command -v apt-get >/dev/null 2>&1; then
     ${SUDO} apt-get update -y >/dev/null 2>&1 || true
     ${SUDO} apt-get install -y fail2ban >/dev/null 2>&1 || true

@@ -18,7 +18,7 @@
       <el-alert v-if="success" :title="success" type="success" show-icon class="mb" />
       <el-alert title="同一平台账号可映射多个节点账号；唯一键是“节点编号 + 节点账号”。" type="info" show-icon class="mb" />
       <el-alert
-        title="页面阅读建议：先做“映射查询”定位账号，再在“映射列表”维护映射，随后处理“开通申请审核”和“解绑记录”，最后查看“受限名单”和“开通历史”。"
+        title="页面阅读建议：先做“映射查询”定位账号，再在“映射列表”维护映射，随后处理“解绑记录”和“受限名单”。节点账号开通相关内容已单独移到“节点账号开通”页面。"
         type="warning"
         :closable="false"
         show-icon
@@ -348,284 +348,6 @@
       </el-table>
     </el-card>
 
-    <el-card class="section-card provision-card">
-      <template #header>
-        <div class="section-title-wrap provision-head">
-          <span class="section-icon tone-provision"><el-icon><Key /></el-icon></span>
-          <span>节点账号开通（密文进平台内，提取码走邮箱）</span>
-        </div>
-      </template>
-      <el-form label-position="top">
-        <el-row :gutter="12">
-          <el-col :span="8">
-            <el-form-item label="平台账号">
-              <el-autocomplete
-                v-model="provisionForm.billing_username"
-                style="width: 100%"
-                clearable
-                placeholder="输入平台账号"
-                :fetch-suggestions="queryBillingOptions"
-                @select="onProvisionBillingSelect"
-                @change="onProvisionBillingChange"
-                @blur="onProvisionBillingBlur"
-              />
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="节点编号">
-              <el-autocomplete
-                v-model="provisionForm.node_id"
-                style="width: 100%"
-                clearable
-                placeholder="例如 60000"
-                :fetch-suggestions="queryNodeOptions"
-                @select="onProvisionNodeSelect"
-              />
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="节点账号">
-              <el-input v-model="provisionForm.local_username" placeholder="例如 zhangsan" />
-            </el-form-item>
-          </el-col>
-        </el-row>
-        <el-row :gutter="12">
-          <el-col :span="12">
-            <el-form-item label="SSH 主机地址（可选）">
-              <el-input
-                v-model="provisionForm.ssh_host"
-                placeholder="默认 controller.example.org（可修改，系统会记住上次使用地址）"
-                @blur="rememberProvisionSSHHostFromForm"
-              />
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="SSH 端口（可选）">
-              <el-input-number v-model="provisionForm.ssh_port" :min="0" :max="65535" style="width: 100%" />
-            </el-form-item>
-          </el-col>
-        </el-row>
-      </el-form>
-      <div class="provision-user-preview">
-        <div class="preview-head">
-          <div class="section-title-wrap">
-            <span class="section-icon tone-user"><el-icon><UserFilled /></el-icon></span>
-            <span>已选平台账号核对信息</span>
-          </div>
-          <el-button v-if="provisionUserDetail?.username" link type="primary" @click="openProfile(provisionUserDetail.username)">
-            打开完整详情
-          </el-button>
-        </div>
-        <el-skeleton v-if="provisionUserLoading" :rows="2" animated />
-        <el-alert
-          v-else-if="provisionUserError"
-          :title="provisionUserError"
-          type="error"
-          show-icon
-          :closable="false"
-          class="mb"
-        />
-        <el-empty v-else-if="!provisionUserDetail" description="请选择平台账号后自动展示详情，避免开通错误" :image-size="58" />
-        <el-descriptions v-else :column="3" border size="small" class="preview-desc">
-          <el-descriptions-item label="平台账号">{{ provisionUserDetail.username }}</el-descriptions-item>
-          <el-descriptions-item label="用户级别">{{ roleText(provisionUserDetail.role) }}</el-descriptions-item>
-          <el-descriptions-item label="状态">
-            <el-tag :type="statusTagType(provisionUserDetail.status)" size="small">{{ statusText(provisionUserDetail.status) }}</el-tag>
-          </el-descriptions-item>
-          <el-descriptions-item label="真实姓名">{{ provisionUserDetail.real_name || "-" }}</el-descriptions-item>
-          <el-descriptions-item label="学号">{{ provisionUserDetail.student_id || "-" }}</el-descriptions-item>
-          <el-descriptions-item label="邮箱">{{ provisionUserDetail.email || "-" }}</el-descriptions-item>
-          <el-descriptions-item label="通用积分">{{ fmt2(provisionUserDetail.general_balance ?? provisionUserDetail.balance ?? 0) }}</el-descriptions-item>
-          <el-descriptions-item label="专属积分">{{ fmt2(provisionUserDetail.exclusive_balance ?? 0) }}</el-descriptions-item>
-          <el-descriptions-item label="总积分">{{ fmt2(provisionUserDetail.total_balance ?? ((provisionUserDetail.general_balance ?? provisionUserDetail.balance ?? 0) + (provisionUserDetail.exclusive_balance ?? 0))) }}</el-descriptions-item>
-          <el-descriptions-item label="导师">{{ provisionUserDetail.advisor || "-" }}</el-descriptions-item>
-          <el-descriptions-item label="预计毕业">{{ fmtGrad(provisionUserDetail.expected_graduation_year, provisionUserDetail.expected_graduation_month) }}</el-descriptions-item>
-          <el-descriptions-item label="已有映射">{{ (provisionUserDetail.node_accounts || []).length }} 条</el-descriptions-item>
-        </el-descriptions>
-      </div>
-      <el-alert
-        title="若节点上已存在同名账号，系统会复用该账号并刷新 authorized_keys；若用户丢失密钥，可在冲突提示后选择“重新生成新密钥并重发”。系统默认生成 ed25519 密钥，密文发送到平台内通知，提取码单独邮件发送。"
-        type="warning"
-        :closable="false"
-        show-icon
-        class="mb"
-      />
-      <el-alert v-if="provisionActionError" :title="provisionActionError" type="error" show-icon class="mb" />
-      <el-alert v-if="provisionActionSuccess" :title="provisionActionSuccess" type="success" show-icon class="mb" />
-      <div class="provision-actions">
-        <el-button type="success" :loading="provisioning" @click="provisionAccount">开通账号并发送提取码邮件</el-button>
-      </div>
-    </el-card>
-
-    <el-card class="section-card mapping-review-card">
-      <template #header>
-        <div class="head">
-          <div class="section-title-wrap">
-            <span class="section-icon tone-note"><el-icon><Document /></el-icon></span>
-            <span>节点账号开通申请审核</span>
-            <el-badge
-              :value="pendingOpenRequestCount"
-              :hidden="pendingOpenRequestCount <= 0"
-              type="danger"
-              class="pending-count-badge"
-            />
-          </div>
-          <div class="head-actions">
-            <el-select v-model="openRequestStatus" size="small" style="width: 150px" @change="reloadOpenRequests">
-              <el-option label="待处理" value="pending" />
-              <el-option label="已处理" value="approved" />
-              <el-option label="已拒绝" value="rejected" />
-              <el-option label="全部" value="" />
-            </el-select>
-            <el-button size="small" plain @click="openOpenRejectHistoryDialog">驳回历史</el-button>
-            <el-button size="small" :loading="openRequestsLoading" @click="reloadOpenRequests">刷新</el-button>
-          </div>
-        </div>
-      </template>
-      <el-alert
-        title="这里集中展示“节点账号开通申请”。用户自助发起的绑定 challenge 不在这里审核。"
-        type="info"
-        :closable="false"
-        show-icon
-        class="mb"
-      />
-      <el-alert v-if="pendingOpenRequestCount > 0" type="warning" :closable="false" show-icon class="mb pending-open-banner">
-        <template #title>{{ pendingAlertTitle }}</template>
-        <div class="pending-open-actions">
-          <el-button size="small" type="warning" plain @click="focusPendingRequests">只看待处理</el-button>
-          <el-button size="small" @click="reloadOpenRequests">立即刷新</el-button>
-        </div>
-      </el-alert>
-      <el-table :data="openRequests" stripe size="small" max-height="360">
-        <el-table-column type="expand" width="44">
-          <template #default="{ row }">
-            <el-descriptions v-if="findApplicant(row.billing_username)" :column="3" border size="small" class="note-user-detail">
-              <el-descriptions-item label="平台账号">{{ findApplicant(row.billing_username)?.username }}</el-descriptions-item>
-              <el-descriptions-item label="用户级别">{{ roleText(findApplicant(row.billing_username)?.role || "") }}</el-descriptions-item>
-              <el-descriptions-item label="账号状态">
-                <el-tag :type="statusTagType(findApplicant(row.billing_username)?.status || '')" size="small">
-                  {{ statusText(findApplicant(row.billing_username)?.status || "") }}
-                </el-tag>
-              </el-descriptions-item>
-              <el-descriptions-item label="真实姓名">{{ findApplicant(row.billing_username)?.real_name || "-" }}</el-descriptions-item>
-              <el-descriptions-item label="学号">{{ findApplicant(row.billing_username)?.student_id || "-" }}</el-descriptions-item>
-              <el-descriptions-item label="邮箱">{{ findApplicant(row.billing_username)?.email || "-" }}</el-descriptions-item>
-              <el-descriptions-item label="电话">{{ findApplicant(row.billing_username)?.phone || "-" }}</el-descriptions-item>
-              <el-descriptions-item label="导师">{{ findApplicant(row.billing_username)?.advisor || "-" }}</el-descriptions-item>
-              <el-descriptions-item label="预计毕业">{{ fmtGrad(findApplicant(row.billing_username)?.expected_graduation_year || 0, findApplicant(row.billing_username)?.expected_graduation_month || 0) }}</el-descriptions-item>
-              <el-descriptions-item label="通用积分">{{ fmt2(findApplicant(row.billing_username)?.balance || 0) }}</el-descriptions-item>
-              <el-descriptions-item label="专属积分">{{ fmt2(findApplicant(row.billing_username)?.exclusive_balance || 0) }}</el-descriptions-item>
-              <el-descriptions-item label="总积分">{{ fmt2(findApplicant(row.billing_username)?.total_balance || 0) }}</el-descriptions-item>
-            </el-descriptions>
-            <el-alert
-              v-else
-              title="本地缓存未命中申请人信息，请点击平台账号查看完整详情。"
-              type="info"
-              :closable="false"
-              show-icon
-            />
-          </template>
-        </el-table-column>
-        <el-table-column prop="request_id" label="申请ID" width="86" />
-        <el-table-column label="类型" width="100">
-          <template #default="{ row }">
-            <el-tag size="small" :type="requestTypeTagType(row.request_type)">{{ requestTypeText(row.request_type) }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="状态" width="90">
-          <template #default="{ row }">
-            <el-tag :type="requestStatusTagType(row.status)" size="small">{{ requestStatusText(row.status) }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="申请人" width="170">
-          <template #default="{ row }">
-            <el-button link type="primary" @click="openProfile(row.billing_username)">{{ row.billing_username }}</el-button>
-          </template>
-        </el-table-column>
-        <el-table-column label="申请人信息" min-width="360">
-          <template #default="{ row }">
-            <div class="note-user-lines">
-              <div class="line-1">{{ applicantSummary(row.billing_username) }}</div>
-              <div class="line-2">{{ applicantContact(row.billing_username) }}</div>
-              <div class="line-3">{{ applicantAdvisor(row.billing_username) }}</div>
-            </div>
-          </template>
-        </el-table-column>
-        <el-table-column prop="message" label="申请说明" min-width="300" />
-        <el-table-column label="申请时间" min-width="170">
-          <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
-        </el-table-column>
-        <el-table-column label="审核信息" min-width="180">
-          <template #default="{ row }">
-            <div class="mini">审核人：{{ row.reviewed_by || "-" }}</div>
-            <div class="mini">审核时间：{{ fmtTime(row.reviewed_at || "") }}</div>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="320" fixed="right">
-          <template #default="{ row }">
-            <el-space>
-              <el-button v-if="String(row.request_type || '') === 'open'" size="small" @click="applyOpenRequestToProvision(row)">带入开通</el-button>
-              <el-button
-                v-if="row.status === 'pending'"
-                size="small"
-                type="success"
-                :loading="openRequestActionLoadingId === row.request_id"
-                @click="markOpenRequestProcessed(row)"
-              >
-                标记已处理
-              </el-button>
-              <el-button
-                v-if="row.status === 'pending'"
-                size="small"
-                type="danger"
-                plain
-                :loading="openRequestActionLoadingId === row.request_id"
-                @click="markOpenRequestRejected(row)"
-              >
-                拒绝
-              </el-button>
-              <el-button
-                v-else
-                size="small"
-                type="warning"
-                plain
-                :loading="openRequestActionLoadingId === row.request_id"
-                @click="markOpenRequestPending(row)"
-              >
-                恢复待处理
-              </el-button>
-            </el-space>
-          </template>
-        </el-table-column>
-      </el-table>
-    </el-card>
-
-    <el-card class="section-card provision-history-card">
-      <template #header>
-        <div class="head section-title-wrap">
-          <span class="section-icon tone-history"><el-icon><Clock /></el-icon></span>
-          <span>节点账号开通历史</span>
-          <el-button size="small" :loading="provisionLogsLoading" @click="reloadProvisionLogs">刷新历史</el-button>
-        </div>
-      </template>
-      <el-table :data="provisionLogs" stripe size="small" max-height="280">
-        <el-table-column label="开通时间" min-width="172">
-          <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
-        </el-table-column>
-        <el-table-column prop="created_by" label="操作人" width="120" />
-        <el-table-column prop="billing_username" label="平台账号" width="160" />
-        <el-table-column prop="node_id" label="节点编号" width="120" />
-        <el-table-column prop="local_username" label="节点账号" width="150" />
-        <el-table-column prop="email" label="邮箱" min-width="220" />
-        <el-table-column label="邮件状态" width="100">
-          <template #default="{ row }">
-            <el-tag :type="row.mail_sent ? 'success' : 'danger'" size="small">{{ row.mail_sent ? "成功" : "失败" }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="mail_error" label="失败原因" min-width="220" />
-      </el-table>
-    </el-card>
-
     <el-card class="section-card mapping-query-card">
       <template #header>
         <div class="section-title-wrap">
@@ -708,13 +430,13 @@
         <div class="head">
           <div class="section-title-wrap">
             <span class="section-icon tone-note"><el-icon><WarningFilled /></el-icon></span>
-            <span>受限名单（CPU/内存/黑名单）</span>
+            <span>受限名单（CPU/内存/GPU/黑名单）</span>
           </div>
           <el-button size="small" :loading="restrictedLoading" @click="reloadRestrictedRows">刷新名单</el-button>
         </div>
       </template>
       <el-alert
-        title="该名单聚合展示 CPU 手动限制、内存手动限制、SSH 黑名单。可在此查看受限类型并单项解除。"
+        title="该名单聚合展示 CPU 手动限制、内存手动限制、GPU 可见限制、SSH 黑名单。可在此查看受限类型并单项解除。"
         type="warning"
         :closable="false"
         show-icon
@@ -747,6 +469,9 @@
               <el-tag v-if="hasRestrictedMemory(row)" type="danger" size="small">
                 内存 {{ Number(row.memory_limit_gb || 0).toFixed(1) }} GB
               </el-tag>
+              <el-tag v-if="hasRestrictedGPU(row)" type="success" size="small">
+                GPU {{ formatGPUIndices(row.gpu_indices) }}
+              </el-tag>
               <el-tag v-if="hasRestrictedBlacklist(row)" type="danger" effect="dark" size="small">
                 SSH黑名单
               </el-tag>
@@ -758,6 +483,7 @@
             <div class="restricted-details">
               <div v-if="hasRestrictedCPU(row)">CPU：{{ row.cpu_reason || "-" }}</div>
               <div v-if="hasRestrictedMemory(row)">内存：{{ row.memory_reason || "-" }}</div>
+              <div v-if="hasRestrictedGPU(row)">GPU：{{ row.gpu_reason || "-" }}</div>
               <div v-if="hasRestrictedBlacklist(row)">黑名单：{{ row.blacklist_reason || "-" }}</div>
             </div>
           </template>
@@ -795,6 +521,16 @@
                 @click="clearRestrictedMemoryLimit(row)"
               >
                 解除内存
+              </el-button>
+              <el-button
+                size="small"
+                type="success"
+                plain
+                :disabled="!hasRestrictedGPU(row)"
+                :loading="restrictedActionKey === `${row.node_id}::${row.local_username}::clear-gpu`"
+                @click="clearRestrictedGPUVisibility(row)"
+              >
+                解除GPU
               </el-button>
               <el-button
                 size="small"
@@ -884,34 +620,6 @@
       </el-table>
     </el-card>
 
-    <el-dialog v-model="openRejectHistoryVisible" title="开通申请驳回历史" width="1050px" destroy-on-close>
-      <div class="head-actions mb">
-        <el-button size="small" :loading="openRejectHistoryLoading" @click="reloadOpenRejectHistory">刷新</el-button>
-      </div>
-      <el-table :data="openRejectHistoryRows" stripe size="small" max-height="460" empty-text="暂无驳回记录">
-        <el-table-column prop="request_id" label="申请ID" width="90" />
-        <el-table-column label="类型" width="110">
-          <template #default="{ row }">
-            <el-tag size="small" :type="requestTypeTagType(row.request_type)">{{ requestTypeText(row.request_type) }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="billing_username" label="平台账号" width="170" />
-        <el-table-column prop="node_id" label="节点编号" width="130" />
-        <el-table-column prop="local_username" label="节点账号" width="150" />
-        <el-table-column prop="message" label="申请说明/备注" min-width="260" />
-        <el-table-column label="审核信息" min-width="220">
-          <template #default="{ row }">
-            <div class="mini">审核人：{{ row.reviewed_by || "-" }}</div>
-            <div class="mini">审核时间：{{ fmtTime(row.reviewed_at || "") }}</div>
-            <div class="mini">提交时间：{{ fmtTime(row.created_at || "") }}</div>
-          </template>
-        </el-table-column>
-      </el-table>
-      <template #footer>
-        <el-button @click="openRejectHistoryVisible = false">关闭</el-button>
-      </template>
-    </el-dialog>
-
     <el-dialog v-model="unbindRejectHistoryVisible" title="解绑申请驳回历史" width="1050px" destroy-on-close>
       <div class="head-actions mb">
         <el-button size="small" :loading="unbindRejectHistoryLoading" @click="reloadUnbindRejectHistory">刷新</el-button>
@@ -982,53 +690,6 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="provisionResultVisible" title="节点账号开通结果" width="900px" destroy-on-close>
-      <template v-if="provisionResult">
-        <el-alert
-          :title="provisionResult.mail_sent ? '平台内已下发密文通知，提取码已发邮箱。' : '平台内密文通知已下发，但提取码邮件发送失败，请手动通知用户提取码。'"
-          :type="provisionResult.mail_sent ? 'success' : 'warning'"
-          :closable="false"
-          show-icon
-          class="mb"
-        />
-        <el-alert v-if="provisionResult.mail_error" :title="provisionResult.mail_error" type="error" show-icon class="mb" />
-        <el-alert v-if="provisionResult.log_error" :title="provisionResult.log_error" type="warning" show-icon class="mb" />
-        <el-alert v-if="provisionResult.notice_error" :title="provisionResult.notice_error" type="error" show-icon class="mb" />
-        <el-descriptions :column="2" border>
-          <el-descriptions-item label="平台账号">{{ provisionResult.billing_username }}</el-descriptions-item>
-          <el-descriptions-item label="通知邮箱">{{ provisionResult.email }}</el-descriptions-item>
-          <el-descriptions-item label="节点编号">{{ provisionResult.node_id }}</el-descriptions-item>
-          <el-descriptions-item label="节点账号">{{ provisionResult.local_username }}</el-descriptions-item>
-          <el-descriptions-item label="建议文件名">{{ provisionResult.download_filename }}</el-descriptions-item>
-          <el-descriptions-item label="SSH 地址">{{ provisionResult.ssh_host }}:{{ provisionResult.ssh_port }}</el-descriptions-item>
-        </el-descriptions>
-        <div class="kv-row">
-          <span class="kv-label">提取码</span>
-          <el-input :model-value="provisionResult.decrypt_code" readonly />
-          <el-button @click="copyText(provisionResult.decrypt_code)">复制</el-button>
-        </div>
-        <div class="kv-row">
-          <span class="kv-label">去解密入口地址</span>
-          <el-input :model-value="provisionResult.decrypt_url" readonly />
-          <el-button @click="copyText(provisionResult.decrypt_url)">复制</el-button>
-        </div>
-        <div class="kv-row">
-          <span class="kv-label">SSH 连接命令</span>
-          <el-input :model-value="provisionResult.ssh_command" readonly />
-          <el-button @click="copyText(provisionResult.ssh_command)">复制</el-button>
-        </div>
-        <el-form-item label="加密密钥串（完整复制）">
-          <el-input :model-value="provisionResult.encrypted_payload" type="textarea" :rows="7" readonly />
-          <div class="payload-actions">
-            <el-button @click="copyText(provisionResult.encrypted_payload)">复制密文（应发平台内，不发邮箱）</el-button>
-          </div>
-        </el-form-item>
-      </template>
-      <template #footer>
-        <el-button @click="provisionResultVisible = false">关闭</el-button>
-      </template>
-    </el-dialog>
-
     <el-dialog
       v-model="restrictedLimitDialogVisible"
       title="用户限制设置"
@@ -1071,6 +732,21 @@
           />
           <el-text type="info" size="small" style="margin-left: 8px">单位：GB</el-text>
         </el-form-item>
+        <el-form-item label="限制 GPU 可见">
+          <el-switch v-model="restrictedLimitForm.gpu_enabled" inline-prompt active-text="是" inactive-text="否" />
+          <el-checkbox-group
+            v-model="restrictedLimitForm.gpu_indices"
+            :disabled="!restrictedLimitForm.gpu_enabled || restrictedGPUOptions.length === 0"
+            style="margin-left: 10px"
+          >
+            <el-checkbox v-for="idx in restrictedGPUOptions" :key="`restricted-gpu-${idx}`" :label="idx">
+              GPU {{ idx }}
+            </el-checkbox>
+          </el-checkbox-group>
+          <el-text v-if="restrictedGPUOptions.length === 0" type="info" size="small" style="margin-left: 8px">
+            当前节点未检测到可配置的 GPU 编号
+          </el-text>
+        </el-form-item>
         <el-form-item label="限制原因">
           <el-input
             v-model="restrictedLimitForm.reason"
@@ -1103,6 +779,7 @@ import {
   type AdminAccountProvisionResp,
   type AdminUserDetail,
   type NodeBindSecurityPolicy,
+  type NodeUserGPUVisibility,
   type PlatformUserDetail,
   type SSHBlacklistEntry,
   type UserRequest,
@@ -1153,6 +830,9 @@ type RestrictedRow = {
   memory_limit_gb?: number;
   memory_reason?: string;
   memory_updated_at?: string;
+  gpu_indices?: number[];
+  gpu_reason?: string;
+  gpu_updated_at?: string;
   blacklisted?: boolean;
   blacklist_reason?: string;
   blacklist_updated_at?: string;
@@ -1173,6 +853,8 @@ const restrictedLimitForm = reactive({
   cpu_quota_percent: 50,
   memory_enabled: false,
   memory_limit_gb: 8,
+  gpu_enabled: false,
+  gpu_indices: [] as number[],
   reason: "",
 });
 const riskDays = ref(30);
@@ -1187,6 +869,7 @@ const billingOptions = ref<string[]>([]);
 const localUserOptions = ref<string[]>([]);
 const nodeOptions = ref<string[]>([]);
 const nodeIPByID = ref<Record<string, string>>({});
+const nodeGPUCountByID = ref<Record<string, number>>({});
 const platformUsers = ref<AdminUserDetail[]>([]);
 const profileVisible = ref(false);
 const selectedProfileUsername = ref("");
@@ -1355,6 +1038,28 @@ function formatSwitchHistoryItem(item: string): string {
 function fmtTime(v: string): string {
   return formatServerDateTime(v);
 }
+
+function normalizeGPUIndexList(v: number[]): number[] {
+  const out = new Set<number>();
+  for (const item of v || []) {
+    const n = Number(item);
+    if (!Number.isInteger(n) || n < 0) continue;
+    out.add(n);
+  }
+  return Array.from(out).sort((a, b) => a - b);
+}
+
+function formatGPUIndices(indices?: number[]): string {
+  const arr = normalizeGPUIndexList((indices || []).map((x) => Number(x)));
+  if (!arr.length) return "-";
+  return arr.join(", ");
+}
+
+const restrictedGPUOptions = computed(() => {
+  const nodeId = String(restrictedLimitForm.node_id || "").trim();
+  const count = Math.max(0, Number(nodeGPUCountByID.value[nodeId] || 0));
+  return Array.from({ length: count }, (_, idx) => idx);
+});
 
 function bindCooldownRemainingText(row: AdminUserNodeBindCooldownRow): string {
   const sec = Number(row.remaining_cooldown_seconds || 0);
@@ -1727,14 +1432,17 @@ async function loadNodeOptions() {
   const r = await client.adminNodes(3000);
   const ids: string[] = [];
   const ipMap: Record<string, string> = {};
+  const gpuCountMap: Record<string, number> = {};
   for (const n of r.nodes ?? []) {
     const id = String(n.node_id || "").trim();
     if (!id) continue;
     ids.push(id);
     ipMap[id] = String(n.node_ip || "").trim();
+    gpuCountMap[id] = Math.max(0, Number(n.gpu_count || 0));
   }
   nodeOptions.value = uniqSorted(ids);
   nodeIPByID.value = ipMap;
+  nodeGPUCountByID.value = gpuCountMap;
 }
 
 async function loadPlatformUsers() {
@@ -1941,6 +1649,10 @@ function hasRestrictedMemory(row: RestrictedRow): boolean {
   return Number(row.memory_limit_gb || 0) > 0;
 }
 
+function hasRestrictedGPU(row: RestrictedRow): boolean {
+  return normalizeGPUIndexList((row.gpu_indices || []).map((x) => Number(x))).length > 0;
+}
+
 function hasRestrictedBlacklist(row: RestrictedRow): boolean {
   return !!row.blacklisted;
 }
@@ -1965,6 +1677,16 @@ async function deleteMemoryLimitSafe(nodeId: string, localUsername: string) {
   }
 }
 
+async function deleteGPUVisibilitySafe(nodeId: string, localUsername: string) {
+  const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+  try {
+    await client.adminDeleteNodeUserGPUVisibility(nodeId, localUsername);
+  } catch (e: any) {
+    const status = Number(e?.status || 0);
+    if (status !== 404) throw e;
+  }
+}
+
 async function deleteBlacklistSafe(nodeId: string, localUsername: string) {
   const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
   try {
@@ -1981,9 +1703,10 @@ async function reloadRestrictedRows() {
     const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
     const filters = currentMappingFilters();
     const billingFilter = filters.billing_username || undefined;
-    const [cpuResp, memoryResp, blacklistResp] = await Promise.all([
+    const [cpuResp, memoryResp, gpuResp, blacklistResp] = await Promise.all([
       client.adminCPULimits({ billingUsername: billingFilter, limit: 3000 }),
       client.adminMemoryLimits({ billingUsername: billingFilter, limit: 3000 }),
+      client.adminGPUVisibility({ billingUsername: billingFilter, limit: 3000 }),
       client.adminBlacklist(""),
     ]);
 
@@ -2028,6 +1751,16 @@ async function reloadRestrictedRows() {
       if (r.mapping_exists) row.mapping_exists = true;
       if (r.platform_exists) row.platform_exists = true;
     }
+    for (const r of gpuResp.rows || []) {
+      const gpuRow = r as NodeUserGPUVisibility;
+      const row = ensureRow(gpuRow.node_id, gpuRow.local_username);
+      row.gpu_indices = normalizeGPUIndexList((gpuRow.gpu_indices || []).map((x) => Number(x)));
+      row.gpu_reason = String(gpuRow.reason || "").trim();
+      row.gpu_updated_at = String(gpuRow.updated_at || "").trim();
+      if (!row.billing_username) row.billing_username = String(gpuRow.billing_username || "").trim();
+      if (gpuRow.mapping_exists) row.mapping_exists = true;
+      if (gpuRow.platform_exists) row.platform_exists = true;
+    }
     for (const r of blacklistResp.entries || []) {
       const nodeId = String(r.node_id || "").trim();
       const localUsername = String(r.local_username || "").trim();
@@ -2054,7 +1787,7 @@ async function reloadRestrictedRows() {
         return row;
       })
       .filter((row) => {
-        if (!hasRestrictedCPU(row) && !hasRestrictedMemory(row) && !hasRestrictedBlacklist(row)) return false;
+        if (!hasRestrictedCPU(row) && !hasRestrictedMemory(row) && !hasRestrictedGPU(row) && !hasRestrictedBlacklist(row)) return false;
         const node = String(row.node_id || "").toLowerCase();
         const local = String(row.local_username || "").toLowerCase();
         const billing = String(row.billing_username || "").toLowerCase();
@@ -2066,7 +1799,12 @@ async function reloadRestrictedRows() {
       })
       .map((row) => ({
         ...row,
-        updated_at: latestTimestamp([String(row.blacklist_updated_at || ""), String(row.memory_updated_at || ""), String(row.cpu_updated_at || "")]),
+        updated_at: latestTimestamp([
+          String(row.blacklist_updated_at || ""),
+          String(row.memory_updated_at || ""),
+          String(row.cpu_updated_at || ""),
+          String(row.gpu_updated_at || ""),
+        ]),
       }))
       .sort((a, b) => {
         const ta = toServerEpochMs(String(a.updated_at || ""));
@@ -2090,11 +1828,14 @@ function openRestrictedLimitDialog(row: RestrictedRow) {
   restrictedLimitForm.billing_username = String(row.billing_username || "").trim();
   const cpu = Number(row.cpu_quota_percent || 0);
   const memory = Number(row.memory_limit_gb || 0);
+  const gpuIndices = normalizeGPUIndexList((row.gpu_indices || []).map((x) => Number(x)));
   restrictedLimitForm.cpu_enabled = cpu > 0;
   restrictedLimitForm.cpu_quota_percent = Number((cpu > 0 ? cpu : 50).toFixed(1));
   restrictedLimitForm.memory_enabled = memory > 0;
   restrictedLimitForm.memory_limit_gb = Number((memory > 0 ? memory : 8).toFixed(1));
-  restrictedLimitForm.reason = String(row.cpu_reason || row.memory_reason || "").trim();
+  restrictedLimitForm.gpu_enabled = gpuIndices.length > 0;
+  restrictedLimitForm.gpu_indices = [...gpuIndices];
+  restrictedLimitForm.reason = String(row.cpu_reason || row.memory_reason || row.gpu_reason || "").trim();
   restrictedLimitDialogVisible.value = true;
 }
 
@@ -2104,14 +1845,20 @@ async function saveRestrictedLimitForm() {
   if (!nodeId || !local) return;
   const cpuEnabled = !!restrictedLimitForm.cpu_enabled;
   const memoryEnabled = !!restrictedLimitForm.memory_enabled;
+  const gpuEnabled = !!restrictedLimitForm.gpu_enabled;
   const cpu = Number(restrictedLimitForm.cpu_quota_percent || 0);
   const memory = Number(restrictedLimitForm.memory_limit_gb || 0);
+  const gpuIndices = normalizeGPUIndexList((restrictedLimitForm.gpu_indices || []).map((x) => Number(x)));
   if (cpuEnabled && (!Number.isFinite(cpu) || cpu <= 0 || cpu > 100)) {
     ElMessage.error("CPU 限制必须在 1~100 之间");
     return;
   }
   if (memoryEnabled && (!Number.isFinite(memory) || memory <= 0 || memory > 4096)) {
     ElMessage.error("内存限制必须在 0~4096 GB 之间");
+    return;
+  }
+  if (gpuEnabled && gpuIndices.length === 0) {
+    ElMessage.error("请至少选择一个可见 GPU");
     return;
   }
   restrictedActionKey.value = `${nodeId}::${local}::edit`;
@@ -2136,6 +1883,15 @@ async function saveRestrictedLimitForm() {
       });
     } else {
       await deleteMemoryLimitSafe(nodeId, local);
+    }
+    if (gpuEnabled) {
+      await client.adminSetNodeUserGPUVisibility(nodeId, {
+        local_username: local,
+        gpu_indices: gpuIndices,
+        reason,
+      });
+    } else {
+      await deleteGPUVisibilitySafe(nodeId, local);
     }
     restrictedLimitDialogVisible.value = false;
     success.value = `已更新 ${nodeId}/${local} 的限制配置`;
@@ -2190,6 +1946,31 @@ async function clearRestrictedMemoryLimit(row: RestrictedRow) {
   try {
     await deleteMemoryLimitSafe(nodeId, local);
     success.value = `已解除 ${nodeId}/${local} 的内存限制`;
+    await reloadRestrictedRows();
+  } catch (e: any) {
+    error.value = e?.message ?? String(e);
+  } finally {
+    restrictedActionKey.value = "";
+  }
+}
+
+async function clearRestrictedGPUVisibility(row: RestrictedRow) {
+  const nodeId = String(row.node_id || "").trim();
+  const local = String(row.local_username || "").trim();
+  if (!nodeId || !local) return;
+  try {
+    await ElMessageBox.confirm(`确认解除 ${nodeId}/${local} 的 GPU 可见限制吗？`, "二次确认", {
+      type: "warning",
+      confirmButtonText: "确认解除",
+      cancelButtonText: "取消",
+    });
+  } catch {
+    return;
+  }
+  restrictedActionKey.value = `${nodeId}::${local}::clear-gpu`;
+  try {
+    await deleteGPUVisibilitySafe(nodeId, local);
+    success.value = `已解除 ${nodeId}/${local} 的 GPU 可见限制`;
     await reloadRestrictedRows();
   } catch (e: any) {
     error.value = e?.message ?? String(e);

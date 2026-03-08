@@ -51,11 +51,27 @@ func main() {
 	if err := store.ApplyMigrations(ctx, cfg.MigrationDir); err != nil {
 		log.Fatalf("数据库迁移失败：%v", err)
 	}
+	if assigned, err := store.BackfillMissingPlatformUIDs(ctx, 200000); err != nil {
+		log.Fatalf("平台 UID 回填失败：%v", err)
+	} else if assigned > 0 {
+		log.Printf("平台 UID 回填完成：新增分配 %d 个账号", assigned)
+	}
+	if deletedAssigned, err := store.BackfillMissingDeletedPlatformUIDs(ctx, 200000); err != nil {
+		log.Fatalf("删除账号平台 UID 回填失败：%v", err)
+	} else if deletedAssigned > 0 {
+		log.Printf("删除账号平台 UID 回填完成：新增分配 %d 条记录", deletedAssigned)
+	}
 
 	srv := NewServer(cfg, store)
 	srv.StartPointsMonthlyResetScheduler(context.Background())
 	srv.StartUsageAutoDeleteScheduler(context.Background())
 	srv.StartHASyncScheduler(context.Background())
+	go func() {
+		syncCtx, syncCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer syncCancel()
+		srv.enqueueHistoricalNodeIdentitySyncs(syncCtx)
+		srv.ensureHistoricalSharedWorkspaceDirs(syncCtx)
+	}()
 
 	internalAddr := strings.TrimSpace(cfg.InternalListenAddr)
 	if internalAddr == "" {

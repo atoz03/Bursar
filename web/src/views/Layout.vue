@@ -6,107 +6,112 @@
         <el-icon :size="30"><Cpu /></el-icon>
         <div>
           <div class="brand-title">GPU Ops</div>
-          <div class="brand-sub">GPU 运维平台</div>
+          <div class="brand-sub">{{ t("GPU 运维平台", "GPU Operations Platform") }}</div>
         </div>
       </div>
 
       <el-menu :default-active="activePath" :default-openeds="defaultOpeneds" router class="menu" @select="onMenuSelect">
         <template v-if="authState.role === 'admin'">
           <el-sub-menu index="grp-ops">
-            <template #title><el-icon><DataBoard /></el-icon><span>运营分析</span></template>
-            <el-menu-item index="/admin/board">运营看板</el-menu-item>
-            <el-menu-item index="/admin/usage">进程记录</el-menu-item>
+            <template #title><el-icon><DataBoard /></el-icon><span>{{ t("运营分析", "Operations") }}</span></template>
+            <el-menu-item index="/admin/board">{{ t("运营看板", "Dashboard") }}</el-menu-item>
+            <el-menu-item index="/admin/usage">{{ t("进程记录", "Process Records") }}</el-menu-item>
           </el-sub-menu>
           <el-sub-menu index="grp-resource">
-            <template #title><el-icon><Monitor /></el-icon><span>资源管理</span></template>
-            <el-menu-item index="/admin/nodes">节点状态</el-menu-item>
+            <template #title><el-icon><Monitor /></el-icon><span>{{ t("资源管理", "Resources") }}</span></template>
+            <el-menu-item index="/admin/nodes">{{ t("节点状态", "Node Status") }}</el-menu-item>
           </el-sub-menu>
           <el-sub-menu index="grp-points">
-            <template #title><el-icon><WalletFilled /></el-icon><span>积分管理</span></template>
-            <el-menu-item index="/admin/points">积分管理</el-menu-item>
+            <template #title><el-icon><WalletFilled /></el-icon><span>{{ t("积分管理", "Points") }}</span></template>
+            <el-menu-item index="/admin/points">{{ t("积分管理", "Points") }}</el-menu-item>
           </el-sub-menu>
           <el-sub-menu index="grp-access">
-            <template #title><el-icon><UserFilled /></el-icon><span>账号与访问</span></template>
-            <el-menu-item index="/admin/users">平台用户管理</el-menu-item>
+            <template #title><el-icon><UserFilled /></el-icon><span>{{ t("账号与访问", "Accounts & Access") }}</span></template>
+            <el-menu-item index="/admin/users">{{ t("平台用户管理", "Platform Users") }}</el-menu-item>
             <el-menu-item index="/admin/accounts">
-              <el-badge :value="accountTodoCount" :hidden="accountTodoCount === 0">
-                <span>账号映射</span>
+              <el-badge :value="accountMappingTodoCount" :hidden="accountMappingTodoCount === 0">
+                <span>{{ t("账号映射", "Account Mapping") }}</span>
+              </el-badge>
+            </el-menu-item>
+            <el-menu-item index="/admin/account-provision">
+              <el-badge :value="accountProvisionTodoCount" :hidden="accountProvisionTodoCount === 0" type="danger">
+                <span>{{ t("节点账号开通", "Node Account Provision") }}</span>
               </el-badge>
             </el-menu-item>
             <el-menu-item index="/admin/requests">
               <el-badge :is-dot="reviewTodoCount > 0" type="danger">
-                <span>平台账号注册审核</span>
+                <span>{{ t("平台账号注册审核", "Registration Review") }}</span>
               </el-badge>
             </el-menu-item>
-            <el-menu-item index="/admin/power-users">高级用户</el-menu-item>
-            <el-menu-item index="/admin/whitelist">SSH名单</el-menu-item>
+            <el-menu-item index="/admin/power-users">{{ t("高级用户", "Power Users") }}</el-menu-item>
+            <el-menu-item index="/admin/whitelist">{{ t("SSH名单", "SSH Lists") }}</el-menu-item>
           </el-sub-menu>
           <el-sub-menu index="grp-system">
-            <template #title><el-icon><Setting /></el-icon><span>系统与容灾</span></template>
-            <el-menu-item index="/admin/ha">容灾同步</el-menu-item>
-            <el-menu-item index="/admin/announcements">公告管理</el-menu-item>
-            <el-menu-item index="/admin/guideline">用户准则</el-menu-item>
-            <el-menu-item index="/admin/notebook">管理员记事本</el-menu-item>
-            <el-menu-item index="/admin/mail">邮件设置</el-menu-item>
-            <el-menu-item index="/admin/profile">个人信息</el-menu-item>
-            <el-menu-item index="/admin/change-password">修改密码</el-menu-item>
+            <template #title><el-icon><Setting /></el-icon><span>{{ t("系统与容灾", "System") }}</span></template>
+            <el-menu-item index="/admin/ha">{{ t("容灾同步", "HA Sync") }}</el-menu-item>
+            <el-menu-item index="/admin/announcements">{{ t("公告管理", "Announcements") }}</el-menu-item>
+            <el-menu-item index="/admin/guideline">{{ t("用户准则", "Guidelines") }}</el-menu-item>
+            <el-menu-item index="/admin/notebook">{{ t("管理员记事本", "Notebook") }}</el-menu-item>
+            <el-menu-item index="/admin/mail">{{ t("邮件设置", "Mail Settings") }}</el-menu-item>
+            <el-menu-item index="/admin/profile">{{ t("个人信息", "Profile") }}</el-menu-item>
+            <el-menu-item index="/admin/change-password">{{ t("修改密码", "Change Password") }}</el-menu-item>
           </el-sub-menu>
         </template>
         <template v-else-if="authState.role === 'power_user'">
           <el-sub-menu index="grp-power">
-            <template #title><el-icon><DataBoard /></el-icon><span>授权功能</span></template>
-            <el-menu-item v-if="authState.canViewBoard" index="/admin/board">运营看板</el-menu-item>
-            <el-menu-item v-if="authState.canViewNodes" index="/admin/nodes">节点状态</el-menu-item>
-            <el-menu-item v-if="authState.canManagePoints" index="/admin/points">积分管理</el-menu-item>
+            <template #title><el-icon><DataBoard /></el-icon><span>{{ t("授权功能", "Authorized") }}</span></template>
+            <el-menu-item v-if="authState.canViewBoard" index="/admin/board">{{ t("运营看板", "Dashboard") }}</el-menu-item>
+            <el-menu-item v-if="authState.canViewNodes" index="/admin/nodes">{{ t("节点状态", "Node Status") }}</el-menu-item>
+            <el-menu-item v-if="authState.canManagePoints" index="/admin/points">{{ t("积分管理", "Points") }}</el-menu-item>
             <el-menu-item v-if="authState.canReviewRequests" index="/admin/requests">
               <el-badge :is-dot="reviewTodoCount > 0" type="danger">
-                <span>平台账号注册审核</span>
+                <span>{{ t("平台账号注册审核", "Registration Review") }}</span>
               </el-badge>
             </el-menu-item>
           </el-sub-menu>
           <el-sub-menu index="grp-user">
-            <template #title><el-icon><WalletFilled /></el-icon><span>我的中心</span></template>
+            <template #title><el-icon><WalletFilled /></el-icon><span>{{ t("我的中心", "My Center") }}</span></template>
             <el-menu-item index="/user/notices">
               <el-badge :is-dot="userNoticeHasNew">
-                <span>公告与用户准则</span>
+                <span>{{ t("公告与用户准则", "Notices & Guidelines") }}</span>
               </el-badge>
             </el-menu-item>
             <el-menu-item index="/user/balance">
               <el-badge :is-dot="userPointsUnreadCount > 0" type="danger">
-                <span>我的积分</span>
+                <span>{{ t("我的积分", "My Points") }}</span>
               </el-badge>
             </el-menu-item>
-            <el-menu-item index="/user/usage">我的用量</el-menu-item>
-            <el-menu-item index="/user/profile">个人资料</el-menu-item>
+            <el-menu-item index="/user/usage">{{ t("我的用量", "My Usage") }}</el-menu-item>
+            <el-menu-item index="/user/profile">{{ t("个人资料", "Profile") }}</el-menu-item>
             <el-menu-item index="/user/accounts">
               <el-badge :is-dot="userAccountProvisionHasNew" type="danger">
-                <span>节点账号</span>
+                <span>{{ t("节点账号", "Node Accounts") }}</span>
               </el-badge>
             </el-menu-item>
-            <el-menu-item index="/user/change-password">修改密码</el-menu-item>
+            <el-menu-item index="/user/change-password">{{ t("修改密码", "Change Password") }}</el-menu-item>
           </el-sub-menu>
         </template>
         <template v-else>
           <el-sub-menu index="grp-user">
-            <template #title><el-icon><WalletFilled /></el-icon><span>我的中心</span></template>
+            <template #title><el-icon><WalletFilled /></el-icon><span>{{ t("我的中心", "My Center") }}</span></template>
             <el-menu-item index="/user/notices">
               <el-badge :is-dot="userNoticeHasNew">
-                <span>公告与用户准则</span>
+                <span>{{ t("公告与用户准则", "Notices & Guidelines") }}</span>
               </el-badge>
             </el-menu-item>
             <el-menu-item index="/user/balance">
               <el-badge :is-dot="userPointsUnreadCount > 0" type="danger">
-                <span>我的积分</span>
+                <span>{{ t("我的积分", "My Points") }}</span>
               </el-badge>
             </el-menu-item>
-            <el-menu-item index="/user/usage">我的用量</el-menu-item>
-            <el-menu-item index="/user/profile">个人资料</el-menu-item>
+            <el-menu-item index="/user/usage">{{ t("我的用量", "My Usage") }}</el-menu-item>
+            <el-menu-item index="/user/profile">{{ t("个人资料", "Profile") }}</el-menu-item>
             <el-menu-item index="/user/accounts">
               <el-badge :is-dot="userAccountProvisionHasNew" type="danger">
-                <span>节点账号</span>
+                <span>{{ t("节点账号", "Node Accounts") }}</span>
               </el-badge>
             </el-menu-item>
-            <el-menu-item index="/user/change-password">修改密码</el-menu-item>
+            <el-menu-item index="/user/change-password">{{ t("修改密码", "Change Password") }}</el-menu-item>
           </el-sub-menu>
         </template>
       </el-menu>
@@ -117,42 +122,51 @@
         <div class="header-left">
           <el-button v-if="isMobile" text class="mobile-menu-toggle" @click="toggleMobileMenu">
             <el-icon><Menu /></el-icon>
-            <span>菜单</span>
+            <span>{{ t("菜单", "Menu") }}</span>
           </el-button>
           <template v-if="authState.role === 'admin'">
             <el-button text class="controller-toggle" @click="showControllerConfig = !showControllerConfig">
               <el-icon><Link /></el-icon>
-              <span>{{ showControllerConfig ? "收起控制器地址" : "控制器地址（高级）" }}</span>
+              <span>{{ showControllerConfig ? t("收起控制器地址", "Hide Controller URL") : t("控制器地址（高级）", "Controller URL") }}</span>
             </el-button>
             <div v-if="showControllerConfig" class="controller-editor">
-              <span class="muted">控制器地址</span>
+              <span class="muted">{{ t("控制器地址", "Controller URL") }}</span>
               <el-input
                 v-model="settingsState.baseUrl"
-                placeholder="留空表示当前站点"
+                :placeholder="t('留空表示当前站点', 'Leave empty to use current site')"
                 style="max-width: 320px"
                 @change="persist"
                 clearable
               />
               <el-button @click="persist" type="primary" size="small">
                 <el-icon><Check /></el-icon>
-                保存
+                {{ t("保存", "Save") }}
               </el-button>
             </div>
           </template>
         </div>
         <div class="header-right">
+          <el-button text @click="toggleUiLanguage">{{ uiLocaleState.language === "en" ? "中" : "EN" }}</el-button>
           <el-tag type="success" effect="light">
-            {{ authState.role === 'admin' ? '管理员' : (authState.role === 'power_user' ? '高级用户' : '用户') }}
+            {{ authState.role === 'admin' ? t('管理员', 'Admin') : (authState.role === 'power_user' ? t('高级用户', 'Power User') : t('用户', 'User')) }}
           </el-tag>
           <el-tag effect="plain">{{ authState.username }}</el-tag>
           <el-button @click="doLogout">
             <el-icon><SwitchButton /></el-icon>
-            退出
+            {{ t("退出", "Logout") }}
           </el-button>
         </div>
       </el-header>
 
       <el-main class="main">
+        <el-alert
+          v-if="showApiBaseWarning"
+          :title="t(`当前页面 API 实际连接到：${effectiveApiBase}`, `Current API base: ${effectiveApiBase}`)"
+          type="warning"
+          show-icon
+          :closable="false"
+          style="margin-bottom: 12px"
+        />
         <router-view :key="activePath" />
       </el-main>
     </el-container>
@@ -167,6 +181,7 @@ import { authState, logout } from "../lib/authStore";
 import { ElMessage } from "element-plus";
 import { ApiClient, type UserNodeAccountMappingRisk, type UserRequest } from "../lib/api";
 import { toServerEpochMs } from "../lib/time";
+import { pickText, toggleUiLanguage, uiLocaleState } from "../lib/uiLocale";
 import {
   Check,
   Cpu,
@@ -188,9 +203,16 @@ const reviewTodoCount = ref(0);
 const accountOpenTodoCount = ref(0);
 const accountRiskTodoCount = ref(0);
 const accountUnbindTodoCount = ref(0);
-const accountTodoCount = computed(() =>
-  Number(accountOpenTodoCount.value || 0) + Number(accountRiskTodoCount.value || 0) + Number(accountUnbindTodoCount.value || 0),
+const accountMappingTodoCount = computed(() =>
+  Number(accountRiskTodoCount.value || 0) + Number(accountUnbindTodoCount.value || 0),
 );
+const accountProvisionTodoCount = computed(() => Number(accountOpenTodoCount.value || 0));
+const effectiveApiBase = computed(() => settingsState.baseUrl?.trim() || window.location.origin);
+const showApiBaseWarning = computed(() => {
+  const saved = settingsState.baseUrl?.trim() || "";
+  const origin = window.location.origin;
+  return !!saved && saved !== origin;
+});
 const showControllerConfig = ref(false);
 const userNoticeHasNew = ref(false);
 const userPointsUnreadCount = ref(0);
@@ -202,9 +224,13 @@ let userNoticeTimer: ReturnType<typeof setInterval> | null = null;
 let userPointsTimer: ReturnType<typeof setInterval> | null = null;
 let userAccountProvisionTimer: ReturnType<typeof setInterval> | null = null;
 
+function t(zh: string, en: string): string {
+  return pickText(zh, en);
+}
+
 function persist() {
   persistSettings();
-  ElMessage.success("保存成功");
+  ElMessage.success(t("保存成功", "Saved"));
 }
 
 async function doLogout() {

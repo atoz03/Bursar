@@ -6,33 +6,36 @@
     <div class="login-layout">
       <section class="intro">
         <div class="intro-badge">GPU Ops</div>
-        <h1>欢迎登录平台</h1>
-        <p>统一管理 GPU 资源、平台账号与计费状态。</p>
+        <div class="lang-switch-wrap">
+          <el-button text class="lang-switch" @click="toggleUiLanguage">{{ uiLocaleState.language === "en" ? "中" : "EN" }}</el-button>
+        </div>
+        <h1>{{ t("欢迎登录平台", "Welcome Back") }}</h1>
+        <p>{{ t("统一管理 GPU 资源、平台账号与计费状态。", "Manage GPU resources, platform accounts, and billing in one place.") }}</p>
       </section>
 
       <section class="panel">
         <div class="brand">
           <el-icon :size="40"><Cpu /></el-icon>
           <div>
-            <h2>账号登录</h2>
-            <p>请输入平台账号与密码</p>
+            <h2>{{ t("账号登录", "Sign In") }}</h2>
+            <p>{{ t("请输入平台账号与密码", "Enter your platform account and password") }}</p>
           </div>
         </div>
 
         <el-alert v-if="error" :title="error" type="error" show-icon class="mb" />
 
         <el-form label-position="top" class="login-form">
-          <el-form-item label="用户名">
+          <el-form-item :label="t('用户名', 'Username')">
             <el-input
               v-model="username"
               size="large"
               autocomplete="username"
               :prefix-icon="User"
-              placeholder="请输入平台账号"
+              :placeholder="t('请输入平台账号', 'Enter your platform account')"
               @keyup.enter="doLogin"
             />
           </el-form-item>
-          <el-form-item label="密码">
+          <el-form-item :label="t('密码', 'Password')">
             <el-input
               v-model="password"
               size="large"
@@ -40,31 +43,31 @@
               show-password
               autocomplete="current-password"
               :prefix-icon="Key"
-              placeholder="请输入密码"
+              :placeholder="t('请输入密码', 'Enter your password')"
               @keyup.enter="doLogin"
             />
           </el-form-item>
-          <el-form-item label="登录验证码">
+          <el-form-item :label="t('登录验证码', 'Login Captcha')">
             <div class="captcha-wrap">
               <div class="captcha-head">
                 <div class="captcha-title">{{ captchaQuestionLabel }}</div>
-                <el-button text type="primary" :loading="captchaLoading" @click="loadCaptcha">换一题</el-button>
+                <el-button text type="primary" :loading="captchaLoading" @click="loadCaptcha">{{ t("换一题", "Refresh") }}</el-button>
               </div>
               <el-radio-group v-model="captchaOption" class="captcha-options">
                 <el-radio-button v-for="(op, idx) in captchaOptions" :key="`${captchaId}-${idx}-${op}`" :label="idx">
                   {{ op }}
                 </el-radio-button>
               </el-radio-group>
-              <div class="captcha-tip">每次登录都需要重新完成验证码。</div>
+              <div class="captcha-tip">{{ t("每次登录都需要重新完成验证码。", "A new captcha is required for every login.") }}</div>
             </div>
           </el-form-item>
         </el-form>
 
-        <el-button :loading="loading" type="primary" class="login-btn" size="large" @click="doLogin">立即登录</el-button>
+        <el-button :loading="loading" type="primary" class="login-btn" size="large" @click="doLogin">{{ t("立即登录", "Sign In") }}</el-button>
 
         <div class="actions">
-          <router-link to="/register">注册申请</router-link>
-          <router-link to="/forgot-password">找回密码</router-link>
+          <router-link to="/register">{{ t("注册申请", "Register") }}</router-link>
+          <router-link to="/forgot-password">{{ t("找回密码", "Forgot Password") }}</router-link>
         </div>
       </section>
     </div>
@@ -77,6 +80,7 @@ import { useRouter } from "vue-router";
 import { login, authState } from "../../lib/authStore";
 import { ApiClient } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
+import { pickText, toggleUiLanguage, uiLocaleState } from "../../lib/uiLocale";
 import { Cpu, Key, User } from "@element-plus/icons-vue";
 
 const router = useRouter();
@@ -89,7 +93,11 @@ const captchaId = ref("");
 const captchaQuestion = ref("");
 const captchaOptions = ref<number[]>([]);
 const captchaOption = ref<number | null>(null);
-const captchaQuestionLabel = computed(() => captchaQuestion.value || "验证码加载中...");
+const captchaQuestionLabel = computed(() => captchaQuestion.value || t("验证码加载中...", "Loading captcha..."));
+
+function t(zh: string, en: string): string {
+  return pickText(zh, en);
+}
 
 async function loadCaptcha() {
   captchaLoading.value = true;
@@ -102,7 +110,7 @@ async function loadCaptcha() {
     captchaOption.value = null;
   } catch {
     captchaId.value = "";
-    captchaQuestion.value = "验证码加载失败，请稍后重试";
+    captchaQuestion.value = t("验证码加载失败，请稍后重试", "Captcha failed to load. Try again later.");
     captchaOptions.value = [];
     captchaOption.value = null;
   } finally {
@@ -112,7 +120,7 @@ async function loadCaptcha() {
 
 async function doLogin() {
   if (!captchaId.value || captchaOption.value === null) {
-    error.value = "请先完成登录验证码";
+    error.value = t("请先完成登录验证码", "Complete the login captcha first");
     return;
   }
   loading.value = true;
@@ -204,6 +212,13 @@ onMounted(() => {
   padding: 6px 10px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.2);
+}
+.lang-switch-wrap {
+  display: flex;
+  justify-content: flex-end;
+}
+.lang-switch {
+  color: #f8fafc;
 }
 .intro h1 {
   margin: 20px 0 8px;

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"os/exec"
@@ -38,6 +39,15 @@ func loadSSHExemptUsers() map[string]struct{} {
 }
 
 func (a *NodeAgent) ExecuteAction(ctx context.Context, action Action) error {
+	if action.DelaySeconds > 0 {
+		timer := time.NewTimer(time.Duration(action.DelaySeconds) * time.Second)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 	switch action.Type {
 	case "notify":
 		return a.writeNotice(action.Username, action.Message)
@@ -69,34 +79,595 @@ func (a *NodeAgent) ExecuteAction(ctx context.Context, action Action) error {
 		a.triggerForceSync(action.Reason)
 		return nil
 	case "create_local_account":
-		return a.createLocalAccount(ctx, action.Username, action.PublicKey, action.Reason)
+		return a.createLocalAccount(ctx, action.Username, action.PublicKey, action.SharedWorkspaceUsername, action.TargetUID, action.TargetPrimaryGID, action.Reason)
 	default:
 		return fmt.Errorf("未知 action.type：%s", action.Type)
 	}
 }
 
-var localUsernamePattern = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+var localUsernamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]{0,31}$`)
 
-func (a *NodeAgent) createLocalAccount(ctx context.Context, username string, publicKey string, reason string) error {
+const defaultNoLoginShell = "/usr/sbin/nologin"
+
+func normalizeOwnershipRepairRoots(homeDir string, mounts []string) []string {
+	seen := make(map[string]struct{}, 2)
+	out := make([]string, 0, 2)
+	add := func(raw string) {
+		path := filepath.Clean(strings.TrimSpace(raw))
+		if path == "" || path == "." {
+			return
+		}
+		if _, err := os.Lstat(path); err != nil {
+			return
+		}
+		if _, ok := seen[path]; ok {
+			return
+		}
+		seen[path] = struct{}{}
+		out = append(out, path)
+	}
+	add(homeDir)
+	add("/mnt")
+	return out
+}
+
+func collectOwnershipRepairRoots(homeDir string) []string {
+	return normalizeOwnershipRepairRoots(homeDir, nil)
+}
+
+func lstatOwnership(path string) (int, int, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || st == nil {
+		return 0, 0, fmt.Errorf("读取路径属主失败：%s", path)
+	}
+	return int(st.Uid), int(st.Gid), nil
+}
+
+func chownTree(ctx context.Context, root string, newUID int, newGID int) error {
+	root = filepath.Clean(strings.TrimSpace(root))
+	if root == "" || root == "." {
+		return nil
+	}
+	if _, err := os.Lstat(root); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	out, err := exec.CommandContext(ctx, "chown", "-hR", fmt.Sprintf("%d:%d", newUID, newGID), root).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("递归修复属主失败：root=%s err=%w out=%s", root, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func repairOwnershipUnderHome(ctx context.Context, homeDir string, newUID int, newGID int) (int, int, error) {
+	homeDir = filepath.Clean(strings.TrimSpace(homeDir))
+	if homeDir == "" || homeDir == "." {
+		return 0, 0, nil
+	}
+	if err := chownTree(ctx, homeDir, newUID, newGID); err != nil {
+		return 0, 1, err
+	}
+	return 1, 0, nil
+}
+
+func collectLegacyOwnershipPaths(root string, oldUID int, oldGID int) ([]string, int, error) {
+	root = filepath.Clean(strings.TrimSpace(root))
+	if root == "" || root == "." {
+		return nil, 0, nil
+	}
+	if _, err := os.Lstat(root); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, 0, nil
+		}
+		return nil, 1, err
+	}
+	paths := make([]string, 0, 32)
+	failed := 0
+	var firstErr error
+	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			failed++
+			if firstErr == nil {
+				firstErr = walkErr
+			}
+			if d != nil && d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			failed++
+			if firstErr == nil {
+				firstErr = err
+			}
+			if d != nil && d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		st, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || st == nil {
+			failed++
+			if firstErr == nil {
+				firstErr = fmt.Errorf("读取路径属主失败：%s", path)
+			}
+			return nil
+		}
+		if int(st.Uid) == oldUID || int(st.Gid) == oldGID {
+			paths = append(paths, path)
+		}
+		return nil
+	})
+	if walkErr != nil && firstErr == nil {
+		firstErr = walkErr
+	}
+	return paths, failed, firstErr
+}
+
+func chownPaths(paths []string, newUID int, newGID int) (int, int, error) {
+	changed := 0
+	failed := 0
+	var firstErr error
+	for _, path := range paths {
+		path = filepath.Clean(strings.TrimSpace(path))
+		if path == "" || path == "." {
+			continue
+		}
+		if err := os.Lchown(path, newUID, newGID); err != nil {
+			failed++
+			if firstErr == nil {
+				firstErr = fmt.Errorf("修复路径属主失败：path=%s err=%w", path, err)
+			}
+			continue
+		}
+		changed++
+	}
+	return changed, failed, firstErr
+}
+
+func repairOwnershipUnderMnt(ctx context.Context, oldUID int, oldGID int, newUID int, newGID int) (int, int, error) {
+	root := "/mnt"
+	if _, err := os.Lstat(root); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, 0, nil
+		}
+		return 0, 0, err
+	}
+	_ = ctx
+	paths, scanFailed, scanErr := collectLegacyOwnershipPaths(root, oldUID, oldGID)
+	changed, chownFailed, chownErr := chownPaths(paths, newUID, newGID)
+	if scanErr != nil {
+		return changed, scanFailed + chownFailed, scanErr
+	}
+	if chownErr != nil {
+		return changed, scanFailed + chownFailed, chownErr
+	}
+	return changed, scanFailed + chownFailed, nil
+}
+
+func repairOwnershipAfterIdentityChange(ctx context.Context, homeDir string, oldUID int, oldGID int, newUID int, newGID int) (int, int, error) {
+	roots := collectOwnershipRepairRoots(homeDir)
+	totalChanged := 0
+	totalFailed := 0
+	var firstErr error
+	for _, root := range roots {
+		var (
+			changed int
+			failed  int
+			err     error
+		)
+		switch root {
+		case filepath.Clean(strings.TrimSpace(homeDir)):
+			changed, failed, err = repairOwnershipUnderHome(ctx, root, newUID, newGID)
+		case "/mnt":
+			changed, failed, err = repairOwnershipUnderMnt(ctx, oldUID, oldGID, newUID, newGID)
+		default:
+			continue
+		}
+		totalChanged += changed
+		totalFailed += failed
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return totalChanged, totalFailed, firstErr
+}
+
+func normalizeTargetIdentity(uid int, gid int) (int, int) {
+	if uid <= 0 && gid <= 0 {
+		return 0, 0
+	}
+	if uid <= 0 {
+		uid = gid
+	}
+	return uid, uid
+}
+
+func lookupPasswdByUID(ctx context.Context, uid int) (string, bool) {
+	if uid <= 0 {
+		return "", false
+	}
+	out, err := exec.CommandContext(ctx, "getent", "passwd", strconv.Itoa(uid)).Output()
+	if err != nil {
+		return "", false
+	}
+	line := strings.TrimSpace(string(out))
+	if line == "" {
+		return "", false
+	}
+	parts := strings.Split(line, ":")
+	if len(parts) == 0 {
+		return "", false
+	}
+	name := strings.TrimSpace(parts[0])
+	if name == "" {
+		return "", false
+	}
+	return name, true
+}
+
+func chooseNoLoginShell() string {
+	candidates := []string{
+		defaultNoLoginShell,
+		"/usr/sbin/nologin",
+		"/sbin/nologin",
+		"/usr/bin/false",
+		"/bin/false",
+	}
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return defaultNoLoginShell
+}
+
+func lookupPasswdEntry(ctx context.Context, username string) ([]string, error) {
+	out, err := exec.CommandContext(ctx, "getent", "passwd", strings.TrimSpace(username)).Output()
+	if err != nil {
+		return nil, err
+	}
+	line := strings.TrimSpace(string(out))
+	if line == "" {
+		return nil, fmt.Errorf("账号不存在：%s", username)
+	}
+	parts := strings.Split(line, ":")
+	if len(parts) < 7 {
+		return nil, fmt.Errorf("passwd 记录格式异常：%s", username)
+	}
+	return parts, nil
+}
+
+func lookupUserShell(ctx context.Context, username string) (string, error) {
+	parts, err := lookupPasswdEntry(ctx, username)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(parts[6]), nil
+}
+
+type groupEntry struct {
+	Name string
+	GID  int
+}
+
+func lookupGroupByName(ctx context.Context, name string) (groupEntry, bool, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return groupEntry{}, false, nil
+	}
+	out, err := exec.CommandContext(ctx, "getent", "group", name).Output()
+	if err != nil {
+		return groupEntry{}, false, nil
+	}
+	line := strings.TrimSpace(string(out))
+	if line == "" {
+		return groupEntry{}, false, nil
+	}
+	parts := strings.Split(line, ":")
+	if len(parts) < 3 {
+		return groupEntry{}, false, fmt.Errorf("group 记录格式异常：%s", name)
+	}
+	gid, err := strconv.Atoi(strings.TrimSpace(parts[2]))
+	if err != nil {
+		return groupEntry{}, false, fmt.Errorf("解析 group gid 失败：%w", err)
+	}
+	return groupEntry{Name: strings.TrimSpace(parts[0]), GID: gid}, true, nil
+}
+
+func lookupGroupByGID(ctx context.Context, gid int) (groupEntry, bool, error) {
+	if gid <= 0 {
+		return groupEntry{}, false, nil
+	}
+	out, err := exec.CommandContext(ctx, "getent", "group", strconv.Itoa(gid)).Output()
+	if err != nil {
+		return groupEntry{}, false, nil
+	}
+	line := strings.TrimSpace(string(out))
+	if line == "" {
+		return groupEntry{}, false, nil
+	}
+	parts := strings.Split(line, ":")
+	if len(parts) < 3 {
+		return groupEntry{}, false, fmt.Errorf("group 记录格式异常：gid=%d", gid)
+	}
+	actualGID, err := strconv.Atoi(strings.TrimSpace(parts[2]))
+	if err != nil {
+		return groupEntry{}, false, fmt.Errorf("解析 group gid 失败：%w", err)
+	}
+	return groupEntry{Name: strings.TrimSpace(parts[0]), GID: actualGID}, true, nil
+}
+
+func isReservedIdentityGroup(name string) bool {
+	switch strings.TrimSpace(name) {
+	case gpuOverdraftBlockedGroup:
+		return true
+	default:
+		return false
+	}
+}
+
+func withTemporarilyDisabledLogin(ctx context.Context, username string, fn func() error) error {
 	username = strings.TrimSpace(username)
-	publicKey = strings.TrimSpace(publicKey)
 	if username == "" {
 		return errors.New("username 不能为空")
 	}
+	currentShell, err := lookupUserShell(ctx, username)
+	if err != nil {
+		return err
+	}
+	currentShell = strings.TrimSpace(currentShell)
+	restoreShell := currentShell
+	noLoginShell := chooseNoLoginShell()
+	shellChanged := false
+	if currentShell != "" && !strings.Contains(currentShell, "nologin") && !strings.Contains(currentShell, "false") {
+		if out, err := exec.CommandContext(ctx, "usermod", "-s", noLoginShell, username).CombinedOutput(); err != nil {
+			return fmt.Errorf("临时禁用登录失败：%w out=%s", err, strings.TrimSpace(string(out)))
+		}
+		shellChanged = true
+	}
+	defer func() {
+		if !shellChanged || restoreShell == "" {
+			return
+		}
+		if out, err := exec.CommandContext(context.Background(), "usermod", "-s", restoreShell, username).CombinedOutput(); err != nil {
+			log.Printf("恢复登录 shell 失败：user=%s shell=%s err=%v out=%s", username, restoreShell, err, strings.TrimSpace(string(out)))
+		}
+	}()
+	return fn()
+}
+
+func ensurePrimaryGroupByGID(ctx context.Context, preferredName string, gid int) error {
+	if gid <= 0 {
+		return nil
+	}
+	preferredName = strings.TrimSpace(preferredName)
+	if preferredName == "" {
+		preferredName = fmt.Sprintf("gpuops_uid_%d", gid)
+	}
+	groupByName, hasByName, err := lookupGroupByName(ctx, preferredName)
+	if err != nil {
+		return err
+	}
+	groupByGID, hasByGID, err := lookupGroupByGID(ctx, gid)
+	if err != nil {
+		return err
+	}
+	if hasByGID {
+		if hasByName && groupByName.Name == groupByGID.Name && groupByName.GID == gid {
+			return nil
+		}
+		if groupByGID.Name == preferredName {
+			return nil
+		}
+		reservedTip := ""
+		if isReservedIdentityGroup(groupByGID.Name) {
+			reservedTip = "（GPU 限制策略保留组）"
+		}
+		return fmt.Errorf("目标主组 gid=%d 已被组 %s 占用%s，无法保证 uid/gid 一致", gid, groupByGID.Name, reservedTip)
+	}
+	if hasByName {
+		modOut, modErr := exec.CommandContext(ctx, "groupmod", "-g", strconv.Itoa(gid), preferredName).CombinedOutput()
+		if modErr != nil {
+			return fmt.Errorf("调整用户私有组 gid 失败：group=%s old_gid=%d target_gid=%d err=%w out=%s", preferredName, groupByName.GID, gid, modErr, strings.TrimSpace(string(modOut)))
+		}
+		return nil
+	}
+	out, err := exec.CommandContext(ctx, "groupadd", "-g", strconv.Itoa(gid), preferredName).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("创建主组失败：%w out=%s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func (a *NodeAgent) alignLocalAccountIdentity(ctx context.Context, username string, targetUID int, targetGID int, reason string) error {
+	targetUID, targetGID = normalizeTargetIdentity(targetUID, targetGID)
+	if targetUID <= 0 || targetGID <= 0 {
+		return nil
+	}
+	sysUser, err := user.Lookup(username)
+	if err != nil {
+		return fmt.Errorf("查询系统账号失败：%w", err)
+	}
+	currentUID, err := strconv.Atoi(sysUser.Uid)
+	if err != nil {
+		return fmt.Errorf("解析当前 uid 失败：%w", err)
+	}
+	currentGID, err := strconv.Atoi(sysUser.Gid)
+	if err != nil {
+		return fmt.Errorf("解析当前 gid 失败：%w", err)
+	}
+	if currentUID == targetUID && currentGID == targetGID {
+		return nil
+	}
+	if owner, found := lookupPasswdByUID(ctx, targetUID); found && owner != username {
+		return fmt.Errorf("目标 uid=%d 已被账号 %s 占用", targetUID, owner)
+	}
+	if err := ensurePrimaryGroupByGID(ctx, username, targetGID); err != nil {
+		return err
+	}
+	homeDir := strings.TrimSpace(sysUser.HomeDir)
+	if homeDir == "" {
+		homeDir = filepath.Join("/home", username)
+	}
+	return withTemporarilyDisabledLogin(ctx, username, func() error {
+		if err := a.kickSSHUser(ctx, username, "UID/GID 迁移前临时禁止登录"); err != nil {
+			log.Printf("执行 create_local_account：user=%s kick-ssh-warning err=%v", username, err)
+		}
+		if err := a.killAllProcessesByUser(ctx, username, "UID/GID 迁移前清理活跃进程"); err != nil {
+			log.Printf("执行 create_local_account：user=%s kill-process-warning err=%v", username, err)
+		}
+		if currentUID != targetUID {
+			if out, err := exec.CommandContext(ctx, "usermod", "-u", strconv.Itoa(targetUID), username).CombinedOutput(); err != nil {
+				return fmt.Errorf("调整 uid 失败：%w out=%s", err, strings.TrimSpace(string(out)))
+			}
+		}
+		if currentGID != targetGID {
+			if out, err := exec.CommandContext(ctx, "usermod", "-g", strconv.Itoa(targetGID), username).CombinedOutput(); err != nil {
+				return fmt.Errorf("调整主组 gid 失败：%w out=%s", err, strings.TrimSpace(string(out)))
+			}
+		}
+		verifyGIDOut, verifyErr := exec.CommandContext(ctx, "id", "-g", username).Output()
+		if verifyErr != nil {
+			return fmt.Errorf("校验主组 gid 失败：%w", verifyErr)
+		}
+		if actualGID, convErr := strconv.Atoi(strings.TrimSpace(string(verifyGIDOut))); convErr != nil || actualGID != targetGID {
+			return fmt.Errorf("主组 gid 未对齐：want=%d got=%s", targetGID, strings.TrimSpace(string(verifyGIDOut)))
+		}
+		changed, failed, repairErr := repairOwnershipAfterIdentityChange(ctx, homeDir, currentUID, currentGID, targetUID, targetGID)
+		if repairErr != nil {
+			log.Printf("执行 create_local_account：user=%s ownership-repair-warning err=%v", username, repairErr)
+		}
+		if failed > 0 {
+			log.Printf("执行 create_local_account：user=%s ownership-repair-partial-failure failed_paths=%d", username, failed)
+		}
+		log.Printf("执行 create_local_account：user=%s identity-aligned uid=%d gid=%d repaired_paths=%d failed_paths=%d reason=%s", username, targetUID, targetGID, changed, failed, strings.TrimSpace(reason))
+		return nil
+	})
+}
+
+func privilegedCommandContext(ctx context.Context, name string, args ...string) *exec.Cmd {
+	if os.Geteuid() == 0 {
+		return exec.CommandContext(ctx, name, args...)
+	}
+	return exec.CommandContext(ctx, "sudo", append([]string{"-n", name}, args...)...)
+}
+
+func ensureOwnedDir(ctx context.Context, path string, uid int, gid int) error {
+	path = filepath.Clean(strings.TrimSpace(path))
+	if path == "" || path == "." || path == "/" {
+		return nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		out, cmdErr := privilegedCommandContext(
+			ctx,
+			"install",
+			"-d",
+			"-m", "0755",
+			"-o", strconv.Itoa(uid),
+			"-g", strconv.Itoa(gid),
+			path,
+		).CombinedOutput()
+		if cmdErr != nil {
+			return fmt.Errorf("创建目录失败：path=%s err=%w out=%s", path, cmdErr, strings.TrimSpace(string(out)))
+		}
+		info = nil
+	}
+	if info != nil && !info.IsDir() {
+		return fmt.Errorf("路径不是目录：%s", path)
+	}
+	chownOut, chownErr := privilegedCommandContext(ctx, "chown", fmt.Sprintf("%d:%d", uid, gid), path).CombinedOutput()
+	if chownErr != nil {
+		return fmt.Errorf("设置目录属主失败：path=%s err=%w out=%s", path, chownErr, strings.TrimSpace(string(chownOut)))
+	}
+	chmodOut, chmodErr := privilegedCommandContext(ctx, "chmod", "0755", path).CombinedOutput()
+	if chmodErr != nil {
+		return fmt.Errorf("设置目录权限失败：path=%s err=%w out=%s", path, chmodErr, strings.TrimSpace(string(chmodOut)))
+	}
+	return nil
+}
+
+func ensureSharedWorkspaceDirs(ctx context.Context, sharedWorkspaceUsername string, uid int, gid int) error {
+	sharedWorkspaceUsername = strings.TrimSpace(sharedWorkspaceUsername)
+	if sharedWorkspaceUsername == "" {
+		return nil
+	}
+	if err := ensureOwnedDir(ctx, "/shared/node", 0, 0); err != nil {
+		return fmt.Errorf("准备 /shared/node 根目录失败：%w", err)
+	}
+	if err := ensureOwnedDir(ctx, "/shared/cluster", 0, 0); err != nil {
+		return fmt.Errorf("准备 /shared/cluster 根目录失败：%w", err)
+	}
+	if err := ensureOwnedDir(ctx, filepath.Join("/shared/node", sharedWorkspaceUsername), uid, gid); err != nil {
+		return fmt.Errorf("创建 /shared/node 工作目录失败：%w", err)
+	}
+	clusterPath := filepath.Join("/shared/cluster", sharedWorkspaceUsername)
+	if _, err := os.Stat(clusterPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("检查 /shared/cluster 工作目录失败：%w", err)
+	}
+	if err := ensureOwnedDir(ctx, clusterPath, uid, gid); err != nil {
+		return fmt.Errorf("创建 /shared/cluster 工作目录失败：%w", err)
+	}
+	return nil
+}
+
+func (a *NodeAgent) createLocalAccount(ctx context.Context, username string, publicKey string, sharedWorkspaceUsername string, targetUID int, targetPrimaryGID int, reason string) (err error) {
+	username = strings.TrimSpace(username)
+	publicKey = strings.TrimSpace(publicKey)
+	sharedWorkspaceUsername = strings.TrimSpace(sharedWorkspaceUsername)
+	if username == "" {
+		return errors.New("username 不能为空")
+	}
+	defer func() {
+		a.invalidateLocalUsersAndQuotaCache()
+		a.triggerForceSync("create_local_account 结束后主动刷新节点本地用户快照：" + username)
+		if err != nil {
+			log.Printf("执行 create_local_account：user=%s failed err=%v", username, err)
+		}
+	}()
 	if !localUsernamePattern.MatchString(username) {
 		return fmt.Errorf("非法本地账号名：%s", username)
 	}
-	if publicKey == "" {
-		return errors.New("public_key 不能为空")
+	targetUID, targetPrimaryGID = normalizeTargetIdentity(targetUID, targetPrimaryGID)
+	if publicKey == "" && targetUID <= 0 {
+		return errors.New("public_key 为空时，必须提供 target_uid/target_primary_gid")
 	}
-	if !strings.HasPrefix(publicKey, "ssh-ed25519 ") {
+	if publicKey != "" && !strings.HasPrefix(publicKey, "ssh-ed25519 ") {
 		return errors.New("public_key 格式不合法，仅支持 ssh-ed25519")
 	}
 
 	// 幂等：账号已存在时不重复 useradd，但仍会刷新 authorized_keys，确保密钥可更新。
 	userExists := exec.CommandContext(ctx, "id", "-u", username).Run() == nil
+	if !userExists && publicKey == "" {
+		return errors.New("账号不存在时必须提供 public_key")
+	}
 	if !userExists {
-		if out, err := exec.CommandContext(ctx, "useradd", "-m", "-s", "/bin/bash", username).CombinedOutput(); err != nil {
+		args := []string{"-m", "-s", "/bin/bash"}
+		if targetUID > 0 {
+			if owner, found := lookupPasswdByUID(ctx, targetUID); found && owner != username {
+				return fmt.Errorf("目标 uid=%d 已被账号 %s 占用", targetUID, owner)
+			}
+			args = append(args, "-u", strconv.Itoa(targetUID))
+		}
+		if targetPrimaryGID > 0 {
+			if err := ensurePrimaryGroupByGID(ctx, username, targetPrimaryGID); err != nil {
+				return err
+			}
+			args = append(args, "-g", strconv.Itoa(targetPrimaryGID))
+		}
+		args = append(args, username)
+		if out, err := exec.CommandContext(ctx, "useradd", args...).CombinedOutput(); err != nil {
 			// 兜底：竞态下可能已被其它流程创建。
 			if checkErr := exec.CommandContext(ctx, "id", "-u", username).Run(); checkErr == nil {
 				userExists = true
@@ -104,6 +675,11 @@ func (a *NodeAgent) createLocalAccount(ctx context.Context, username string, pub
 			} else {
 				return fmt.Errorf("useradd 失败：%w out=%s", err, strings.TrimSpace(string(out)))
 			}
+		}
+	}
+	if targetUID > 0 {
+		if err := a.alignLocalAccountIdentity(ctx, username, targetUID, targetPrimaryGID, reason); err != nil {
+			return err
 		}
 	}
 
@@ -126,31 +702,67 @@ func (a *NodeAgent) createLocalAccount(ctx context.Context, username string, pub
 	sshDir := filepath.Join(homeDir, ".ssh")
 	authFile := filepath.Join(sshDir, "authorized_keys")
 
-	if err := os.MkdirAll(sshDir, 0700); err != nil {
-		return fmt.Errorf("创建 .ssh 目录失败：%w", err)
+	if publicKey != "" {
+		if err := os.MkdirAll(sshDir, 0700); err != nil {
+			return fmt.Errorf("创建 .ssh 目录失败：%w", err)
+		}
+		if err := os.Chown(sshDir, uid, gid); err != nil {
+			return fmt.Errorf("设置 .ssh 目录属主失败：%w", err)
+		}
+		if err := os.Chmod(sshDir, 0700); err != nil {
+			return fmt.Errorf("设置 .ssh 目录权限失败：%w", err)
+		}
+		if err := os.WriteFile(authFile, []byte(publicKey+"\n"), 0600); err != nil {
+			return fmt.Errorf("写入 authorized_keys 失败：%w", err)
+		}
+		if err := os.Chown(authFile, uid, gid); err != nil {
+			return fmt.Errorf("设置 authorized_keys 属主失败：%w", err)
+		}
+		if err := os.Chmod(authFile, 0600); err != nil {
+			return fmt.Errorf("设置 authorized_keys 权限失败：%w", err)
+		}
+	} else {
+		// 对齐 UID/GID 场景下，不改写现有密钥，仅修正 .ssh 目录属主。
+		if st, err := os.Stat(sshDir); err == nil && st.IsDir() {
+			_ = os.Chown(sshDir, uid, gid)
+		}
+		if _, err := os.Stat(authFile); err == nil {
+			_ = os.Chown(authFile, uid, gid)
+		}
 	}
-	if err := os.Chown(sshDir, uid, gid); err != nil {
-		return fmt.Errorf("设置 .ssh 目录属主失败：%w", err)
+
+	if sharedWorkspaceUsername != "" {
+		log.Printf("执行 create_local_account：user=%s ensure-shared-workspace shared_workspace=%s uid=%d gid=%d", username, sharedWorkspaceUsername, uid, gid)
 	}
-	if err := os.Chmod(sshDir, 0700); err != nil {
-		return fmt.Errorf("设置 .ssh 目录权限失败：%w", err)
-	}
-	if err := os.WriteFile(authFile, []byte(publicKey+"\n"), 0600); err != nil {
-		return fmt.Errorf("写入 authorized_keys 失败：%w", err)
-	}
-	if err := os.Chown(authFile, uid, gid); err != nil {
-		return fmt.Errorf("设置 authorized_keys 属主失败：%w", err)
-	}
-	if err := os.Chmod(authFile, 0600); err != nil {
-		return fmt.Errorf("设置 authorized_keys 权限失败：%w", err)
+	if err := ensureSharedWorkspaceDirs(ctx, sharedWorkspaceUsername, uid, gid); err != nil {
+		log.Printf("执行 create_local_account：user=%s shared-workspace-warning shared_workspace=%s uid=%d gid=%d err=%v", username, sharedWorkspaceUsername, uid, gid, err)
+	} else if sharedWorkspaceUsername != "" {
+		log.Printf("执行 create_local_account：user=%s shared-workspace-ready shared_workspace=%s uid=%d gid=%d", username, sharedWorkspaceUsername, uid, gid)
 	}
 
 	if userExists {
-		log.Printf("执行 create_local_account：user=%s already-exists key-updated home=%s reason=%s", username, homeDir, strings.TrimSpace(reason))
+		log.Printf(
+			"执行 create_local_account：user=%s already-exists uid=%d gid=%d key-updated=%v shared_workspace=%s home=%s reason=%s",
+			username,
+			uid,
+			gid,
+			publicKey != "",
+			sharedWorkspaceUsername,
+			homeDir,
+			strings.TrimSpace(reason),
+		)
 	} else {
-		log.Printf("执行 create_local_account：user=%s created key-updated home=%s reason=%s", username, homeDir, strings.TrimSpace(reason))
+		log.Printf(
+			"执行 create_local_account：user=%s created uid=%d gid=%d key-updated=%v shared_workspace=%s home=%s reason=%s",
+			username,
+			uid,
+			gid,
+			publicKey != "",
+			sharedWorkspaceUsername,
+			homeDir,
+			strings.TrimSpace(reason),
+		)
 	}
-	a.invalidateLocalUsersAndQuotaCache()
 	return nil
 }
 

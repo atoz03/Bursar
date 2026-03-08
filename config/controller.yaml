@@ -74,3 +74,7 @@ ha_node: "controller-primary"
 ha_role: "primary"
 ha_peer_url: "http://<60009-IP>:60039"
 ha_token: "c8a4b52c0dcbfdb6ca76769110f16d22c38851b8f6833f055908a920f8abc7e2"
+
+# 共享工作目录（控制器直接在 NFS 服务端本地路径创建/chown 用户目录）
+shared_node_root: "/srv/gpu-ops/nodes"
+shared_cluster_root: "/srv/gpu-ops/cluster"

@@ -58,6 +58,7 @@ export type UserGuidelineResp = {
 
 export type UserProfile = {
   username: string;
+  platform_uid?: number;
   email?: string;
   real_name?: string;
   student_id?: string;
@@ -192,6 +193,8 @@ export type NodeStatus = {
   ssh_active_count?: number;
   disk_quota_installed?: boolean;
   disk_quota_mounts?: string[];
+  system_services_checked_at?: string | null;
+  system_services?: NodeSystemServiceStatus[];
   ssh_guard_enabled?: boolean;
   ssh_exclusive_enabled?: boolean;
   points_intercept_enabled?: boolean;
@@ -209,6 +212,16 @@ export type NodeStatus = {
   suspicious_user_count_7d?: number;
   cost_total: number;
   updated_at: string;
+};
+
+export type NodeSystemServiceStatus = {
+  name: string;
+  deployed: boolean;
+  load_state?: string;
+  unit_file_state?: string;
+  active_state?: string;
+  sub_state?: string;
+  healthy: boolean;
 };
 
 export type NodeModelPriceOverride = {
@@ -285,6 +298,20 @@ export type NodeUserMemoryLimit = {
   mapping_exists: boolean;
   platform_exists: boolean;
   memory_limit_gb: number;
+  reason?: string;
+  updated_by?: string;
+  updated_at: string;
+};
+
+export type NodeUserGPUVisibility = {
+  node_id: string;
+  local_username: string;
+  billing_username?: string;
+  mapping_exists: boolean;
+  platform_exists: boolean;
+  admin_mapping?: boolean;
+  admin_username?: string;
+  gpu_indices: number[];
   reason?: string;
   updated_by?: string;
   updated_at: string;
@@ -430,6 +457,11 @@ export type UserNodeAccount = {
   node_id: string;
   local_username: string;
   billing_username: string;
+  platform_uid?: number;
+  node_uid?: number;
+  node_primary_gid?: number;
+  identity_aligned?: boolean;
+  identity_initializing?: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -749,6 +781,7 @@ export type AdminNote = {
 
 export type AdminUserDetail = {
   username: string;
+  platform_uid?: number;
   role: string;
   can_view_board: boolean;
   can_view_nodes: boolean;
@@ -773,6 +806,7 @@ export type AdminUserDetail = {
 
 export type PlatformUserDetail = {
   username: string;
+  platform_uid?: number;
   email: string;
   real_name: string;
   student_id: string;
@@ -796,6 +830,7 @@ export type PlatformUserDetail = {
 export type DeletedUserAccount = {
   deleted_id: number;
   username: string;
+  platform_uid?: number;
   email: string;
   student_id: string;
   real_name: string;
@@ -808,6 +843,8 @@ export type DeletedUserAccount = {
   carryover_balance?: number;
   user_status: string;
   deleted_at: string;
+  uid_release_at?: string;
+  uid_release_remaining_seconds?: number;
   deleted_by: string;
   delete_reason: string;
   restored_at?: string;
@@ -1391,6 +1428,7 @@ export class ApiClient {
       if (!row) throw e;
       user = {
         username: row.username,
+        platform_uid: row.platform_uid,
         email: row.email,
         real_name: row.real_name,
         student_id: row.student_id,
@@ -1873,6 +1911,18 @@ export class ApiClient {
       throw normalizeServerError(res.status, text);
     }
     return (await res.json()) as { ok: boolean; node_id: string; local_username: string };
+  }
+
+  async adminGPUVisibility(params: { billingUsername?: string; nodeId?: string; limit?: number }): Promise<{
+    billing_username: string;
+    node_id: string;
+    rows: NodeUserGPUVisibility[];
+  }> {
+    const q = new URLSearchParams();
+    if (params.billingUsername) q.set("billing_username", params.billingUsername);
+    if (params.nodeId) q.set("node_id", params.nodeId);
+    q.set("limit", String(params.limit ?? 1000));
+    return await this.getJson(`/api/admin/gpu-visibility?${q.toString()}`, this.adminHeaders());
   }
 
   async adminNodePrice(nodeId: string): Promise<{

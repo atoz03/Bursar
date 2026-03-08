@@ -258,6 +258,139 @@ func (s *Server) enqueueCPUQuotaAction(nodeID, localUsername string, quotaPercen
 	return true
 }
 
+func (s *Server) ensureBillingPlatformUID(ctx context.Context, billingUsername string) (int, error) {
+	billingUsername = strings.TrimSpace(billingUsername)
+	if billingUsername == "" {
+		return 0, errors.New("billing_username 不能为空")
+	}
+	uid, err := s.store.EnsureUserPlatformUID(ctx, billingUsername)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return uid, err
+}
+
+func (s *Server) isNodeLocalIdentityAlignedWithPlatformUID(ctx context.Context, nodeID string, localUsername string, billingUsername string) (bool, int, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	billingUsername = strings.TrimSpace(billingUsername)
+	if nodeID == "" || localUsername == "" || billingUsername == "" {
+		return false, 0, errors.New("node_id/local_username/billing_username 不能为空")
+	}
+	platformUID, found, err := s.store.LookupAnyAccountPlatformUID(ctx, billingUsername)
+	if err != nil {
+		return false, 0, err
+	}
+	if !found || platformUID <= 0 {
+		return false, 0, nil
+	}
+	localUID, localGID, found, err := s.store.GetNodeLocalUserIdentity(ctx, nodeID, localUsername)
+	if err != nil {
+		return false, platformUID, err
+	}
+	if !found {
+		return false, platformUID, nil
+	}
+	return localUID == platformUID && localGID == platformUID, platformUID, nil
+}
+
+func (s *Server) enqueueNodeIdentitySyncWithDelay(nodeID, localUsername string, platformUID int, sharedWorkspaceUsername string, reason string, delaySeconds int) {
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	sharedWorkspaceUsername = strings.TrimSpace(sharedWorkspaceUsername)
+	if nodeID == "" || localUsername == "" || platformUID <= 0 {
+		return
+	}
+	if sharedWorkspaceUsername != "" {
+		if err := s.ensureSharedWorkspaceDirsOnControllerWithTimeout(nodeID, sharedWorkspaceUsername, platformUID, 20*time.Second); err != nil {
+			log.Printf("[warn] 对齐前准备共享工作目录失败：node=%s local=%s billing=%s uid=%d err=%v", nodeID, localUsername, sharedWorkspaceUsername, platformUID, err)
+		}
+	}
+	s.enqueueNodeAction(nodeID, Action{
+		Type:         "kill_all_processes",
+		Username:     localUsername,
+		DelaySeconds: delaySeconds,
+		Reason:       reason + "；对齐 UID/GID 前先清理该账号进程",
+	})
+	s.enqueueNodeAction(nodeID, Action{
+		Type:     "kick_ssh_user",
+		Username: localUsername,
+		Reason:   reason + "；对齐 UID/GID 前先断开该账号 SSH 会话",
+	})
+	s.enqueueNodeAction(nodeID, Action{
+		Type:                    "create_local_account",
+		Username:                localUsername,
+		SharedWorkspaceUsername: sharedWorkspaceUsername,
+		TargetUID:               platformUID,
+		TargetPrimaryGID:        platformUID,
+		Reason:                  reason,
+	})
+}
+
+func (s *Server) enqueueNodeIdentitySync(nodeID, localUsername string, platformUID int, sharedWorkspaceUsername string, reason string) {
+	s.enqueueNodeIdentitySyncWithDelay(nodeID, localUsername, platformUID, sharedWorkspaceUsername, reason, 0)
+}
+
+func (s *Server) enqueueHistoricalNodeIdentitySyncs(ctx context.Context) {
+	nodes, err := s.store.ListNodes(ctx, 2000)
+	if err != nil {
+		log.Printf("[warn] 启动补偿历史映射 UID/GID 对齐失败：读取节点列表失败 err=%v", err)
+		return
+	}
+	queued := 0
+	for _, n := range nodes {
+		nodeID := strings.TrimSpace(n.NodeID)
+		if nodeID == "" {
+			continue
+		}
+		localUsers, err := s.store.ListNodeLocalUsersWithPlatformMapping(ctx, nodeID, 5000)
+		if err != nil {
+			log.Printf("[warn] 启动补偿历史映射 UID/GID 对齐失败：读取节点本地用户失败 node=%s err=%v", nodeID, err)
+			continue
+		}
+		for _, u := range localUsers {
+			if !u.MappingExists || !u.PlatformExists {
+				continue
+			}
+			billing := strings.TrimSpace(u.PlatformUsername)
+			localUsername := strings.TrimSpace(u.LocalUsername)
+			if billing == "" || localUsername == "" {
+				continue
+			}
+			platformUID, err := s.ensureBillingPlatformUID(ctx, billing)
+			if err != nil {
+				log.Printf("[warn] 启动补偿历史映射 UID/GID 对齐失败：读取平台 UID 失败 billing=%s node=%s local=%s err=%v", billing, nodeID, localUsername, err)
+				continue
+			}
+			if platformUID <= 0 {
+				continue
+			}
+			currentUID := 0
+			if u.UID != nil {
+				currentUID = *u.UID
+			}
+			currentGID := 0
+			if u.PrimaryGID != nil {
+				currentGID = *u.PrimaryGID
+			}
+			if currentUID == platformUID && currentGID == platformUID {
+				continue
+			}
+			s.enqueueNodeIdentitySync(
+				nodeID,
+				localUsername,
+				platformUID,
+				billing,
+				fmt.Sprintf("控制器启动补偿历史映射 UID/GID 对齐：billing=%s node=%s local=%s", billing, nodeID, localUsername),
+			)
+			queued++
+		}
+	}
+	if queued > 0 {
+		log.Printf("启动补偿历史映射 UID/GID 对齐：已入队 %d 个节点账号", queued)
+	}
+}
+
 func (s *Server) enqueueBindFailureConvergenceAction(ch UserNodeBindChallenge) {
 	nodeID := strings.TrimSpace(ch.NodeID)
 	localUsername := strings.TrimSpace(ch.LocalUsername)
@@ -623,6 +756,14 @@ func (s *Server) refreshGPUAccessForBillingUser(ctx context.Context, billingUser
 	if len(targets) == 0 {
 		return 0, nil
 	}
+	nodes, err := s.store.ListNodes(ctx, 5000)
+	if err != nil {
+		return 0, err
+	}
+	nodeByID := make(map[string]NodeStatus, len(nodes))
+	for _, n := range nodes {
+		nodeByID[n.NodeID] = n
+	}
 	reasonPrefix = strings.TrimSpace(reasonPrefix)
 	if reasonPrefix == "" {
 		reasonPrefix = "管理员操作后重新评估 GPU 可见性"
@@ -653,8 +794,17 @@ func (s *Server) refreshGPUAccessForBillingUser(ctx context.Context, billingUser
 
 	queued := 0
 	for _, t := range targets {
+		node, ok := nodeByID[t.NodeID]
+		if !ok {
+			continue
+		}
 		blocked := actionType == "block_user"
-		action, ok := s.nextGPUAccessAction(t.NodeID, t.LocalUsername, blocked, actionReason, true)
+		reason := actionReason
+		if !node.PointsInterceptEnabled {
+			blocked = false
+			reason = reasonPrefix + "：节点积分拦截关闭，恢复 GPU 可见性"
+		}
+		action, ok := s.nextGPUAccessAction(t.NodeID, t.LocalUsername, blocked, reason, true)
 		if !ok {
 			continue
 		}
@@ -662,6 +812,53 @@ func (s *Server) refreshGPUAccessForBillingUser(ctx context.Context, billingUser
 		queued++
 	}
 	return queued, nil
+}
+
+func (s *Server) queuePointsInterceptDisabledResets(
+	nodeID string,
+	locals []string,
+	manualCPULimits map[string]NodeUserCPULimit,
+	manualMemoryLimits map[string]NodeUserMemoryLimit,
+	manualGPUVisibility map[string]NodeUserGPUVisibility,
+	reasonPrefix string,
+) []Action {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" || len(locals) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(locals))
+	actions := make([]Action, 0, len(locals)*4)
+	for _, raw := range locals {
+		local := strings.TrimSpace(raw)
+		if local == "" || strings.EqualFold(local, "root") {
+			continue
+		}
+		if _, ok := seen[local]; ok {
+			continue
+		}
+		seen[local] = struct{}{}
+		if action, ok := s.nextGPUAccessAction(nodeID, local, false, reasonPrefix+"：节点积分拦截关闭，恢复 GPU 可见性", false); ok {
+			actions = append(actions, action)
+		}
+		if _, hasManualGPU := manualGPUVisibility[local]; !hasManualGPU {
+			if action, ok := s.nextGPUVisibilityAction(nodeID, local, nil, reasonPrefix+"：节点积分拦截关闭，恢复 GPU 全可见", false); ok {
+				actions = append(actions, action)
+			}
+		}
+		if s.cfg.EnableCPUControl {
+			if _, hasManualCPU := manualCPULimits[local]; !hasManualCPU {
+				if action, ok := s.nextCPUQuotaAction(nodeID, local, 0, reasonPrefix+"：节点积分拦截关闭，解除 CPU 限制", false); ok {
+					actions = append(actions, action)
+				}
+			}
+		}
+		if _, hasManualMemory := manualMemoryLimits[local]; !hasManualMemory {
+			if action, ok := s.nextMemoryLimitAction(nodeID, local, 0, reasonPrefix+"：节点积分拦截关闭，解除内存限额", false); ok {
+				actions = append(actions, action)
+			}
+		}
+	}
+	return actions
 }
 
 func (s *Server) refreshMemoryLimitForBillingUser(ctx context.Context, billingUsername string, effectiveBalance float64, reasonPrefix string) (int, error) {
@@ -847,6 +1044,7 @@ func (s *Server) RouterWeb() *gin.Engine {
 	admin.GET("/nodes/:id/gpu-visibility", s.requireNodesPermission(), s.handleAdminNodeGPUVisibilityGet)
 	admin.POST("/nodes/:id/gpu-visibility", s.requireNodesModifyPermission(), s.handleAdminNodeGPUVisibilityUpsert)
 	admin.DELETE("/nodes/:id/gpu-visibility", s.requireNodesModifyPermission(), s.handleAdminNodeGPUVisibilityDelete)
+	admin.GET("/gpu-visibility", s.requireNodesPermission(), s.handleAdminGPUVisibility)
 	admin.GET("/nodes/:id/price", s.requireNodesPermission(), s.handleAdminNodePriceGet)
 	admin.POST("/nodes/:id/price", s.requireNodesModifyPermission(), s.handleAdminNodePriceSet)
 	admin.GET("/nodes/:id/ssh-exclusive", s.requireNodesPermission(), s.handleAdminNodeSSHExclusiveGet)
@@ -1467,6 +1665,7 @@ func (s *Server) handleAdminUserProfile(c *gin.Context) {
 	expectedGradYear := 0
 	expectedGradMonth := 0
 	phone := ""
+	var platformUID *int
 	var createdAt any = nil
 	var updatedAt any = nil
 
@@ -1479,6 +1678,7 @@ func (s *Server) handleAdminUserProfile(c *gin.Context) {
 		expectedGradYear = acc.ExpectedGraduationYear
 		expectedGradMonth = acc.ExpectedGraduationMonth
 		phone = acc.Phone
+		platformUID = acc.PlatformUID
 		createdAt = acc.CreatedAt
 		updatedAt = acc.UpdatedAt
 	} else {
@@ -1502,6 +1702,7 @@ func (s *Server) handleAdminUserProfile(c *gin.Context) {
 			expectedGradYear = d.ExpectedGradYear
 			expectedGradMonth = d.ExpectedGradMonth
 			phone = d.Phone
+			platformUID = d.PlatformUID
 			break
 		}
 		if !found {
@@ -1588,6 +1789,7 @@ func (s *Server) handleAdminUserProfile(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"user": gin.H{
 			"username":                  username,
+			"platform_uid":              platformUID,
 			"email":                     email,
 			"real_name":                 realName,
 			"student_id":                studentID,
@@ -2568,6 +2770,8 @@ func (s *Server) buildUserMappedNodeInfos(ctx context.Context, rows []UserNodeAc
 
 	statusCache := make(map[string]*NodeStatus, len(rows))
 	pricePolicyCache := make(map[string]userMappedNodePricePolicy, len(rows))
+	diskQuotaPolicyCache := make(map[string]NodeDiskQuotaPolicy, len(rows))
+	diskQuotaPolicyLoaded := make(map[string]bool, len(rows))
 	out := make([]UserMappedNodeInfo, 0, len(rows))
 
 	for _, r := range rows {
@@ -2577,9 +2781,8 @@ func (s *Server) buildUserMappedNodeInfos(ctx context.Context, rows []UserNodeAc
 			continue
 		}
 		info := UserMappedNodeInfo{
-			NodeID:              nodeID,
-			LocalUsername:       localUsername,
-			HomeQuotaMountpoint: "/home",
+			NodeID:        nodeID,
+			LocalUsername: localUsername,
 		}
 
 		nodeStatus, seen := statusCache[nodeID]
@@ -2644,11 +2847,46 @@ func (s *Server) buildUserMappedNodeInfos(ctx context.Context, rows []UserNodeAc
 			info.CPUPriceSource = "node_cpu_price_policy"
 		}
 
-		quota, found, err := s.store.GetNodeUserDiskQuota(ctx, nodeID, localUsername, "/home")
-		if err != nil {
-			return nil, err
+		preferredQuotaMount := ""
+		if nodeStatus != nil {
+			preferredQuotaMount = pickPreferredQuotaMount(nodeStatus.DiskQuotaMounts)
 		}
-		if found && quota != nil {
+		diskQuotaPolicy, loaded := diskQuotaPolicyCache[nodeID]
+		if !loaded && !diskQuotaPolicyLoaded[nodeID] {
+			p, err := s.store.GetNodeDiskQuotaPolicy(ctx, nodeID)
+			if err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					diskQuotaPolicyLoaded[nodeID] = true
+				} else {
+					return nil, err
+				}
+			} else {
+				diskQuotaPolicy = p
+				diskQuotaPolicyCache[nodeID] = p
+				diskQuotaPolicyLoaded[nodeID] = true
+			}
+		}
+		effectiveQuotaMount, _, _ := resolveDiskQuotaPolicyValues(diskQuotaPolicy)
+		if effectiveQuotaMount == "" {
+			effectiveQuotaMount = preferredQuotaMount
+		}
+		info.HomeQuotaMountpoint = effectiveQuotaMount
+
+		quotaMountCandidates := make([]string, 0, 2)
+		if effectiveQuotaMount != "" {
+			quotaMountCandidates = append(quotaMountCandidates, effectiveQuotaMount)
+		}
+		if preferredQuotaMount != "" && preferredQuotaMount != effectiveQuotaMount {
+			quotaMountCandidates = append(quotaMountCandidates, preferredQuotaMount)
+		}
+		for _, mountpoint := range quotaMountCandidates {
+			quota, found, err := s.store.GetNodeUserDiskQuota(ctx, nodeID, localUsername, mountpoint)
+			if err != nil {
+				return nil, err
+			}
+			if !found || quota == nil {
+				continue
+			}
 			info.HomeQuotaMountpoint = strings.TrimSpace(quota.Mountpoint)
 			used := quota.UsedMB
 			soft := quota.SoftMB
@@ -2659,6 +2897,7 @@ func (s *Server) buildUserMappedNodeInfos(ctx context.Context, rows []UserNodeAc
 			info.HomeQuotaHardMB = &hard
 			info.HomeQuotaUpdatedAt = &updatedAt
 			info.HomeQuotaEnforced = soft > 0 || hard > 0
+			break
 		}
 
 		out = append(out, info)
@@ -2666,10 +2905,135 @@ func (s *Server) buildUserMappedNodeInfos(ctx context.Context, rows []UserNodeAc
 	return out, nil
 }
 
+func (s *Server) annotateUserNodeAccountsIdentityState(ctx context.Context, rows []UserNodeAccount) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	platformUIDCache := make(map[string]int, len(rows))
+	platformFoundCache := make(map[string]bool, len(rows))
+	for i := range rows {
+		billing := strings.TrimSpace(rows[i].BillingUsername)
+		if billing == "" {
+			continue
+		}
+		platformUID, found, ok := 0, false, false
+		if cached, exists := platformUIDCache[billing]; exists {
+			platformUID = cached
+			found = platformFoundCache[billing]
+			ok = true
+		}
+		if !ok {
+			var err error
+			platformUID, found, err = s.store.LookupAnyAccountPlatformUID(ctx, billing)
+			if err != nil {
+				return err
+			}
+			platformUIDCache[billing] = platformUID
+			platformFoundCache[billing] = found
+		}
+		if found && platformUID > 0 {
+			uid := platformUID
+			rows[i].PlatformUID = &uid
+		}
+		localUID, localGID, foundLocal, err := s.store.GetNodeLocalUserIdentity(ctx, rows[i].NodeID, rows[i].LocalUsername)
+		if err != nil {
+			return err
+		}
+		if foundLocal {
+			uid := localUID
+			gid := localGID
+			rows[i].NodeUID = &uid
+			rows[i].NodePrimaryGID = &gid
+		}
+		rows[i].IdentityAligned = found && foundLocal && platformUID > 0 && localUID == platformUID && localGID == platformUID
+		snapshotReady := false
+		if rows[i].NodeLocalUpdatedAt != nil {
+			referenceAt := rows[i].UpdatedAt
+			if rows[i].CreatedAt.After(referenceAt) {
+				referenceAt = rows[i].CreatedAt
+			}
+			snapshotReady = !rows[i].NodeLocalUpdatedAt.Before(referenceAt)
+		}
+		loginReady := false
+		if rows[i].NodeLastLoginAt != nil {
+			referenceAt := rows[i].UpdatedAt
+			if rows[i].CreatedAt.After(referenceAt) {
+				referenceAt = rows[i].CreatedAt
+			}
+			loginReady = !rows[i].NodeLastLoginAt.Before(referenceAt)
+		}
+		rows[i].IdentityInitializing = found && platformUID > 0 && !rows[i].IdentityAligned && !snapshotReady && !loginReady
+	}
+	return nil
+}
+
+func (s *Server) mergeMappedAccountsIntoNodeLocalUsers(ctx context.Context, nodeID string, localUsers []NodeLocalUser) ([]NodeLocalUser, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return localUsers, nil
+	}
+	mappings, err := s.store.ListUserNodeAccountsWithFilter(ctx, "", nodeID, "", 5000)
+	if err != nil {
+		return nil, err
+	}
+	if len(mappings) == 0 {
+		return localUsers, nil
+	}
+
+	out := make([]NodeLocalUser, len(localUsers))
+	copy(out, localUsers)
+	indexByLocal := make(map[string]int, len(out))
+	for i := range out {
+		local := strings.TrimSpace(out[i].LocalUsername)
+		if local == "" {
+			continue
+		}
+		indexByLocal[local] = i
+	}
+	for _, m := range mappings {
+		local := strings.TrimSpace(m.LocalUsername)
+		if local == "" {
+			continue
+		}
+		billing := strings.TrimSpace(m.BillingUsername)
+		if idx, ok := indexByLocal[local]; ok {
+			out[idx].PlatformUsername = billing
+			out[idx].MappingExists = billing != ""
+			if billing != "" {
+				out[idx].PlatformExists = true
+			}
+			continue
+		}
+		out = append(out, NodeLocalUser{
+			NodeID:            nodeID,
+			LocalUsername:     local,
+			PlatformUsername:  billing,
+			MappingExists:     billing != "",
+			PlatformExists:    billing != "",
+			QuotaMountpoint:   "",
+			QuotaUsedMB:       nil,
+			QuotaSoftMB:       nil,
+			QuotaHardMB:       nil,
+			CPUQuotaPercent:   nil,
+			MemoryLimitGB:     nil,
+			GPUVisibleIndices: nil,
+		})
+		indexByLocal[local] = len(out) - 1
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return strings.TrimSpace(out[i].LocalUsername) < strings.TrimSpace(out[j].LocalUsername)
+	})
+	return out, nil
+}
+
 func (s *Server) handleUserAccountsList(c *gin.Context) {
 	billing := strings.TrimSpace(fmt.Sprintf("%v", c.MustGet("auth_user")))
 	rows, err := s.store.ListUserNodeAccountsByBilling(c.Request.Context(), billing, 5000)
 	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := s.annotateUserNodeAccountsIdentityState(c.Request.Context(), rows); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -3241,7 +3605,38 @@ func (s *Server) handleAdminAccountsUpsert(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"ok": true})
+	platformUID, err := s.ensureBillingPlatformUID(c.Request.Context(), req.BillingUsername)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "分配平台 UID 失败: " + err.Error()})
+		return
+	}
+	if err := s.ensureSharedWorkspaceDirsOnController(c.Request.Context(), req.NodeID, req.BillingUsername, platformUID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "准备共享工作目录失败: " + err.Error()})
+		return
+	}
+	s.enqueueNodeIdentitySync(
+		req.NodeID,
+		req.LocalUsername,
+		platformUID,
+		req.BillingUsername,
+		fmt.Sprintf("管理员 %s 新增/更新映射后对齐节点账号 UID/GID", operator),
+	)
+	if err := s.enqueueDefaultNodeDiskQuotaForMapping(
+		c.Request.Context(),
+		req.NodeID,
+		req.LocalUsername,
+		req.BillingUsername,
+		operator,
+		fmt.Sprintf("管理员 %s 新增/更新映射后自动应用节点默认磁盘配额", operator),
+		10,
+	); err != nil {
+		log.Printf("enqueue default disk quota after account upsert failed node=%s local=%s billing=%s err=%v", req.NodeID, req.LocalUsername, req.BillingUsername, err)
+	}
+	s.enqueueNodeAction(req.NodeID, Action{
+		Type:   "force_sync",
+		Reason: fmt.Sprintf("管理员 %s 新增/更新映射后刷新节点本地用户缓存", operator),
+	})
+	c.JSON(http.StatusOK, gin.H{"ok": true, "platform_uid": platformUID})
 }
 
 func (s *Server) handleAdminAccountsUpdate(c *gin.Context) {
@@ -3285,7 +3680,38 @@ func (s *Server) handleAdminAccountsUpdate(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"ok": true})
+	platformUID, err := s.ensureBillingPlatformUID(c.Request.Context(), req.NewBillingUsername)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "分配平台 UID 失败: " + err.Error()})
+		return
+	}
+	if err := s.ensureSharedWorkspaceDirsOnController(c.Request.Context(), req.NewNodeID, req.NewBillingUsername, platformUID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "准备共享工作目录失败: " + err.Error()})
+		return
+	}
+	s.enqueueNodeIdentitySync(
+		req.NewNodeID,
+		req.NewLocalUsername,
+		platformUID,
+		req.NewBillingUsername,
+		fmt.Sprintf("管理员 %s 修改映射后对齐节点账号 UID/GID", operator),
+	)
+	if err := s.enqueueDefaultNodeDiskQuotaForMapping(
+		c.Request.Context(),
+		req.NewNodeID,
+		req.NewLocalUsername,
+		req.NewBillingUsername,
+		operator,
+		fmt.Sprintf("管理员 %s 修改映射后自动应用节点默认磁盘配额", operator),
+		10,
+	); err != nil {
+		log.Printf("enqueue default disk quota after account update failed node=%s local=%s billing=%s err=%v", req.NewNodeID, req.NewLocalUsername, req.NewBillingUsername, err)
+	}
+	s.enqueueNodeAction(req.NewNodeID, Action{
+		Type:   "force_sync",
+		Reason: fmt.Sprintf("管理员 %s 修改映射后刷新节点本地用户缓存", operator),
+	})
+	c.JSON(http.StatusOK, gin.H{"ok": true, "platform_uid": platformUID})
 }
 
 func (s *Server) handleAdminAccountsDelete(c *gin.Context) {
@@ -3540,6 +3966,15 @@ func (s *Server) handleAdminAccountProvision(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "该平台账号未配置邮箱，无法发送密钥邮件"})
 		return
 	}
+	platformUID, err := s.ensureBillingPlatformUID(c.Request.Context(), req.BillingUsername)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "分配平台 UID 失败: " + err.Error()})
+		return
+	}
+	if err := s.ensureSharedWorkspaceDirsOnController(c.Request.Context(), req.NodeID, req.BillingUsername, platformUID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "准备共享工作目录失败: " + err.Error()})
+		return
+	}
 
 	node, err := s.store.GetNodeStatus(c.Request.Context(), req.NodeID)
 	if err != nil {
@@ -3693,9 +4128,12 @@ func (s *Server) handleAdminAccountProvision(c *gin.Context) {
 		return
 	}
 	s.enqueueNodeAction(req.NodeID, Action{
-		Type:      "create_local_account",
-		Username:  req.LocalUsername,
-		PublicKey: publicKey,
+		Type:                    "create_local_account",
+		Username:                req.LocalUsername,
+		PublicKey:               publicKey,
+		SharedWorkspaceUsername: req.BillingUsername,
+		TargetUID:               platformUID,
+		TargetPrimaryGID:        platformUID,
 		Reason: func() string {
 			if wasReissued {
 				return fmt.Sprintf("管理员 %s 重新生成节点账号密钥，并刷新平台账号 %s 的 authorized_keys", operator, req.BillingUsername)
@@ -3703,21 +4141,16 @@ func (s *Server) handleAdminAccountProvision(c *gin.Context) {
 			return fmt.Sprintf("管理员 %s 开通节点账号，并分配给平台账号 %s", operator, req.BillingUsername)
 		}(),
 	})
-	if dqPolicy, err := s.store.GetNodeDiskQuotaPolicy(c.Request.Context(), req.NodeID); err == nil && dqPolicy.Enabled {
-		mountpoint, softMB, hardMB := resolveDiskQuotaPolicyValues(dqPolicy)
-		if mountpoint == "" {
-			mountpoint = pickPreferredQuotaMount(node.DiskQuotaMounts)
-		}
-		if mountpoint != "" && (softMB > 0 || hardMB > 0) {
-			s.enqueueNodeAction(req.NodeID, Action{
-				Type:                "set_disk_quota",
-				Username:            req.LocalUsername,
-				DiskQuotaMountpoint: mountpoint,
-				DiskQuotaSoftMB:     softMB,
-				DiskQuotaHardMB:     hardMB,
-				Reason:              fmt.Sprintf("管理员 %s 开通节点账号后自动应用默认磁盘配额", operator),
-			})
-		}
+	if err := s.enqueueDefaultNodeDiskQuotaForMapping(
+		c.Request.Context(),
+		req.NodeID,
+		req.LocalUsername,
+		req.BillingUsername,
+		operator,
+		fmt.Sprintf("管理员 %s 开通节点账号后自动应用节点默认磁盘配额", operator),
+		0,
+	); err != nil {
+		log.Printf("enqueue default disk quota after account provision failed node=%s local=%s billing=%s err=%v", req.NodeID, req.LocalUsername, req.BillingUsername, err)
 	}
 	s.enqueueNodeAction(req.NodeID, Action{
 		Type:   "force_sync",
@@ -3803,6 +4236,7 @@ func (s *Server) handleAdminAccountProvision(c *gin.Context) {
 		"node_id":           req.NodeID,
 		"local_username":    req.LocalUsername,
 		"billing_username":  req.BillingUsername,
+		"platform_uid":      platformUID,
 		"reissued_key":      wasReissued,
 		"email":             userEmail,
 		"ssh_host":          sshHost,
@@ -3928,6 +4362,26 @@ func (s *Server) isAdminAccountCached(ctx context.Context, username string, cach
 	return isAdmin, nil
 }
 
+func (s *Server) isPrivilegedPlatformAccountCached(ctx context.Context, username string, cache map[string]bool) (bool, error) {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return false, nil
+	}
+	if cache != nil {
+		if v, ok := cache[username]; ok {
+			return v, nil
+		}
+	}
+	isPrivileged, err := s.store.IsPrivilegedAccount(ctx, username)
+	if err != nil {
+		return false, err
+	}
+	if cache != nil {
+		cache[username] = isPrivileged
+	}
+	return isPrivileged, nil
+}
+
 func (s *Server) validateAdminReservedNodeMapping(ctx context.Context, nodeID string, localUsername string, billingUsername string) (bool, string, error) {
 	nodeID = strings.TrimSpace(nodeID)
 	localUsername = strings.TrimSpace(localUsername)
@@ -3977,8 +4431,8 @@ func (s *Server) shouldSkipAdminMappedDiskQuotaTarget(
 	local NodeLocalUser,
 	adminCache map[string]bool,
 ) (bool, error) {
-	if !local.MappingExists {
-		return false, nil
+	if local.AdminMapping {
+		return true, nil
 	}
 	billing := strings.TrimSpace(local.PlatformUsername)
 	if billing == "" {
@@ -3994,7 +4448,7 @@ func (s *Server) shouldSkipAdminMappedDiskQuotaTarget(
 	if billing == "" {
 		return false, nil
 	}
-	return s.isAdminAccountCached(ctx, billing, adminCache)
+	return s.isPrivilegedPlatformAccountCached(ctx, billing, adminCache)
 }
 
 func (s *Server) ensurePowerUserCanOperateLocalUser(c *gin.Context, nodeID string, localUsername string, operation string) bool {
@@ -5065,6 +5519,11 @@ func (s *Server) handleAdminNodeDetail(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	localUsers, err = s.mergeMappedAccountsIntoNodeLocalUsers(c.Request.Context(), nodeID, localUsers)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	nowLocal := time.Now()
 	monthStart := time.Date(nowLocal.Year(), nowLocal.Month(), 1, 0, 0, 0, 0, nowLocal.Location())
 	monthlyUserCosts, err := s.store.ListNodeMonthlyUserCosts(c.Request.Context(), nodeID, monthStart, nowLocal, 5000)
@@ -5119,6 +5578,11 @@ func (s *Server) resolveNodePointsInterceptPolicyValues(p NodePointsInterceptPol
 	}
 	return threshold, limited, blocked, overdraftMemory
 }
+
+const (
+	defaultNodeDiskQuotaSoftGB = 20
+	defaultNodeDiskQuotaHardGB = 22
+)
 
 func normalizeNodeQuotaMounts(mounts []string) []string {
 	cleaned := uniqTrim(mounts)
@@ -5177,8 +5641,8 @@ func containsQuotaMount(mounts []string, mount string) bool {
 
 func resolveDiskQuotaPolicyValues(p NodeDiskQuotaPolicy) (string, float64, float64) {
 	mountpoint := strings.TrimSpace(p.Mountpoint)
-	soft := 0.0
-	hard := 0.0
+	soft := float64(defaultNodeDiskQuotaSoftGB * 1024)
+	hard := float64(defaultNodeDiskQuotaHardGB * 1024)
 	if p.DefaultSoft != nil {
 		soft = *p.DefaultSoft
 	}
@@ -5186,6 +5650,72 @@ func resolveDiskQuotaPolicyValues(p NodeDiskQuotaPolicy) (string, float64, float
 		hard = *p.DefaultHard
 	}
 	return mountpoint, soft, hard
+}
+
+func (s *Server) enqueueDefaultNodeDiskQuotaForMapping(
+	ctx context.Context,
+	nodeID string,
+	localUsername string,
+	billingUsername string,
+	operator string,
+	reason string,
+	delaySeconds int,
+) error {
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	billingUsername = strings.TrimSpace(billingUsername)
+	operator = strings.TrimSpace(operator)
+	reason = strings.TrimSpace(reason)
+	if nodeID == "" || localUsername == "" || billingUsername == "" {
+		return nil
+	}
+	isPrivileged, err := s.store.IsPrivilegedAccount(ctx, billingUsername)
+	if err != nil {
+		return err
+	}
+	if isPrivileged {
+		return nil
+	}
+	policy, err := s.store.GetNodeDiskQuotaPolicy(ctx, nodeID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	if !policy.Enabled {
+		return nil
+	}
+	node, err := s.store.GetNodeStatus(ctx, nodeID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	mountpoint, softMB, hardMB := resolveDiskQuotaPolicyValues(policy)
+	if mountpoint == "" {
+		mountpoint = pickPreferredQuotaMount(node.DiskQuotaMounts)
+	}
+	if mountpoint == "" || (softMB <= 0 && hardMB <= 0) {
+		return nil
+	}
+	if operator == "" {
+		operator = "admin"
+	}
+	if reason == "" {
+		reason = fmt.Sprintf("平台账号 %s 映射生效后自动应用节点默认磁盘配额", billingUsername)
+	}
+	s.enqueueNodeAction(nodeID, Action{
+		Type:                "set_disk_quota",
+		Username:            localUsername,
+		DiskQuotaMountpoint: mountpoint,
+		DiskQuotaSoftMB:     softMB,
+		DiskQuotaHardMB:     hardMB,
+		DelaySeconds:        delaySeconds,
+		Reason:              reason,
+	})
+	return nil
 }
 
 func (s *Server) parseSecurityEventRange(c *gin.Context) (*time.Time, *time.Time, error) {
@@ -5513,6 +6043,7 @@ func (s *Server) handleAdminNodePointsInterceptSet(c *gin.Context) {
 	quotaResetTargets := 0
 	quotaSyncTargets := 0
 	memorySyncTargets := 0
+	gpuResetTargets := 0
 	monthlyCfg, err := s.store.GetMonthlyPointsConfig(c.Request.Context())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -5587,6 +6118,12 @@ func (s *Server) handleAdminNodePointsInterceptSet(c *gin.Context) {
 				s.enqueueNodeAction(nodeID, action)
 				memorySyncTargets++
 			}
+			if !req.Enabled {
+				if action, ok := s.nextGPUAccessAction(nodeID, local, false, fmt.Sprintf("管理员 %s 关闭积分拦截，恢复 GPU 可见性", operator), true); ok {
+					s.enqueueNodeAction(nodeID, action)
+					gpuResetTargets++
+				}
+			}
 		}
 	}
 	// 语义：关闭积分拦截开关 => 不扣分且不限速，需要主动清理本节点历史 CPU 限速残留。
@@ -5613,6 +6150,7 @@ func (s *Server) handleAdminNodePointsInterceptSet(c *gin.Context) {
 		"effective_blocked_cpu_quota":   blockedQuota,
 		"effective_overdraft_memory_gb": overdraftMemoryLimit,
 		"memory_sync_targets":           memorySyncTargets,
+		"gpu_reset_targets":             gpuResetTargets,
 	})
 }
 
@@ -5647,6 +6185,11 @@ func (s *Server) handleAdminNodeDiskQuotaGet(c *gin.Context) {
 		effectiveMount = preferredMount
 	}
 	localUsers, err := s.store.ListNodeLocalUsersWithPlatformMapping(c.Request.Context(), nodeID, 5000)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	localUsers, err = s.mergeMappedAccountsIntoNodeLocalUsers(c.Request.Context(), nodeID, localUsers)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -5967,15 +6510,13 @@ func (s *Server) handleAdminNodeDiskQuotaApply(c *gin.Context) {
 	seen := map[string]struct{}{}
 	adminCache := map[string]bool{}
 	localMeta := map[string]NodeLocalUser{}
-	if req.AllUsers {
-		if rows, err := s.store.ListNodeLocalUsersWithPlatformMapping(c.Request.Context(), nodeID, 5000); err == nil {
-			for _, it := range rows {
-				local := strings.TrimSpace(it.LocalUsername)
-				if local == "" {
-					continue
-				}
-				localMeta[local] = it
+	if rows, err := s.store.ListNodeLocalUsersWithPlatformMapping(c.Request.Context(), nodeID, 5000); err == nil {
+		for _, it := range rows {
+			local := strings.TrimSpace(it.LocalUsername)
+			if local == "" {
+				continue
 			}
+			localMeta[local] = it
 		}
 	}
 	for _, t := range targets {
@@ -5983,18 +6524,17 @@ func (s *Server) handleAdminNodeDiskQuotaApply(c *gin.Context) {
 			continue
 		}
 		seen[t.local] = struct{}{}
-		if req.AllUsers {
-			meta, ok := localMeta[t.local]
-			if ok {
-				adminMapped, checkErr := s.shouldSkipAdminMappedDiskQuotaTarget(c.Request.Context(), nodeID, meta, adminCache)
-				if checkErr == nil && adminMapped {
-					skippedAdminMappings++
-					continue
-				}
-				if checkErr != nil {
-					log.Printf("skip disk quota target check failed node=%s local=%s err=%v", nodeID, t.local, checkErr)
-				}
-			}
+		meta, ok := localMeta[t.local]
+		if !ok {
+			meta = NodeLocalUser{LocalUsername: t.local}
+		}
+		adminMapped, checkErr := s.shouldSkipAdminMappedDiskQuotaTarget(c.Request.Context(), nodeID, meta, adminCache)
+		if checkErr == nil && adminMapped {
+			skippedAdminMappings++
+			continue
+		}
+		if checkErr != nil {
+			log.Printf("skip disk quota target check failed node=%s local=%s err=%v", nodeID, t.local, checkErr)
 		}
 		s.enqueueNodeAction(nodeID, Action{
 			Type:                "set_disk_quota",
@@ -6469,6 +7009,22 @@ func (s *Server) handleAdminNodeGPUVisibilityDelete(c *gin.Context) {
 		"ok":             true,
 		"node_id":        nodeID,
 		"local_username": localUsername,
+	})
+}
+
+func (s *Server) handleAdminGPUVisibility(c *gin.Context) {
+	billingUsername := strings.TrimSpace(c.Query("billing_username"))
+	nodeID := strings.TrimSpace(c.Query("node_id"))
+	limit := parseLimit(c.Query("limit"), 1000, 10000)
+	rows, err := s.store.ListNodeUserGPUVisibility(c.Request.Context(), nodeID, billingUsername, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"billing_username": billingUsername,
+		"node_id":          nodeID,
+		"rows":             rows,
 	})
 }
 
@@ -7977,6 +8533,13 @@ func (s *Server) handleAdminHAStatus(c *gin.Context) {
 
 func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS time.Time) ([]Action, error) {
 	now := time.Now()
+	var systemServicesCheckedAt *time.Time
+	if raw := strings.TrimSpace(data.SystemServicesCheckedAt); raw != "" {
+		if ts, err := time.Parse(time.RFC3339, raw); err == nil {
+			v := inBeijing(ts)
+			systemServicesCheckedAt = &v
+		}
+	}
 	intervalSeconds := s.cfg.SampleIntervalSeconds
 	if data.IntervalSeconds > 0 && data.IntervalSeconds <= 600 {
 		intervalSeconds = data.IntervalSeconds
@@ -7997,6 +8560,10 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 	costTotal := 0.0
 	cpuPercentSum := 0.0
 	memoryMBSum := 0.0
+	cleanupMappings := 0
+	cleanupCPULimits := 0
+	cleanupMemoryLimits := 0
+	cleanupGPUVisibility := 0
 
 	var actions []Action
 	duplicate := false
@@ -8229,6 +8796,21 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 			); err != nil {
 				return err
 			}
+		}
+
+		if !nodePointsBillingEnabled {
+			reportedLocals := make([]string, 0, len(data.LocalUsers))
+			for _, u := range data.LocalUsers {
+				reportedLocals = append(reportedLocals, u.LocalUsername)
+			}
+			actions = append(actions, s.queuePointsInterceptDisabledResets(
+				data.NodeID,
+				reportedLocals,
+				nodeManualCPULimits,
+				nodeManualMemoryLimits,
+				nodeManualGPUVisibility,
+				"节点上报收敛",
+			)...)
 		}
 
 		// 节点总体 CPU 高负载告警（默认阈值 95%）：用于追踪疑似恶意账号并形成审计日志。
@@ -8491,14 +9073,18 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 				return err
 			}
 			overdraftExceeded := isOverdraftExceeded(bal.effectiveBalance, monthlyCfg.MaxOverdraftLimit)
+			gpuBlocked := overdraftExceeded
 			gpuReason := fmt.Sprintf("SSH 在线账号余额同步：余额 %.2f 未超过欠费阈值 %.2f，恢复 GPU 可见性", bal.effectiveBalance, killAllProcessBalanceThreshold(monthlyCfg.MaxOverdraftLimit))
-			if overdraftExceeded {
+			if !nodePointsBillingEnabled {
+				gpuBlocked = false
+				gpuReason = "SSH 在线账号余额同步：节点积分拦截关闭，恢复 GPU 可见性"
+			} else if overdraftExceeded {
 				gpuReason = fmt.Sprintf("SSH 在线账号余额同步：余额 %.2f 已超过每月欠费上限 %.2f（阈值 %.2f），加入欠费 GPU 限制组并隐藏 GPU", bal.effectiveBalance, normalizeMonthlyMaxOverdraftLimit(monthlyCfg.MaxOverdraftLimit), killAllProcessBalanceThreshold(monthlyCfg.MaxOverdraftLimit))
 			}
-			if action, ok := s.nextGPUAccessAction(data.NodeID, localUsername, overdraftExceeded, gpuReason, false); ok {
+			if action, ok := s.nextGPUAccessAction(data.NodeID, localUsername, gpuBlocked, gpuReason, false); ok {
 				actions = append(actions, action)
 			}
-			if !overdraftExceeded {
+			if nodePointsBillingEnabled && !overdraftExceeded {
 				if manualGPU, hasManualGPU := nodeManualGPUVisibility[localUsername]; hasManualGPU && len(manualGPU.GPUIndices) > 0 {
 					if gpuVisAction, ok := s.nextGPUVisibilityAction(
 						data.NodeID,
@@ -8619,8 +9205,14 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 			len(data.SSHUsers),
 			data.DiskQuotaInstalled,
 			data.DiskQuotaMounts,
+			systemServicesCheckedAt,
+			data.SystemServices,
 			round4(costTotal),
 		); err != nil {
+			return err
+		}
+		previousLocalUsers, err := s.store.ListNodeLocalUsernamesByNodeTx(ctx, tx, data.NodeID, 100000)
+		if err != nil {
 			return err
 		}
 		if err := s.store.ReplaceNodeLocalUsersTx(ctx, tx, data.NodeID, data.LocalUsers); err != nil {
@@ -8629,10 +9221,30 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 		if err := s.store.ReplaceNodeUserDiskQuotasTx(ctx, tx, data.NodeID, data.UserDiskQuotas); err != nil {
 			return err
 		}
+		cleanupMappings, cleanupCPULimits, cleanupMemoryLimits, cleanupGPUVisibility, err = s.store.CleanupMissingNodeReportedUsersTx(
+			ctx,
+			tx,
+			data.NodeID,
+			previousLocalUsers,
+			data.LocalUsers,
+		)
+		if err != nil {
+			return err
+		}
 		return nil
 	})
 	if err != nil {
 		return nil, err
+	}
+	if cleanupMappings > 0 || cleanupCPULimits > 0 || cleanupMemoryLimits > 0 || cleanupGPUVisibility > 0 {
+		log.Printf(
+			"节点删除账号后自动同步 node=%s mappings=%d cpu_limits=%d memory_limits=%d gpu_visibility=%d",
+			data.NodeID,
+			cleanupMappings,
+			cleanupCPULimits,
+			cleanupMemoryLimits,
+			cleanupGPUVisibility,
+		)
 	}
 	if duplicate {
 		pending := s.popNodeActions(data.NodeID)

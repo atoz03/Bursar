@@ -311,7 +311,26 @@ fi
 
 api=\"${CONTROLLER_URL%/}/api/registry/bind-claim\"
 payload=\"$(printf '{\\\"token\\\":\\\"%s\\\",\\\"node_id\\\":\\\"%s\\\",\\\"local_username\\\":\\\"%s\\\"}' \"${TOKEN}\" \"${NODE_ID}\" \"${LOCAL_USER}\")\"
-curl -fsS -H \"Content-Type: application/json\" --data \"${payload}\" \"${api}\"
+tmp_resp=\"$(mktemp)\"
+trap 'rm -f \"${tmp_resp}\"' EXIT
+http_code=\"$(curl -sS -o \"${tmp_resp}\" -w '%{http_code}' -H \"Content-Type: application/json\" --data \"${payload}\" \"${api}\")\"
+resp=\"$(cat \"${tmp_resp}\")\"
+if [[ ! \"${http_code}\" =~ ^2[0-9][0-9]$ ]]; then
+  if [[ -n \"${resp}\" ]]; then
+    echo \"${resp}\" >&2
+  fi
+  echo \"gpuops-claim 失败：http ${http_code}\" >&2
+  exit 1
+fi
+echo \"${resp}\"
+msg=\"$(echo \"${resp}\" | sed -n \"s/.*\\\"message\\\":\\\"\\([^\\\"]*\\)\\\".*/\\1/p\")\"
+wait_s=\"$(echo \"${resp}\" | sed -n \"s/.*\\\"estimated_wait_seconds\\\":\\([0-9][0-9]*\\).*/\\1/p\")\"
+if [[ -n \"${msg}\" ]]; then
+  echo \"提示：${msg}\"
+fi
+if [[ -n \"${wait_s}\" ]]; then
+  echo \"建议等待：${wait_s} 秒\"
+fi
 echo
 EOF2'"
     ssh ${SSH_OPTS} "${target}" "${REMOTE_SUDO} chmod 0755 /usr/local/bin/gpuops-claim"
