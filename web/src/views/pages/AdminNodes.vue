@@ -981,6 +981,16 @@
         <el-table :data="platformProfile.node_accounts || []" stripe max-height="220" empty-text="暂无映射">
           <el-table-column prop="node_id" label="节点编号" width="140" />
           <el-table-column prop="local_username" label="节点账号" width="160" />
+          <el-table-column label="状态" width="220">
+            <template #default="{ row }">
+              <div class="mapping-state-cell">
+                <el-tag v-if="row.identity_aligned" type="success" effect="light">已就绪</el-tag>
+                <el-tag v-else-if="row.identity_initializing" type="warning" effect="light">初始化中</el-tag>
+                <el-tag v-else type="info" effect="light">待同步</el-tag>
+                <div v-if="mappingStateTip(row)" class="mapping-state-tip">{{ mappingStateTip(row) }}</div>
+              </div>
+            </template>
+          </el-table-column>
           <el-table-column label="更新时间" min-width="180">
             <template #default="{ row }">{{ formatTime(row.updated_at) }}</template>
           </el-table-column>
@@ -1090,7 +1100,7 @@
                 </el-checkbox-group>
               </div>
               <el-text type="info" size="small">
-                规则：选中的 GPU 仅该用户可见；其他非豁免用户只能看到“未分配”的 GPU。
+                规则：同一张 GPU 可以同时分配给多个独享用户；未勾选到某用户的 GPU 对该用户不可见，其他非豁免用户只能看到“未分配”的 GPU。
               </el-text>
             </div>
           </div>
@@ -1453,6 +1463,7 @@ import {
   type NodeStatus,
   type NodeSystemServiceStatus,
   type NodeSuspiciousUser,
+  type UserNodeAccount,
 } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
@@ -1575,7 +1586,7 @@ const platformProfile = ref<{
   role: string;
   balance: number;
   status: string;
-  node_accounts: Array<{ node_id: string; local_username: string; updated_at: string }>;
+  node_accounts: UserNodeAccount[];
 } | null>(null);
 let detailTimer: ReturnType<typeof setTimeout> | null = null;
 let sshResolveSeq = 0;
@@ -1698,6 +1709,12 @@ const userLimitGPUOptions = computed(() => {
 function formatTime(time: string | number | Date | null | undefined): string {
   if (!time) return "-";
   return formatServerDateTime(time);
+}
+
+function mappingStateTip(row: UserNodeAccount): string {
+  if (row.identity_initializing) return "正在同步 UID/GID，完成前无法 SSH 登录";
+  if (!row.identity_aligned) return "节点尚未回传最新 UID/GID 快照，请稍后自动刷新";
+  return "";
 }
 
 function buildDefaultSecurityRange(): string[] {
@@ -2550,17 +2567,6 @@ async function saveNodeExclusive() {
     local_username: u,
     gpu_indices: normalizeGPUIndexList(nodeExclusiveGPUAssignments.value[u] || []),
   }));
-  const ownerByGPU = new Map<number, string>();
-  for (const item of assignments) {
-    for (const idx of item.gpu_indices) {
-      const prev = ownerByGPU.get(idx);
-      if (prev && prev !== item.local_username) {
-        ElMessage.error(`GPU${idx} 被重复分配给 ${prev} 和 ${item.local_username}`);
-        return;
-      }
-      ownerByGPU.set(idx, item.local_username);
-    }
-  }
   nodeExclusiveSaving.value = true;
   try {
     const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
@@ -3707,6 +3713,16 @@ onBeforeUnmount(() => {
   margin-bottom: 8px;
   font-weight: 700;
   color: var(--text-primary);
+}
+.mapping-state-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mapping-state-tip {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-tertiary);
 }
 .section-inline-title {
   display: inline-flex;

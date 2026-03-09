@@ -13,6 +13,14 @@
     </div>
 
     <el-card class="form-card">
+      <div v-if="registerLocked" class="lock-overlay">
+        <div class="lock-panel">
+          <div class="lock-title">{{ t("注册申请已临时锁定", "Registration Temporarily Locked") }}</div>
+          <div class="lock-count">{{ cooldownRemainingSeconds }}</div>
+          <div class="lock-text">{{ cooldownMessage }}</div>
+          <div class="lock-sub">{{ t("倒计时结束后将自动恢复，你无需刷新页面。", "The page will unlock automatically when the countdown ends.") }}</div>
+        </div>
+      </div>
       <template #header>
         <div class="head">
           <div class="head-top">
@@ -34,20 +42,20 @@
         class="mb"
       />
       <el-alert
-        :title="t('所有字段都必填。用户名、学号、邮箱不能和已注册账号、待审核申请或待验证申请重复。', 'All fields are required. Username, student ID, and email must be unique across registered, pending-review, and pending-verification accounts.')"
+        :title="t('所有字段都必填。用户名必须按“姓名缩写+学号”填写；用户名、学号、邮箱都不能和已注册账号、待审核申请或待验证申请重复。', 'All fields are required. Username must be initials + student ID, and username, student ID, and email must be unique across registered, pending-review, and pending-verification accounts.')"
         type="warning"
         :closable="false"
         show-icon
         class="mb"
       />
       <div class="rule-chips">
-        <span class="chip chip-orange">{{ t("用户名：全平台唯一", "Username: globally unique") }}</span>
+        <span class="chip chip-orange">{{ t("用户名：姓名缩写+学号", "Username: initials + student ID") }}</span>
         <span class="chip chip-cyan">{{ t("学号：全平台唯一", "Student ID: globally unique") }}</span>
         <span class="chip chip-blue">{{ t("邮箱：仅允许 @example.org / @students.example.org", "Email: only @example.org / @students.example.org") }}</span>
       </div>
-      <div class="rule-note">{{ t("提交前会自动校验重复项；并强制校验“邮箱前缀=学号（学号自动转大写）”。", "Duplicates are checked before submit; email prefix must equal student ID and student ID is auto-uppercased.") }}</div>
+      <div class="rule-note">{{ t("提交前会自动校验重复项；并强制校验“用户名=姓名缩写+学号”“邮箱前缀=学号（学号自动转大写）”。", "The form checks duplicates before submit, enforces username = initials + student ID, and email prefix = student ID (student ID is auto-uppercased).") }}</div>
 
-      <el-form label-position="top" :disabled="submitted" class="register-form">
+      <el-form label-position="top" :disabled="submitted || registerLocked" class="register-form">
         <div class="section-grid">
           <section class="form-section section-account">
             <div class="section-head">
@@ -59,48 +67,57 @@
             </div>
             <el-row :gutter="18">
               <el-col :span="24">
-                <el-form-item required>
+                <el-form-item required :class="fieldClass('email')">
                   <template #label><span class="required">*</span> {{ t("邮箱", "Email") }}</template>
-                  <el-input v-model="form.email" :placeholder="t('例如：26B123456@example.org', 'Example: 26B123456@example.org')" @blur="checkUnique('email')" />
+                  <el-input
+                    v-model="form.email"
+                    :placeholder="t('例如：26B123456@example.org', 'Example: 26B123456@example.org')"
+                    @input="onEmailInput"
+                    @blur="checkUnique('email')"
+                  />
                   <div class="field-tip">{{ t("必须使用 `@example.org` 或 `@students.example.org`；邮箱前缀必须与学号一致。", "Use only @example.org or @students.example.org; the email prefix must match your student ID.") }}</div>
                   <div v-if="fieldErrors.email" class="field-error">{{ fieldErrors.email }}</div>
                 </el-form-item>
               </el-col>
               <el-col :span="24">
-                <el-form-item required>
+                <el-form-item required :class="fieldClass('username')">
                   <template #label><span class="required">*</span> {{ t("用户名", "Username") }}</template>
-                  <el-input v-model="form.username" :placeholder="t('例如：zs22B123456（不超过18字符）', 'Example: zs22B123456 (max 18 chars)')" @blur="checkUnique('username')" />
-                  <div class="field-tip">{{ t("建议使用姓名缩写+学号，例如 zs22B123456，最多 18 个字符。", "Recommended: initials + student ID, for example zs22B123456, up to 18 characters.") }}</div>
+                  <el-input v-model="form.username" :placeholder="usernamePlaceholder" @input="onUsernameInput" @blur="checkUnique('username')" />
+                  <div class="field-tip">{{ t("必须填写成“姓名拼音首字母缩写 + 学号”。例如：张三 -> zs；李小龙 -> lxl；最终用户名示例：", "Username must be initials + student ID. Example: Zhang San -> zs; Li Xiaolong -> lxl; final example: ") }}<code>{{ usernameExample }}</code></div>
+                  <div class="field-tip">{{ t("前缀只能是 2-8 个小写字母，后缀必须与下方学号完全一致。", "The prefix must be 2-8 lowercase letters, and the suffix must exactly match the student ID below.") }}</div>
                   <div v-if="fieldErrors.username" class="field-error">{{ fieldErrors.username }}</div>
                 </el-form-item>
               </el-col>
             </el-row>
             <el-row :gutter="18">
               <el-col :span="24">
-                <el-form-item required>
+                <el-form-item required :class="fieldClass('password')">
                   <template #label><span class="required">*</span> {{ t("密码", "Password") }}</template>
-                  <el-input v-model="form.password" type="password" show-password :placeholder="t('请设置强密码', 'Choose a strong password')" />
+                  <el-input v-model="form.password" type="password" show-password :placeholder="t('请设置强密码', 'Choose a strong password')" @input="clearFieldError('password')" />
                   <div class="field-tip">{{ passwordRuleText }}</div>
+                  <div v-if="fieldErrors.password" class="field-error">{{ fieldErrors.password }}</div>
                 </el-form-item>
               </el-col>
               <el-col :span="24">
-                <el-form-item required>
+                <el-form-item required :class="fieldClass('confirm_password')">
                   <template #label><span class="required">*</span> {{ t("确认密码", "Confirm Password") }}</template>
-                  <el-input v-model="confirmPassword" type="password" show-password />
+                  <el-input v-model="confirmPassword" type="password" show-password @input="clearFieldError('confirm_password')" />
+                  <div v-if="fieldErrors.confirm_password" class="field-error">{{ fieldErrors.confirm_password }}</div>
                 </el-form-item>
               </el-col>
             </el-row>
-            <el-form-item required>
+            <el-form-item required :class="fieldClass('captcha')">
               <template #label><span class="required">*</span> {{ t("安全验证码（每次注册必做）", "Security Captcha (required for every registration)") }}</template>
               <div class="captcha-wrap">
                 <div class="captcha-question">{{ captchaQuestionLabel }}</div>
-                <el-radio-group v-model="captchaOption" class="captcha-options">
+                <el-radio-group v-model="captchaOption" class="captcha-options" @change="clearFieldError('captcha')">
                   <el-radio-button v-for="(op, idx) in captchaOptions" :key="`${captchaId}-${idx}-${op}`" :label="idx">{{ op }}</el-radio-button>
                 </el-radio-group>
                 <div class="captcha-actions">
                   <el-button text type="primary" :loading="captchaLoading" @click="loadCaptcha">{{ t("换一题", "Refresh") }}</el-button>
                 </div>
               </div>
+              <div v-if="fieldErrors.captcha" class="field-error">{{ fieldErrors.captcha }}</div>
             </el-form-item>
           </section>
 
@@ -114,14 +131,15 @@
             </div>
             <el-row :gutter="18">
               <el-col :span="24">
-                <el-form-item required>
+                <el-form-item required :class="fieldClass('real_name')">
                   <template #label><span class="required">*</span> {{ t("真实姓名", "Real Name") }}</template>
-                  <el-input v-model="form.real_name" :placeholder="t('请填写真实中文姓名，例如：张三', 'Enter your real name')" />
-                  <div class="field-tip">{{ t("请使用真实姓名的汉字形式。", "Use your real legal name.") }}</div>
+                  <el-input v-model="form.real_name" :placeholder="t('请填写真实中文姓名，例如：张三', 'Enter your real name')" @input="clearFieldError('real_name')" />
+                  <div class="field-tip">{{ t("请填写真实姓名；用户名里的“姓名缩写”请按这个姓名的拼音首字母自行填写。", "Enter your real name; the username initials should be based on this name.") }}</div>
+                  <div v-if="fieldErrors.real_name" class="field-error">{{ fieldErrors.real_name }}</div>
                 </el-form-item>
               </el-col>
               <el-col :span="24">
-                <el-form-item required>
+                <el-form-item required :class="fieldClass('student_id')">
                   <template #label><span class="required">*</span> {{ t("学号", "Student ID") }}</template>
                   <el-input v-model="form.student_id" :placeholder="t('注意全大写，例如26B123456', 'Uppercase only, for example 26B123456')" @input="onStudentInput" @blur="checkUnique('student_id')" />
                   <div class="field-tip">{{ t("输入小写会自动转为大写；并将用于校验邮箱前缀。", "Lowercase input is auto-converted to uppercase and used to validate the email prefix.") }}</div>
@@ -131,13 +149,14 @@
             </el-row>
             <el-row :gutter="18">
               <el-col :span="24">
-                <el-form-item required>
+                <el-form-item required :class="fieldClass('advisor')">
                   <template #label><span class="required">*</span> {{ t("导师", "Advisor") }}</template>
-                  <el-input v-model="form.advisor" />
+                  <el-input v-model="form.advisor" @input="clearFieldError('advisor')" />
+                  <div v-if="fieldErrors.advisor" class="field-error">{{ fieldErrors.advisor }}</div>
                 </el-form-item>
               </el-col>
               <el-col :span="24">
-                <el-form-item required>
+                <el-form-item required :class="fieldClass('expected_graduation')">
                   <template #label><span class="required">*</span> {{ t("预计毕业时间（年-月）", "Expected Graduation (YYYY-MM)") }}</template>
                   <el-date-picker
                     v-model="graduationYm"
@@ -146,30 +165,34 @@
                     format="YYYY-MM"
                     style="width: 100%"
                     :placeholder="t('请选择毕业年月', 'Select graduation month')"
+                    @change="clearFieldError('expected_graduation')"
                   />
+                  <div v-if="fieldErrors.expected_graduation" class="field-error">{{ fieldErrors.expected_graduation }}</div>
                 </el-form-item>
               </el-col>
             </el-row>
-            <el-form-item required>
+            <el-form-item required :class="fieldClass('phone')">
               <template #label><span class="required">*</span> {{ t("电话", "Phone") }}</template>
-              <el-input v-model="form.phone" />
+              <el-input v-model="form.phone" @input="clearFieldError('phone')" />
+              <div v-if="fieldErrors.phone" class="field-error">{{ fieldErrors.phone }}</div>
             </el-form-item>
           </section>
         </div>
       </el-form>
 
-      <div class="agree-line">
-        <el-checkbox v-model="acceptGuideline" :disabled="submitted">
+      <div :class="agreeLineClass()">
+        <el-checkbox v-model="acceptGuideline" :disabled="submitted || registerLocked" @change="clearFieldError('accept_guideline')">
           {{ t("我已阅读并同意", "I have read and agree to the") }}
           <button type="button" class="guideline-link" @click.prevent="guidelineVisible = true">{{ t("《用户准则》", "User Guidelines") }}</button>
           {{ t("，自觉遵守平台规范，否则后果自负。", "and will comply with the platform rules.") }}
         </el-checkbox>
+        <div v-if="fieldErrors.accept_guideline" class="field-error">{{ fieldErrors.accept_guideline }}</div>
       </div>
 
       <el-button
         :type="submitted ? 'info' : 'primary'"
         :loading="loading"
-        :disabled="submitted"
+        :disabled="submitted || registerLocked"
         @click="submit"
         class="submit-btn"
       >
@@ -193,7 +216,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ApiClient } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
@@ -203,8 +226,20 @@ import { STRONG_PASSWORD_RULE_TEXT, checkStrongPassword } from "../../lib/passwo
 import { getServerCurrentYear } from "../../lib/time";
 import { pickText, toggleUiLanguage, uiLocaleState } from "../../lib/uiLocale";
 
-type FieldKey = "username" | "email" | "student_id";
+type FieldKey =
+  | "username"
+  | "email"
+  | "student_id"
+  | "password"
+  | "confirm_password"
+  | "real_name"
+  | "advisor"
+  | "expected_graduation"
+  | "phone"
+  | "accept_guideline"
+  | "captcha";
 const allowedEmailDomains = ["example.org", "students.example.org"];
+const MAX_FRONTEND_REGISTER_COOLDOWN_SECONDS = 1000;
 
 function toYYYYMM(year: number, month: number): string {
   return `${year}-${String(month).padStart(2, "0")}`;
@@ -225,6 +260,8 @@ const verifiedSubmitted = ref(false);
 const error = ref("");
 const success = ref("");
 const confirmPassword = ref("");
+const cooldownRemainingSeconds = ref(0);
+const cooldownMessage = ref("");
 const defaultGraduationYear = getServerCurrentYear() + 3;
 const graduationYm = ref(toYYYYMM(defaultGraduationYear, 6));
 const guidelineVisible = ref(false);
@@ -238,11 +275,28 @@ const captchaId = ref("");
 const captchaQuestion = ref("");
 const captchaOptions = ref<number[]>([]);
 const captchaOption = ref<number | null>(null);
+let cooldownTimer: ReturnType<typeof setInterval> | null = null;
 const captchaQuestionLabel = computed(() => captchaQuestion.value || t("验证码加载中...", "Loading captcha..."));
+const registerLocked = computed(() => cooldownRemainingSeconds.value > 0);
+const usernameExample = computed(() => {
+  const student = normalizeStudentIDInput(form.student_id);
+  return `zs${student || "26B123456"}`;
+});
+const usernamePlaceholder = computed(() =>
+  t(`例如：${usernameExample.value}（姓名缩写+学号）`, `Example: ${usernameExample.value} (initials + student ID)`),
+);
 const fieldErrors = reactive<Record<FieldKey, string>>({
   username: "",
   email: "",
   student_id: "",
+  password: "",
+  confirm_password: "",
+  real_name: "",
+  advisor: "",
+  expected_graduation: "",
+  phone: "",
+  accept_guideline: "",
+  captcha: "",
 });
 const form = reactive({
   email: "",
@@ -264,6 +318,36 @@ function normalizeStudentIDInput(v: string): string {
   return String(v || "").trim().toUpperCase();
 }
 
+function clearFieldError(field: FieldKey) {
+  fieldErrors[field] = "";
+}
+
+function clearAllFieldErrors() {
+  (Object.keys(fieldErrors) as FieldKey[]).forEach((k) => {
+    fieldErrors[k] = "";
+  });
+}
+
+function fieldClass(field: FieldKey): string {
+  return fieldErrors[field] ? "field-item-invalid" : "";
+}
+
+function agreeLineClass(): string {
+  return fieldErrors.accept_guideline ? "agree-line agree-line-invalid" : "agree-line";
+}
+
+function revealFirstInvalidField() {
+  void nextTick(() => {
+    const el = document.querySelector(".field-item-invalid, .agree-line-invalid") as HTMLElement | null;
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+  });
+}
+
+function clampFrontendCooldownSeconds(seconds: number): number {
+  return Math.max(1, Math.min(MAX_FRONTEND_REGISTER_COOLDOWN_SECONDS, Math.ceil(Number(seconds || 0))));
+}
+
 function normalizeRegisterEmailForStudent(emailRaw: string, studentRaw: string): { value: string; error: string | null } {
   const student = normalizeStudentIDInput(studentRaw);
   const email = String(emailRaw || "").trim();
@@ -282,8 +366,48 @@ function normalizeRegisterEmailForStudent(emailRaw: string, studentRaw: string):
   return { value: `${student}@${domain}`, error: null };
 }
 
+function validateUsernameRuleLocal(usernameRaw: string, studentRaw: string): string {
+  const username = String(usernameRaw || "").trim();
+  const student = normalizeStudentIDInput(studentRaw);
+  if (!username) return "用户名不能为空";
+  if (!student) return "请先填写学号，再按“姓名缩写+学号”填写用户名。";
+  if (Array.from(username).length > 18) return "用户名最多 18 个字符，请缩短后再试。";
+  if (!username.endsWith(student)) return `用户名必须以学号 ${student} 结尾，例如 ${usernameExample.value}。`;
+  const prefix = username.slice(0, username.length - student.length);
+  if (!/^[a-z]{2,8}$/.test(prefix)) {
+    return `用户名必须写成“姓名缩写+学号”，前缀需为 2-8 个小写字母，例如 ${usernameExample.value}。`;
+  }
+  return "";
+}
+
 function onStudentInput() {
   form.student_id = normalizeStudentIDInput(form.student_id);
+  clearFieldError("student_id");
+  if (String(form.username || "").trim()) {
+    fieldErrors.username = validateUsernameRuleLocal(form.username, form.student_id);
+  }
+  const emailRaw = String(form.email || "").trim();
+  if (emailRaw) {
+    const normalized = normalizeRegisterEmailForStudent(emailRaw, form.student_id);
+    form.email = normalized.value;
+    fieldErrors.email = normalized.error || "";
+  }
+}
+
+function onEmailInput() {
+  clearFieldError("email");
+}
+
+function onUsernameInput() {
+  fieldErrors.username = validateUsernameRuleLocal(form.username, form.student_id);
+}
+
+function firstFieldErrorMessage(): string {
+  for (const key of Object.keys(fieldErrors) as FieldKey[]) {
+    const msg = String(fieldErrors[key] || "").trim();
+    if (msg) return msg;
+  }
+  return "请根据表单提示修改后再提交。";
 }
 
 function normalizeFieldError(field: FieldKey, msg: string): string {
@@ -302,6 +426,10 @@ function normalizeFieldError(field: FieldKey, msg: string): string {
   if (text === "用户名已被待验证申请占用") return "该用户名已有待验证申请，请先完成邮箱验证或稍后重试。";
   if (text === "邮箱已被待验证申请占用") return "该邮箱已有待验证申请，请先完成邮箱验证或稍后重试。";
   if (text === "学号已被待验证申请占用") return "该学号已有待验证申请，请先完成邮箱验证或稍后重试。";
+  if (text === "用户名不能为空") return "用户名不能为空。";
+  if (text === "请先填写学号，再按“姓名缩写+学号”格式填写用户名") return "请先填写学号，再按“姓名缩写+学号”格式填写用户名。";
+  if (text.startsWith("用户名必须以学号 ")) return `${text}。`;
+  if (text.includes("用户名必须写成“姓名缩写+学号”")) return `${text}。`;
   if (field === "username" && text.includes("18")) return "用户名最多 18 个字符，请缩短后再试。";
   return text;
 }
@@ -328,7 +456,11 @@ function normalizeRegisterError(msg: string): string {
     return `提交失败：你填写的${fields || "信息"}已被占用，请修改后再提交。`;
   }
   if (text === "请完整填写注册信息") return "请把所有必填项填写完整后再提交。";
+  if (text === "用户名不能为空") return "用户名不能为空。";
+  if (text === "请先填写学号，再按“姓名缩写+学号”格式填写用户名") return "请先填写学号，再按“姓名缩写+学号”格式填写用户名。";
   if (text === "用户名不得超过 18 个字符") return "用户名最多 18 个字符，请缩短后再提交。";
+  if (text.startsWith("用户名必须以学号 ")) return `${text}。`;
+  if (text.includes("用户名必须写成“姓名缩写+学号”")) return `${text}。`;
   if (text.includes("强密码规则")) return STRONG_PASSWORD_RULE_TEXT;
   if (text === "密码不能包含空格") return "密码不能包含空格。";
   if (text === "邮箱格式不合法") return "邮箱格式不正确，请检查后再提交。";
@@ -344,9 +476,65 @@ function normalizeRegisterError(msg: string): string {
   return text;
 }
 
+function applyRegisterErrorToFields(msg: string) {
+  const text = String(msg || "").trim();
+  if (!text) return;
+  if (text.startsWith("以下信息不可用：") || text.startsWith("以下信息已存在账号：")) {
+    const fieldsRaw = text.replace(/^以下信息(不可用|已存在账号)：/, "").trim();
+    for (const field of fieldsRaw.split(/[、，,]/g).map((item) => item.trim()).filter(Boolean)) {
+      if (field === "用户名") fieldErrors.username = "该用户名已被占用，请更换后再提交。";
+      if (field === "邮箱") fieldErrors.email = "该邮箱已被占用，请更换后再提交。";
+      if (field === "学号") fieldErrors.student_id = "该学号已被占用，请确认后再提交。";
+    }
+    return;
+  }
+  if (text === "请完整填写注册信息") {
+    validateRegisterFormLocal();
+    return;
+  }
+  if (text === "请先阅读并勾选同意《用户准则》后再提交") {
+    fieldErrors.accept_guideline = "请先阅读并勾选同意《用户准则》。";
+    return;
+  }
+  if (text === "验证码错误，请重试" || text === "验证码已过期，请刷新后重试" || text === "验证码已失效，请刷新后重试") {
+    fieldErrors.captcha = normalizeRegisterError(text);
+    return;
+  }
+  if (text === "邮箱不能为空" || text === "邮箱格式不合法" || text.includes("注册邮箱后缀仅支持") || text.includes("邮箱前缀必须与学号一致")) {
+    fieldErrors.email = normalizeFieldError("email", text);
+    return;
+  }
+  if (text === "学号不能为空") {
+    fieldErrors.student_id = "请填写学号。";
+    return;
+  }
+  if (text === "用户名不能为空" || text.startsWith("用户名必须以学号 ") || text.includes("用户名必须写成“姓名缩写+学号”") || text === "用户名不得超过 18 个字符") {
+    fieldErrors.username = normalizeFieldError("username", text);
+    return;
+  }
+  if (text === "请先填写学号，再按“姓名缩写+学号”格式填写用户名") {
+    fieldErrors.student_id = "请先填写学号。";
+    fieldErrors.username = normalizeFieldError("username", text);
+    return;
+  }
+  if (text.includes("强密码规则") || text === "密码不能包含空格") {
+    fieldErrors.password = normalizeRegisterError(text);
+    return;
+  }
+  if (text === "该邮箱请求过于频繁，请稍后再试") {
+    fieldErrors.email = "该邮箱请求过于频繁，请等待倒计时结束后再试。";
+  }
+}
+
 async function checkUnique(field?: FieldKey): Promise<boolean> {
   form.student_id = normalizeStudentIDInput(form.student_id);
-  fieldErrors.email = "";
+  clearFieldError("username");
+  clearFieldError("email");
+  const usernameRaw = String(form.username || "").trim();
+  if (usernameRaw) {
+    fieldErrors.username = validateUsernameRuleLocal(usernameRaw, form.student_id);
+    if (field === "username" && fieldErrors.username) return false;
+  }
   const emailRaw = String(form.email || "").trim();
   if (emailRaw) {
     const normalized = normalizeRegisterEmailForStudent(emailRaw, form.student_id);
@@ -380,11 +568,104 @@ async function checkUnique(field?: FieldKey): Promise<boolean> {
   }
 }
 
+function validateRegisterFormLocal(): boolean {
+  clearAllFieldErrors();
+  form.student_id = normalizeStudentIDInput(form.student_id);
+  const ym = parseYYYYMM(graduationYm.value);
+
+  if (!String(form.real_name || "").trim()) {
+    fieldErrors.real_name = "请填写真实姓名。";
+  }
+  if (!String(form.student_id || "").trim()) {
+    fieldErrors.student_id = "请填写学号。";
+  }
+  fieldErrors.username = validateUsernameRuleLocal(form.username, form.student_id);
+  const normalizedEmail = normalizeRegisterEmailForStudent(form.email, form.student_id);
+  form.email = normalizedEmail.value;
+  if (normalizedEmail.error) {
+    fieldErrors.email = normalizedEmail.error;
+  }
+  if (!String(form.password || "").trim()) {
+    fieldErrors.password = "请先设置密码。";
+  } else {
+    const pwdErr = checkStrongPassword(form.password);
+    if (pwdErr) fieldErrors.password = pwdErr;
+  }
+  if (!String(confirmPassword.value || "").trim()) {
+    fieldErrors.confirm_password = "请再次输入密码。";
+  } else if (form.password !== confirmPassword.value) {
+    fieldErrors.confirm_password = "两次密码输入不一致。";
+  }
+  if (!String(form.advisor || "").trim()) {
+    fieldErrors.advisor = "请填写导师姓名。";
+  }
+  if (!ym) {
+    fieldErrors.expected_graduation = "请选择合法的预计毕业年月。";
+  }
+  if (!String(form.phone || "").trim()) {
+    fieldErrors.phone = "请填写联系电话。";
+  }
+  if (!acceptGuideline.value) {
+    fieldErrors.accept_guideline = "请先阅读并勾选同意《用户准则》。";
+  }
+  if (!captchaId.value || captchaOption.value === null) {
+    fieldErrors.captcha = "请先完成安全验证码。";
+  }
+  return !(Object.keys(fieldErrors) as FieldKey[]).some((k) => String(fieldErrors[k] || "").trim());
+}
+
+function stopCooldownTimer() {
+  if (cooldownTimer) {
+    clearInterval(cooldownTimer);
+    cooldownTimer = null;
+  }
+}
+
+function startRegisterCooldown(seconds: number, message: string) {
+  stopCooldownTimer();
+  cooldownRemainingSeconds.value = clampFrontendCooldownSeconds(seconds);
+  cooldownMessage.value = String(message || "请求过于频繁，请稍后再试。");
+  cooldownTimer = setInterval(() => {
+    cooldownRemainingSeconds.value = Math.max(0, cooldownRemainingSeconds.value - 1);
+    if (cooldownRemainingSeconds.value <= 0) {
+      stopCooldownTimer();
+      cooldownMessage.value = "";
+    }
+  }, 1000);
+}
+
+function parseRegisterErrorPayload(err: any): {
+  error: string;
+  retry_after_seconds?: number;
+  field_errors?: Partial<Record<FieldKey, string>>;
+} {
+  const raw = String(err?.body || "").trim();
+  if (!raw) return { error: String(err?.message ?? err ?? "").trim() };
+  try {
+    const parsed = JSON.parse(raw);
+    return {
+      error: String(parsed?.error ?? parsed?.message ?? err?.message ?? "").trim(),
+      retry_after_seconds: Number(parsed?.retry_after_seconds ?? 0) || undefined,
+      field_errors: parsed?.field_errors ?? undefined,
+    };
+  } catch {
+    return { error: String(err?.message ?? err ?? "").trim() };
+  }
+}
+
 async function submit() {
   if (submitted.value) return;
   error.value = "";
   success.value = "";
-  form.student_id = normalizeStudentIDInput(form.student_id);
+  if (registerLocked.value) {
+    error.value = `当前触发安全冷却，请在 ${cooldownRemainingSeconds.value} 秒后再试。`;
+    return;
+  }
+  if (!validateRegisterFormLocal()) {
+    error.value = `请检查标红项：${firstFieldErrorMessage()}`;
+    revealFirstInvalidField();
+    return;
+  }
   const ym = parseYYYYMM(graduationYm.value);
   if (!ym) {
     error.value = "请选择合法的预计毕业年月";
@@ -392,33 +673,6 @@ async function submit() {
   }
   form.expected_graduation_year = ym.year;
   form.expected_graduation_month = ym.month;
-  if ((form.username || "").trim().length > 18) {
-    error.value = "用户名不得超过 18 个字符";
-    return;
-  }
-  const normalizedEmail = normalizeRegisterEmailForStudent(form.email, form.student_id);
-  form.email = normalizedEmail.value;
-  if (normalizedEmail.error) {
-    error.value = normalizedEmail.error;
-    return;
-  }
-  if (form.password !== confirmPassword.value) {
-    error.value = "两次密码输入不一致";
-    return;
-  }
-  const pwdErr = checkStrongPassword(form.password);
-  if (pwdErr) {
-    error.value = pwdErr;
-    return;
-  }
-  if (!acceptGuideline.value) {
-    error.value = "请先阅读并勾选同意《用户准则》";
-    return;
-  }
-  if (!captchaId.value || captchaOption.value === null) {
-    error.value = "请先完成安全验证码";
-    return;
-  }
   loading.value = true;
   try {
     const ok = await checkUnique();
@@ -440,7 +694,24 @@ async function submit() {
       confirmButtonText: t("我知道了", "OK"),
     });
   } catch (e: any) {
-    error.value = normalizeRegisterError(e?.message ?? String(e));
+    const payload = parseRegisterErrorPayload(e);
+    if (payload.field_errors) {
+      for (const [k, v] of Object.entries(payload.field_errors)) {
+        const key = k as FieldKey;
+        if (key in fieldErrors) {
+          fieldErrors[key] = normalizeFieldError(key, String(v || ""));
+        }
+      }
+    }
+    applyRegisterErrorToFields(payload.error || e?.message || String(e));
+    error.value = normalizeRegisterError(payload.error || e?.message || String(e));
+    if (Number(payload.retry_after_seconds || 0) > 0) {
+      const shownRetryAfter = clampFrontendCooldownSeconds(Number(payload.retry_after_seconds || 0));
+      startRegisterCooldown(shownRetryAfter, `${error.value} ${shownRetryAfter} 秒后可再次尝试。`);
+    }
+    if ((Object.keys(fieldErrors) as FieldKey[]).some((k) => String(fieldErrors[k] || "").trim())) {
+      revealFirstInvalidField();
+    }
     await loadCaptcha();
   } finally {
     loading.value = false;
@@ -456,6 +727,7 @@ async function loadCaptcha() {
     captchaQuestion.value = String(r.question || "").trim();
     captchaOptions.value = Array.isArray(r.options) ? r.options.map((v) => Number(v)) : [];
     captchaOption.value = null;
+    clearFieldError("captcha");
   } catch (e: any) {
     captchaId.value = "";
     captchaQuestion.value = t("验证码加载失败，请稍后重试", "Captcha failed to load. Try again later.");
@@ -505,6 +777,10 @@ onMounted(() => {
   loadGuideline();
   loadCaptcha();
   handleVerifyResultFromQuery();
+});
+
+onBeforeUnmount(() => {
+  stopCooldownTimer();
 });
 </script>
 
@@ -655,6 +931,54 @@ onMounted(() => {
   border-radius: 20px;
   background: rgba(255, 255, 255, 0.9);
   backdrop-filter: blur(10px);
+  overflow: hidden;
+}
+.lock-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.48);
+  backdrop-filter: blur(10px);
+  pointer-events: all;
+}
+.lock-panel {
+  width: min(100%, 420px);
+  border-radius: 24px;
+  padding: 28px 24px;
+  text-align: center;
+  color: #e2e8f0;
+  background:
+    radial-gradient(circle at top, rgba(14, 165, 233, 0.2), transparent 55%),
+    linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(30, 41, 59, 0.94));
+  box-shadow: 0 24px 80px rgba(15, 23, 42, 0.35);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+}
+.lock-title {
+  font-size: 18px;
+  font-weight: 800;
+  color: #f8fafc;
+}
+.lock-count {
+  margin-top: 12px;
+  font-size: 64px;
+  line-height: 1;
+  font-weight: 900;
+  color: #fbbf24;
+  text-shadow: 0 8px 28px rgba(251, 191, 36, 0.35);
+}
+.lock-text {
+  margin-top: 14px;
+  font-size: 15px;
+  line-height: 1.6;
+  color: #e2e8f0;
+}
+.lock-sub {
+  margin-top: 10px;
+  font-size: 13px;
+  color: #94a3b8;
 }
 .form-card :deep(.el-card__header) {
   padding: 22px 30px 8px;
@@ -675,6 +999,17 @@ onMounted(() => {
 }
 .form-card :deep(.el-alert__title) {
   font-size: 14px;
+}
+.field-item-invalid {
+  animation: fieldShake 0.34s ease;
+}
+.field-item-invalid :deep(.el-input__wrapper),
+.field-item-invalid :deep(.el-date-editor.el-input__wrapper),
+.field-item-invalid :deep(.el-select__wrapper),
+.field-item-invalid :deep(.el-radio-group),
+.field-item-invalid .captcha-wrap {
+  border-color: #dc2626 !important;
+  box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.12) !important;
 }
 .head h2 {
   margin: 0;
@@ -818,6 +1153,7 @@ onMounted(() => {
   font-size: 13px;
   font-weight: 600;
   color: #dc2626;
+  animation: fieldShake 0.34s ease;
 }
 .submit-btn {
   width: 100%;
@@ -829,6 +1165,9 @@ onMounted(() => {
   margin-bottom: 12px;
   font-size: 14px;
   color: #334155;
+}
+.agree-line-invalid {
+  animation: fieldShake 0.34s ease;
 }
 .guideline-link {
   border: none;
@@ -863,6 +1202,24 @@ onMounted(() => {
   }
   50% {
     transform: translateY(-18px) translateX(14px);
+  }
+}
+@keyframes fieldShake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  20% {
+    transform: translateX(-6px);
+  }
+  40% {
+    transform: translateX(5px);
+  }
+  60% {
+    transform: translateX(-4px);
+  }
+  80% {
+    transform: translateX(3px);
   }
 }
 @keyframes gradientShift {
@@ -945,6 +1302,13 @@ onMounted(() => {
   .sticker {
     font-size: 11px;
     padding: 6px 10px;
+  }
+  .lock-panel {
+    width: 100%;
+    padding: 24px 18px;
+  }
+  .lock-count {
+    font-size: 52px;
   }
 }
 </style>

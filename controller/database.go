@@ -1814,10 +1814,19 @@ func (s *Store) ListUserNodeAccountsByBilling(ctx context.Context, billingUserna
 		limit = 500
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT node_id, local_username, billing_username, created_at, updated_at
-FROM user_node_accounts
-WHERE billing_username=$1
-ORDER BY node_id, local_username
+SELECT una.node_id,
+       una.local_username,
+       una.billing_username,
+       nlu.last_login_at,
+       nlu.updated_at,
+       una.created_at,
+       una.updated_at
+FROM user_node_accounts una
+LEFT JOIN node_local_users nlu
+  ON nlu.node_id=una.node_id
+ AND nlu.local_username=una.local_username
+WHERE una.billing_username=$1
+ORDER BY una.node_id, una.local_username
 LIMIT $2`, billingUsername, limit)
 	if err != nil {
 		return nil, err
@@ -1826,8 +1835,18 @@ LIMIT $2`, billingUsername, limit)
 	out := make([]UserNodeAccount, 0)
 	for rows.Next() {
 		var v UserNodeAccount
-		if err := rows.Scan(&v.NodeID, &v.LocalUsername, &v.BillingUsername, &v.CreatedAt, &v.UpdatedAt); err != nil {
+		var lastLoginAt sql.NullTime
+		var nodeLocalUpdatedAt sql.NullTime
+		if err := rows.Scan(&v.NodeID, &v.LocalUsername, &v.BillingUsername, &lastLoginAt, &nodeLocalUpdatedAt, &v.CreatedAt, &v.UpdatedAt); err != nil {
 			return nil, err
+		}
+		if lastLoginAt.Valid {
+			t := asBeijingWallTime(lastLoginAt.Time)
+			v.NodeLastLoginAt = &t
+		}
+		if nodeLocalUpdatedAt.Valid {
+			t := asBeijingWallTime(nodeLocalUpdatedAt.Time)
+			v.NodeLocalUpdatedAt = &t
 		}
 		out = append(out, v)
 	}
@@ -6606,7 +6625,6 @@ SELECT EXISTS(
 
 func normalizeNodeExclusiveGPUAssignments(assignments []NodeExclusiveGPUAssignment) ([]NodeExclusiveGPUAssignment, error) {
 	perUser := map[string]map[int]struct{}{}
-	ownerByGPU := map[int]string{}
 	for _, item := range assignments {
 		u := strings.TrimSpace(item.LocalUsername)
 		if u == "" {
@@ -6619,10 +6637,6 @@ func normalizeNodeExclusiveGPUAssignments(assignments []NodeExclusiveGPUAssignme
 			if idx < 0 {
 				return nil, fmt.Errorf("gpu_index 不能为负数：user=%s index=%d", u, idx)
 			}
-			if prevOwner, ok := ownerByGPU[idx]; ok && prevOwner != u {
-				return nil, fmt.Errorf("GPU %d 已被用户 %s 占用，不能重复分配给 %s", idx, prevOwner, u)
-			}
-			ownerByGPU[idx] = u
 			perUser[u][idx] = struct{}{}
 		}
 	}
@@ -8609,7 +8623,6 @@ func (s *Store) VerifyAdminPassword(ctx context.Context, username string, passwo
 	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)); err != nil {
 		return false, nil
 	}
-	_, _ = s.db.ExecContext(ctx, `UPDATE admin_accounts SET last_login_at=NOW(), updated_at=NOW() WHERE username=$1`, username)
 	return true, nil
 }
 
@@ -8723,7 +8736,6 @@ WHERE pu.username=$1`, username).Scan(
 		v := int(uidRaw.Int64)
 		out.PlatformUID = &v
 	}
-	_, _ = s.db.ExecContext(ctx, `UPDATE power_users SET last_login_at=NOW(), updated_at=NOW() WHERE username=$1`, username)
 	return out, true, nil
 }
 
@@ -10164,6 +10176,24 @@ WHERE action='register_submit'
 			v := last.Time
 			out.LastIPAt = &v
 		}
+		if out.IPCount >= registerIPLimit {
+			var unlockBase time.Time
+			offset := out.IPCount - registerIPLimit
+			if err := s.db.QueryRowContext(ctx, `
+SELECT created_at
+FROM registration_security_events
+WHERE action='register_submit'
+  AND client_ip=$1
+  AND created_at >= $2
+ORDER BY created_at ASC
+OFFSET $3
+LIMIT 1`, clientIP, ipSince, offset).Scan(&unlockBase); err == nil {
+				v := unlockBase.Add(registerIPWindow)
+				out.IPWindowRetryAt = &v
+			} else if !errors.Is(err, sql.ErrNoRows) {
+				return out, err
+			}
+		}
 	}
 	if email != "" {
 		var last sql.NullTime
@@ -10171,6 +10201,8 @@ WHERE action='register_submit'
 SELECT COUNT(1), MAX(created_at)
 FROM registration_security_events
 WHERE action='register_submit'
+  AND decision='allow'
+  AND reason='verification_mail_sent'
   AND email=$1
   AND created_at >= $2`, email, emailSince).Scan(&out.EmailCount, &last); err != nil {
 			return out, err
@@ -10178,6 +10210,26 @@ WHERE action='register_submit'
 		if last.Valid {
 			v := last.Time
 			out.LastEmailAt = &v
+		}
+		if out.EmailCount >= registerEmailLimit {
+			var unlockBase time.Time
+			offset := out.EmailCount - registerEmailLimit
+			if err := s.db.QueryRowContext(ctx, `
+SELECT created_at
+FROM registration_security_events
+WHERE action='register_submit'
+  AND decision='allow'
+  AND reason='verification_mail_sent'
+  AND email=$1
+  AND created_at >= $2
+ORDER BY created_at ASC
+OFFSET $3
+LIMIT 1`, email, emailSince, offset).Scan(&unlockBase); err == nil {
+				v := unlockBase.Add(registerEmailWindow)
+				out.EmailWindowRetryAt = &v
+			} else if !errors.Is(err, sql.ErrNoRows) {
+				return out, err
+			}
 		}
 	}
 	return out, nil
@@ -10235,32 +10287,91 @@ func (s *Store) ListRegistrationSecurityEvents(
 		limit = registerSecurityDefaultLimit
 	}
 
-	rows, err := s.db.QueryContext(ctx, `
-SELECT event_id, action, decision, reason, client_ip, username, email, student_id, user_agent, created_at
-FROM registration_security_events
+	query := fmt.Sprintf(`
+SELECT
+  e.event_id,
+  e.action,
+  e.decision,
+  e.reason,
+  e.client_ip,
+  e.username,
+  e.email,
+  e.student_id,
+  e.user_agent,
+  CASE
+    WHEN e.reason='cooldown_by_ip' THEN e.created_at + INTERVAL '%d seconds'
+    WHEN e.reason='cooldown_by_email' THEN (
+      SELECT x.created_at + INTERVAL '%d seconds'
+      FROM registration_security_events x
+      WHERE x.action='register_submit'
+        AND x.decision='allow'
+        AND x.reason='verification_mail_sent'
+        AND x.email=e.email
+        AND x.event_id < e.event_id
+      ORDER BY x.event_id DESC
+      LIMIT 1
+    )
+    WHEN e.reason='rate_limited_by_ip_window' THEN (
+      SELECT x.created_at + INTERVAL '%d seconds'
+      FROM registration_security_events x
+      WHERE x.action='register_submit'
+        AND x.client_ip=e.client_ip
+        AND x.created_at <= e.created_at
+        AND x.created_at >= e.created_at - INTERVAL '%d seconds'
+      ORDER BY x.created_at DESC
+      OFFSET %d
+      LIMIT 1
+    )
+    WHEN e.reason='rate_limited_by_email_window' THEN (
+      SELECT x.created_at + INTERVAL '%d seconds'
+      FROM registration_security_events x
+      WHERE x.action='register_submit'
+        AND x.decision='allow'
+        AND x.reason='verification_mail_sent'
+        AND x.email=e.email
+        AND x.created_at <= e.created_at
+        AND x.created_at >= e.created_at - INTERVAL '%d seconds'
+      ORDER BY x.created_at DESC
+      OFFSET %d
+      LIMIT 1
+    )
+    ELSE NULL
+  END AS retry_at,
+  e.created_at
+FROM registration_security_events e
 WHERE (
   $1='' OR
   ($2='all' AND (
-    action ILIKE '%' || $1 || '%' OR
-    decision ILIKE '%' || $1 || '%' OR
-    reason ILIKE '%' || $1 || '%' OR
-    client_ip ILIKE '%' || $1 || '%' OR
-    username ILIKE '%' || $1 || '%' OR
-    email ILIKE '%' || $1 || '%' OR
-    student_id ILIKE '%' || $1 || '%' OR
-    user_agent ILIKE '%' || $1 || '%'
+    e.action ILIKE '%%' || $1 || '%%' OR
+    e.decision ILIKE '%%' || $1 || '%%' OR
+    e.reason ILIKE '%%' || $1 || '%%' OR
+    e.client_ip ILIKE '%%' || $1 || '%%' OR
+    e.username ILIKE '%%' || $1 || '%%' OR
+    e.email ILIKE '%%' || $1 || '%%' OR
+    e.student_id ILIKE '%%' || $1 || '%%' OR
+    e.user_agent ILIKE '%%' || $1 || '%%'
   )) OR
-  ($2='client_ip' AND client_ip ILIKE '%' || $1 || '%') OR
-  ($2='email' AND email ILIKE '%' || $1 || '%') OR
-  ($2='username' AND username ILIKE '%' || $1 || '%') OR
-  ($2='student_id' AND student_id ILIKE '%' || $1 || '%') OR
-  ($2='reason' AND reason ILIKE '%' || $1 || '%') OR
-  ($2='user_agent' AND user_agent ILIKE '%' || $1 || '%')
+  ($2='client_ip' AND e.client_ip ILIKE '%%' || $1 || '%%') OR
+  ($2='email' AND e.email ILIKE '%%' || $1 || '%%') OR
+  ($2='username' AND e.username ILIKE '%%' || $1 || '%%') OR
+  ($2='student_id' AND e.student_id ILIKE '%%' || $1 || '%%') OR
+  ($2='reason' AND e.reason ILIKE '%%' || $1 || '%%') OR
+  ($2='user_agent' AND e.user_agent ILIKE '%%' || $1 || '%%')
 )
-AND ($3='' OR action=$3)
-AND ($4='' OR decision=$4)
-ORDER BY event_id DESC
-LIMIT $5`, keyword, keywordField, action, decision, limit)
+AND ($3='' OR e.action=$3)
+AND ($4='' OR e.decision=$4)
+ORDER BY e.event_id DESC
+LIMIT $5`,
+		int(registerIPCooldown/time.Second),
+		int(registerEmailCooldown/time.Second),
+		int(registerIPWindow/time.Second),
+		int(registerIPWindow/time.Second),
+		registerIPLimit-1,
+		int(registerEmailWindow/time.Second),
+		int(registerEmailWindow/time.Second),
+		registerEmailLimit-1,
+	)
+	rows, err := s.db.QueryContext(ctx, query, keyword, keywordField, action, decision, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -10269,6 +10380,7 @@ LIMIT $5`, keyword, keywordField, action, decision, limit)
 	out := make([]RegistrationSecurityEvent, 0, limit)
 	for rows.Next() {
 		var item RegistrationSecurityEvent
+		var retryAt sql.NullTime
 		if err := rows.Scan(
 			&item.EventID,
 			&item.Action,
@@ -10279,9 +10391,14 @@ LIMIT $5`, keyword, keywordField, action, decision, limit)
 			&item.Email,
 			&item.StudentID,
 			&item.UserAgent,
+			&retryAt,
 			&item.CreatedAt,
 		); err != nil {
 			return nil, err
+		}
+		if retryAt.Valid {
+			v := retryAt.Time
+			item.RetryAt = &v
 		}
 		out = append(out, item)
 	}
@@ -10700,7 +10817,6 @@ func (s *Store) VerifyUserPassword(ctx context.Context, username string, passwor
 	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)); err != nil {
 		return false, nil
 	}
-	_, _ = s.db.ExecContext(ctx, `UPDATE user_accounts SET last_login_at=NOW(), updated_at=NOW() WHERE username=$1`, username)
 	return true, nil
 }
 
@@ -10802,11 +10918,11 @@ func (s *Store) GetUserAccountByUsername(ctx context.Context, username string) (
 	var out UserAccount
 	var platformUID sql.NullInt64
 	err := s.db.QueryRowContext(ctx, `
-SELECT username, email, real_name, student_id, advisor, expected_graduation_year, expected_graduation_month, phone, platform_uid, role, last_login_at, created_at, updated_at
+SELECT username, email, real_name, student_id, advisor, expected_graduation_year, expected_graduation_month, phone, platform_uid, role, COALESCE(two_factor_enabled, FALSE), last_login_at, created_at, updated_at
 FROM user_accounts
 WHERE username=$1`, username).Scan(
 		&out.Username, &out.Email, &out.RealName, &out.StudentID, &out.Advisor, &out.ExpectedGraduationYear, &out.ExpectedGraduationMonth,
-		&out.Phone, &platformUID, &out.Role, &out.LastLoginAt, &out.CreatedAt, &out.UpdatedAt,
+		&out.Phone, &platformUID, &out.Role, &out.TwoFactorEnabled, &out.LastLoginAt, &out.CreatedAt, &out.UpdatedAt,
 	)
 	if platformUID.Valid && platformUID.Int64 > 0 {
 		v := int(platformUID.Int64)
@@ -12506,6 +12622,7 @@ union_users AS (
     FALSE AS can_view_board,
     FALSE AS can_view_nodes,
     FALSE AS can_review_requests,
+    COALESCE(ua.two_factor_enabled, FALSE) AS two_factor_enabled,
     ua.email,
     ua.student_id,
     ua.real_name,
@@ -12524,6 +12641,7 @@ union_users AS (
     TRUE AS can_view_board,
     TRUE AS can_view_nodes,
     TRUE AS can_review_requests,
+    COALESCE(aa.two_factor_enabled, FALSE) AS two_factor_enabled,
     '' AS email,
     '' AS student_id,
     '' AS real_name,
@@ -12541,6 +12659,7 @@ union_users AS (
     pu.can_view_board,
     pu.can_view_nodes,
     pu.can_review_requests,
+    COALESCE(pu.two_factor_enabled, FALSE) AS two_factor_enabled,
     COALESCE(ua.email, '') AS email,
     COALESCE(ua.student_id, '') AS student_id,
     COALESCE(ua.real_name, '') AS real_name,
@@ -12551,7 +12670,7 @@ union_users AS (
   FROM power_users pu
   LEFT JOIN user_accounts ua ON ua.username = pu.username
 )
-SELECT uu.username, uu.platform_uid, uu.role, uu.can_view_board, uu.can_view_nodes, uu.can_review_requests,
+SELECT uu.username, uu.platform_uid, uu.role, uu.can_view_board, uu.can_view_nodes, uu.can_review_requests, uu.two_factor_enabled,
        uu.email, uu.student_id, uu.real_name, uu.advisor, uu.expected_graduation_year, uu.expected_graduation_month, uu.phone,
        COALESCE(u.balance, 0) AS general_balance,
        COALESCE(u.carryover_balance, 0) AS carryover_balance,
@@ -12574,7 +12693,7 @@ LIMIT $1`, limit)
 		var d AdminUserDetail
 		var uidRaw sql.NullInt64
 		if err := rows.Scan(
-			&d.Username, &uidRaw, &d.Role, &d.CanViewBoard, &d.CanViewNodes, &d.CanReviewRequest,
+			&d.Username, &uidRaw, &d.Role, &d.CanViewBoard, &d.CanViewNodes, &d.CanReviewRequest, &d.TwoFactorEnabled,
 			&d.Email, &d.StudentID, &d.RealName, &d.Advisor, &d.ExpectedGradYear, &d.ExpectedGradMonth, &d.Phone,
 			&d.Balance, &d.CarryoverBalance, &d.ExclusiveBalance, &d.TotalBalance, &d.Status, &d.UsageRecords, &d.TotalCost, &d.LastUsageAt,
 		); err != nil {

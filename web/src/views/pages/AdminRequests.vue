@@ -192,6 +192,11 @@
         <el-table-column prop="email" label="邮箱" min-width="220" />
         <el-table-column prop="decision" label="结果" width="90" />
         <el-table-column prop="reason" label="命中原因" min-width="220" />
+        <el-table-column label="可再次申请时间" min-width="190">
+          <template #default="{ row }">
+            <span>{{ registerSecurityRetryText(row) }}</span>
+          </template>
+        </el-table-column>
       </el-table>
 
       <div class="section-inline-title order-disposable-title">
@@ -500,6 +505,12 @@ function client() {
 
 function tableTimeFormatter(_: unknown, __: unknown, cellValue: unknown): string {
   return formatServerDateTime(String(cellValue ?? ""));
+}
+
+function registerSecurityRetryText(row: RegistrationSecurityEvent): string {
+  const retryAt = String(row?.retry_at || "").trim();
+  if (!retryAt) return "-";
+  return formatServerDateTime(retryAt);
 }
 
 function formatConflictFields(fields?: string[]): string {

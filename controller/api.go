@@ -804,12 +804,15 @@ func (s *Server) refreshGPUAccessForBillingUser(ctx context.Context, billingUser
 			blocked = false
 			reason = reasonPrefix + "：节点积分拦截关闭，恢复 GPU 可见性"
 		}
+		targetQueued := false
 		action, ok := s.nextGPUAccessAction(t.NodeID, t.LocalUsername, blocked, reason, true)
-		if !ok {
-			continue
+		if ok {
+			s.enqueueNodeAction(t.NodeID, action)
+			targetQueued = true
 		}
-		s.enqueueNodeAction(t.NodeID, action)
-		queued++
+		if targetQueued {
+			queued++
+		}
 	}
 	return queued, nil
 }
@@ -823,12 +826,26 @@ func (s *Server) queuePointsInterceptDisabledResets(
 	reasonPrefix string,
 ) []Action {
 	nodeID = strings.TrimSpace(nodeID)
-	if nodeID == "" || len(locals) == 0 {
+	if nodeID == "" {
 		return nil
 	}
-	seen := make(map[string]struct{}, len(locals))
-	actions := make([]Action, 0, len(locals)*4)
-	for _, raw := range locals {
+	candidates := make([]string, 0, len(locals)+len(manualCPULimits)+len(manualMemoryLimits)+len(manualGPUVisibility))
+	candidates = append(candidates, locals...)
+	for local := range manualCPULimits {
+		candidates = append(candidates, local)
+	}
+	for local := range manualMemoryLimits {
+		candidates = append(candidates, local)
+	}
+	for local := range manualGPUVisibility {
+		candidates = append(candidates, local)
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(candidates))
+	actions := make([]Action, 0, len(candidates)*4)
+	for _, raw := range candidates {
 		local := strings.TrimSpace(raw)
 		if local == "" || strings.EqualFold(local, "root") {
 			continue
@@ -840,7 +857,11 @@ func (s *Server) queuePointsInterceptDisabledResets(
 		if action, ok := s.nextGPUAccessAction(nodeID, local, false, reasonPrefix+"：节点积分拦截关闭，恢复 GPU 可见性", false); ok {
 			actions = append(actions, action)
 		}
-		if _, hasManualGPU := manualGPUVisibility[local]; !hasManualGPU {
+		if manualGPU, hasManualGPU := manualGPUVisibility[local]; hasManualGPU && len(manualGPU.GPUIndices) > 0 {
+			if action, ok := s.nextGPUVisibilityAction(nodeID, local, manualGPU.GPUIndices, manualGPUVisibilityReason(manualGPU), false); ok {
+				actions = append(actions, action)
+			}
+		} else {
 			if action, ok := s.nextGPUVisibilityAction(nodeID, local, nil, reasonPrefix+"：节点积分拦截关闭，恢复 GPU 全可见", false); ok {
 				actions = append(actions, action)
 			}
@@ -945,6 +966,10 @@ func (s *Server) RouterWeb() *gin.Engine {
 	api.GET("/auth/login/captcha", s.handleAuthLoginCaptcha)
 	api.POST("/auth/login", s.handleAuthLogin)
 	api.POST("/auth/logout", s.handleAuthLogout)
+	api.GET("/auth/2fa", s.authSession(), s.handleAuthTwoFactorStatus)
+	api.POST("/auth/2fa/setup", s.authSession(), s.handleAuthTwoFactorSetupBegin)
+	api.POST("/auth/2fa/enable", s.authSession(), s.handleAuthTwoFactorEnable)
+	api.POST("/auth/2fa/disable", s.authSession(), s.handleAuthTwoFactorDisable)
 	api.POST("/auth/register", s.handleAuthRegister)
 	api.GET("/auth/register/captcha", s.handleAuthRegisterCaptcha)
 	api.GET("/auth/register/check", s.handleAuthRegisterCheck)
@@ -986,6 +1011,8 @@ func (s *Server) RouterWeb() *gin.Engine {
 	admin.GET("/users/deleted", s.requireSuperAdmin(), s.handleAdminDeletedUsers)
 	admin.GET("/users/duplicates", s.requireSuperAdmin(), s.handleAdminUserDuplicates)
 	admin.GET("/users/:username/profile", s.handleAdminUserProfile)
+	admin.POST("/users/:username/2fa/enable", s.requireSuperAdmin(), s.handleAdminUserTwoFactorEnable)
+	admin.POST("/users/:username/2fa/disable", s.requireSuperAdmin(), s.handleAdminUserTwoFactorDisable)
 	admin.POST("/users/:username/block", s.requireSuperAdmin(), s.handleAdminUserBlock)
 	admin.POST("/users/:username/unblock", s.requireSuperAdmin(), s.handleAdminUserUnblock)
 	admin.POST("/users/:username/delete", s.requireSuperAdmin(), s.handleAdminUserDelete)
@@ -1551,7 +1578,10 @@ func (s *Server) handleRecharge(c *gin.Context) {
 	var res BalanceUpdateResult
 	if err := s.store.WithTx(ctx, func(tx *sql.Tx) error {
 		var err error
-		res, err = s.store.RechargeTx(ctx, tx, username, req.Amount, req.Method, now, s.cfg)
+		if req.Amount == 0 {
+			return errors.New("amount 不能为 0")
+		}
+		res, err = s.store.AdjustBalanceTx(ctx, tx, username, req.Amount, req.Method, now, s.cfg)
 		return err
 	}); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -1564,11 +1594,11 @@ func (s *Server) handleRecharge(c *gin.Context) {
 			ctx,
 			username,
 			res.User.Balance+res.User.CarryoverBalance,
-			fmt.Sprintf("管理员充值后重算限速（%s）", username),
+			fmt.Sprintf("管理员积分调整后重算限速（%s）", username),
 		)
 		if err != nil {
 			quotaRefreshError = err.Error()
-			log.Printf("充值后刷新 CPU 限速失败 username=%s err=%v", username, err)
+			log.Printf("积分调整后刷新 CPU 限速失败 username=%s err=%v", username, err)
 		} else {
 			quotaRefreshTargets = n
 		}
@@ -1581,11 +1611,11 @@ func (s *Server) handleRecharge(c *gin.Context) {
 		ctx,
 		username,
 		res.User.Balance+res.User.CarryoverBalance,
-		fmt.Sprintf("管理员充值后同步 GPU 限制（%s）", username),
+		fmt.Sprintf("管理员积分调整后同步 GPU 限制（%s）", username),
 	)
 	if err != nil {
 		gpuRefreshError = err.Error()
-		log.Printf("充值后刷新 GPU 限制失败 username=%s err=%v", username, err)
+		log.Printf("积分调整后刷新 GPU 限制失败 username=%s err=%v", username, err)
 	} else {
 		gpuRefreshTargets = n
 	}
@@ -1593,11 +1623,11 @@ func (s *Server) handleRecharge(c *gin.Context) {
 		ctx,
 		username,
 		res.User.Balance+res.User.CarryoverBalance,
-		fmt.Sprintf("管理员充值后同步内存限额（%s）", username),
+		fmt.Sprintf("管理员积分调整后同步内存限额（%s）", username),
 	)
 	if err != nil {
 		memoryRefreshError = err.Error()
-		log.Printf("充值后刷新内存限额失败 username=%s err=%v", username, err)
+		log.Printf("积分调整后刷新内存限额失败 username=%s err=%v", username, err)
 	} else {
 		memoryRefreshTargets = n
 	}
@@ -1668,6 +1698,7 @@ func (s *Server) handleAdminUserProfile(c *gin.Context) {
 	var platformUID *int
 	var createdAt any = nil
 	var updatedAt any = nil
+	twoFactorEnabled := false
 
 	if err == nil {
 		role = acc.Role
@@ -1681,6 +1712,7 @@ func (s *Server) handleAdminUserProfile(c *gin.Context) {
 		platformUID = acc.PlatformUID
 		createdAt = acc.CreatedAt
 		updatedAt = acc.UpdatedAt
+		twoFactorEnabled = acc.TwoFactorEnabled
 	} else {
 		// 兼容 admin/power_user：这些账号不在 user_accounts 里，也需要可点击查看详情。
 		rows, detailErr := s.store.ListAdminUserDetails(ctx, 5000)
@@ -1703,6 +1735,7 @@ func (s *Server) handleAdminUserProfile(c *gin.Context) {
 			expectedGradMonth = d.ExpectedGradMonth
 			phone = d.Phone
 			platformUID = d.PlatformUID
+			twoFactorEnabled = d.TwoFactorEnabled
 			break
 		}
 		if !found {
@@ -1755,6 +1788,10 @@ func (s *Server) handleAdminUserProfile(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	if err := s.annotateUserNodeAccountsIdentityState(ctx, accounts); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	if getAuthRole(c) == "power_user" {
 		viewer := strings.TrimSpace(c.GetString("auth_user"))
 		if viewer != "" {
@@ -1798,6 +1835,7 @@ func (s *Server) handleAdminUserProfile(c *gin.Context) {
 			"expected_graduation_month": expectedGradMonth,
 			"phone":                     phone,
 			"role":                      role,
+			"two_factor_enabled":        twoFactorEnabled,
 			"balance":                   balance,
 			"general_balance":           balance,
 			"carryover_balance":         carryoverBalance,
@@ -6051,6 +6089,19 @@ func (s *Server) handleAdminNodePointsInterceptSet(c *gin.Context) {
 	}
 	// 策略变更后立即重算并下发 CPU 配额，避免必须等待下一次采集上报才生效。
 	if localUsers, err := s.store.ListNodeLocalUsersWithPlatformMapping(c.Request.Context(), nodeID, 5000); err == nil {
+		nodeManualGPUVisibility := make(map[string]NodeUserGPUVisibility)
+		if limits, err := s.store.ListNodeUserGPUVisibility(c.Request.Context(), nodeID, "", 10000); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		} else {
+			for _, l := range limits {
+				local := strings.TrimSpace(l.LocalUsername)
+				if local == "" {
+					continue
+				}
+				nodeManualGPUVisibility[local] = l
+			}
+		}
 		seen := map[string]struct{}{}
 		for _, u := range localUsers {
 			local := strings.TrimSpace(u.LocalUsername)
@@ -6119,8 +6170,23 @@ func (s *Server) handleAdminNodePointsInterceptSet(c *gin.Context) {
 				memorySyncTargets++
 			}
 			if !req.Enabled {
+				gpuResetQueued := false
 				if action, ok := s.nextGPUAccessAction(nodeID, local, false, fmt.Sprintf("管理员 %s 关闭积分拦截，恢复 GPU 可见性", operator), true); ok {
 					s.enqueueNodeAction(nodeID, action)
+					gpuResetQueued = true
+				}
+				if manualGPU, hasManualGPU := nodeManualGPUVisibility[local]; hasManualGPU && len(manualGPU.GPUIndices) > 0 {
+					if action, ok := s.nextGPUVisibilityAction(nodeID, local, manualGPU.GPUIndices, manualGPUVisibilityReason(manualGPU), true); ok {
+						s.enqueueNodeAction(nodeID, action)
+						gpuResetQueued = true
+					}
+				} else {
+					if action, ok := s.nextGPUVisibilityAction(nodeID, local, nil, fmt.Sprintf("管理员 %s 关闭积分拦截，恢复 GPU 全可见", operator), true); ok {
+						s.enqueueNodeAction(nodeID, action)
+						gpuResetQueued = true
+					}
+				}
+				if gpuResetQueued {
 					gpuResetTargets++
 				}
 			}
@@ -6961,6 +7027,8 @@ func (s *Server) handleAdminNodeGPUVisibilityUpsert(c *gin.Context) {
 		"node_id":        nodeID,
 		"local_username": localUsername,
 		"gpu_count":      node.GPUCount,
+		"applied":        true,
+		"deferred":       false,
 		"row":            row,
 	})
 }
@@ -7279,7 +7347,6 @@ func (s *Server) handleAdminNodeSSHExclusiveSet(c *gin.Context) {
 		allowedUsers[u] = struct{}{}
 	}
 	gpuAssignments := make([]NodeExclusiveGPUAssignment, 0, len(req.GPUAssignments))
-	gpuOwner := map[int]string{}
 	for _, item := range req.GPUAssignments {
 		u := strings.TrimSpace(item.LocalUsername)
 		if u == "" {
@@ -7304,11 +7371,6 @@ func (s *Server) handleAdminNodeSSHExclusiveSet(c *gin.Context) {
 				continue
 			}
 			idxSet[idx] = struct{}{}
-			if prev, ok := gpuOwner[idx]; ok && prev != u {
-				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("GPU %d 已分配给 %s，不能重复分配给 %s", idx, prev, u)})
-				return
-			}
-			gpuOwner[idx] = u
 			idxs = append(idxs, idx)
 		}
 		sort.Ints(idxs)
@@ -9084,17 +9146,19 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 			if action, ok := s.nextGPUAccessAction(data.NodeID, localUsername, gpuBlocked, gpuReason, false); ok {
 				actions = append(actions, action)
 			}
-			if nodePointsBillingEnabled && !overdraftExceeded {
-				if manualGPU, hasManualGPU := nodeManualGPUVisibility[localUsername]; hasManualGPU && len(manualGPU.GPUIndices) > 0 {
-					if gpuVisAction, ok := s.nextGPUVisibilityAction(
-						data.NodeID,
-						localUsername,
-						manualGPU.GPUIndices,
-						manualGPUVisibilityReason(manualGPU),
-						true,
-					); ok {
-						actions = append(actions, gpuVisAction)
-					}
+			if manualGPU, hasManualGPU := nodeManualGPUVisibility[localUsername]; hasManualGPU && len(manualGPU.GPUIndices) > 0 {
+				if gpuVisAction, ok := s.nextGPUVisibilityAction(
+					data.NodeID,
+					localUsername,
+					manualGPU.GPUIndices,
+					manualGPUVisibilityReason(manualGPU),
+					true,
+				); ok {
+					actions = append(actions, gpuVisAction)
+				}
+			} else if !nodePointsBillingEnabled {
+				if action, ok := s.nextGPUVisibilityAction(data.NodeID, localUsername, nil, "SSH 在线账号余额同步：节点积分拦截关闭，恢复 GPU 全可见", false); ok {
+					actions = append(actions, action)
 				}
 			}
 			targetMemoryGB := 0.0

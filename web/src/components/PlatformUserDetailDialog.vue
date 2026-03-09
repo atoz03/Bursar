@@ -31,6 +31,16 @@
       <el-table :data="user.node_accounts || []" stripe max-height="240" empty-text="暂无映射">
         <el-table-column prop="node_id" label="节点编号" width="140" />
         <el-table-column prop="local_username" label="节点账号" width="180" />
+        <el-table-column label="状态" width="220">
+          <template #default="{ row }">
+            <div class="mapping-state-cell">
+              <el-tag v-if="row.identity_aligned" type="success" effect="light">已就绪</el-tag>
+              <el-tag v-else-if="row.identity_initializing" type="warning" effect="light">初始化中</el-tag>
+              <el-tag v-else type="info" effect="light">待同步</el-tag>
+              <div v-if="mappingStateTip(row)" class="mapping-state-tip">{{ mappingStateTip(row) }}</div>
+            </div>
+          </template>
+        </el-table-column>
         <el-table-column prop="updated_at" label="更新时间" min-width="180" :formatter="tableTimeFormatter" />
       </el-table>
     </template>
@@ -39,7 +49,7 @@
 
 <script setup lang="ts">
 import { ref, watch } from "vue";
-import { ApiClient, type PlatformUserDetail } from "../lib/api";
+import { ApiClient, type PlatformUserDetail, type UserNodeAccount } from "../lib/api";
 import { settingsState } from "../lib/settingsStore";
 import { authState } from "../lib/authStore";
 import { formatServerDateTime } from "../lib/time";
@@ -71,6 +81,12 @@ function tableTimeFormatter(_: unknown, __: unknown, cellValue: unknown): string
   return formatServerDateTime(String(cellValue ?? ""));
 }
 
+function mappingStateTip(row: UserNodeAccount): string {
+  if (row.identity_initializing) return "正在同步 UID/GID，完成前无法 SSH 登录";
+  if (!row.identity_aligned) return "节点尚未回传最新 UID/GID 快照，请稍后自动刷新";
+  return "";
+}
+
 async function load() {
   const u = String(props.username || "").trim();
   if (!props.modelValue || !u) return;
@@ -100,5 +116,15 @@ watch(() => [props.modelValue, props.username], () => {
 .title {
   margin: 12px 0 8px;
   font-weight: 700;
+}
+.mapping-state-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mapping-state-tip {
+  font-size: 12px;
+  line-height: 1.4;
+  color: #64748b;
 }
 </style>
