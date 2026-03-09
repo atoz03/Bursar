@@ -47,6 +47,17 @@
               @keyup.enter="doLogin"
             />
           </el-form-item>
+          <el-form-item v-if="showTotpInput" :label="t('双重验证码（已开启 2FA 时必填）', '2FA Code (required when enabled)')">
+            <el-input
+              v-model="totpCode"
+              size="large"
+              maxlength="6"
+              :prefix-icon="Lock"
+              :placeholder="t('请输入 6 位动态验证码', 'Enter the 6-digit authenticator code')"
+              @keyup.enter="doLogin"
+            />
+            <div class="captcha-tip">{{ t("支持微软验证器、数盾等标准 TOTP 应用。未开启 2FA 的账号可留空。", "Supports Microsoft Authenticator and standard TOTP apps. Leave blank if 2FA is not enabled.") }}</div>
+          </el-form-item>
           <el-form-item :label="t('登录验证码', 'Login Captcha')">
             <div class="captcha-wrap">
               <div class="captcha-head">
@@ -75,19 +86,21 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { login, authState } from "../../lib/authStore";
 import { ApiClient } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { pickText, toggleUiLanguage, uiLocaleState } from "../../lib/uiLocale";
-import { Cpu, Key, User } from "@element-plus/icons-vue";
+import { Cpu, Key, Lock, User } from "@element-plus/icons-vue";
 
 const router = useRouter();
 const loading = ref(false);
 const error = ref("");
 const username = ref("");
 const password = ref("");
+const totpCode = ref("");
+const showTotpInput = ref(false);
 const captchaLoading = ref(false);
 const captchaId = ref("");
 const captchaQuestion = ref("");
@@ -126,7 +139,7 @@ async function doLogin() {
   loading.value = true;
   error.value = "";
   try {
-    await login(username.value.trim(), password.value, captchaId.value, Number(captchaOption.value));
+    await login(username.value.trim(), password.value, captchaId.value, Number(captchaOption.value), totpCode.value.trim());
     if (authState.role === "admin") {
       await router.push("/admin/board");
     } else if (authState.role === "power_user") {
@@ -144,11 +157,20 @@ async function doLogin() {
     }
   } catch (e: any) {
     error.value = e?.message ?? String(e);
+    const raw = String(e?.body ?? "").trim();
+    if (raw.includes("totp_required") || raw.includes("totp_invalid")) {
+      showTotpInput.value = true;
+    }
     await loadCaptcha();
   } finally {
     loading.value = false;
   }
 }
+
+watch(username, () => {
+  showTotpInput.value = false;
+  totpCode.value = "";
+});
 
 onMounted(() => {
   loadCaptcha();

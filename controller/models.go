@@ -603,14 +603,17 @@ type RegistrationSecurityEvent struct {
 	Email     string    `json:"email"`
 	StudentID string    `json:"student_id"`
 	UserAgent string    `json:"user_agent"`
+	RetryAt   *time.Time `json:"retry_at,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
 type RegistrationRateStats struct {
-	IPCount     int
-	EmailCount  int
-	LastIPAt    *time.Time
-	LastEmailAt *time.Time
+	IPCount          int
+	EmailCount       int
+	LastIPAt         *time.Time
+	LastEmailAt      *time.Time
+	IPWindowRetryAt  *time.Time
+	EmailWindowRetryAt *time.Time
 }
 
 type DeletedUserAccount struct {
@@ -657,6 +660,7 @@ type UserAccount struct {
 	Phone                   string     `json:"phone"`
 	PlatformUID             *int       `json:"platform_uid,omitempty"`
 	Role                    string     `json:"role"`
+	TwoFactorEnabled        bool       `json:"two_factor_enabled"`
 	LastLoginAt             *time.Time `json:"last_login_at,omitempty"`
 	CreatedAt               time.Time  `json:"created_at"`
 	UpdatedAt               time.Time  `json:"updated_at"`
@@ -754,6 +758,7 @@ type AdminUserDetail struct {
 	CanViewBoard      bool              `json:"can_view_board"`
 	CanViewNodes      bool              `json:"can_view_nodes"`
 	CanReviewRequest  bool              `json:"can_review_requests"`
+	TwoFactorEnabled  bool              `json:"two_factor_enabled"`
 	Email             string            `json:"email"`
 	StudentID         string            `json:"student_id"`
 	RealName          string            `json:"real_name"`

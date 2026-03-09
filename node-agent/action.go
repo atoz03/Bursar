@@ -115,6 +115,33 @@ func collectOwnershipRepairRoots(homeDir string) []string {
 	return normalizeOwnershipRepairRoots(homeDir, nil)
 }
 
+const mntOwnershipScanMaxDepth = 3
+
+func relativePathDepth(root string, path string) int {
+	root = filepath.Clean(strings.TrimSpace(root))
+	path = filepath.Clean(strings.TrimSpace(path))
+	if root == "" || path == "" {
+		return 0
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return 0
+	}
+	rel = filepath.Clean(strings.TrimSpace(rel))
+	if rel == "." || rel == "" {
+		return 0
+	}
+	depth := 0
+	for _, part := range strings.Split(rel, string(os.PathSeparator)) {
+		part = strings.TrimSpace(part)
+		if part == "" || part == "." {
+			continue
+		}
+		depth++
+	}
+	return depth
+}
+
 func lstatOwnership(path string) (int, int, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -156,18 +183,19 @@ func repairOwnershipUnderHome(ctx context.Context, homeDir string, newUID int, n
 	return 1, 0, nil
 }
 
-func collectLegacyOwnershipPaths(root string, oldUID int, oldGID int) ([]string, int, error) {
+func collectLegacyOwnershipTargets(root string, oldUID int, oldGID int) ([]string, []string, int, error) {
 	root = filepath.Clean(strings.TrimSpace(root))
 	if root == "" || root == "." {
-		return nil, 0, nil
+		return nil, nil, 0, nil
 	}
 	if _, err := os.Lstat(root); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, 0, nil
+			return nil, nil, 0, nil
 		}
-		return nil, 1, err
+		return nil, nil, 1, err
 	}
-	paths := make([]string, 0, 32)
+	treeRoots := make([]string, 0, 16)
+	singlePaths := make([]string, 0, 16)
 	failed := 0
 	var firstErr error
 	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
@@ -200,15 +228,34 @@ func collectLegacyOwnershipPaths(root string, oldUID int, oldGID int) ([]string,
 			}
 			return nil
 		}
-		if int(st.Uid) == oldUID || int(st.Gid) == oldGID {
-			paths = append(paths, path)
+		depth := relativePathDepth(root, path)
+		if d != nil && d.IsDir() && depth >= mntOwnershipScanMaxDepth {
+			// /mnt 只扫描到 /mnt/disk1/zhangsan/zhah 这一层；更深层交给命中的上层目录 chown -R。
+			if int(st.Uid) == oldUID || int(st.Gid) == oldGID {
+				if path != root {
+					treeRoots = append(treeRoots, path)
+				} else {
+					singlePaths = append(singlePaths, path)
+				}
+			}
+			return filepath.SkipDir
 		}
+		// 修复目标严格按旧 UID/GID 命中，不按用户名推断路径。
+		if int(st.Uid) != oldUID && int(st.Gid) != oldGID {
+			return nil
+		}
+		// 命中目录时直接把该目录作为 repair root，后续由 chown -R 处理整棵子树。
+		if d != nil && d.IsDir() && path != root {
+			treeRoots = append(treeRoots, path)
+			return filepath.SkipDir
+		}
+		singlePaths = append(singlePaths, path)
 		return nil
 	})
 	if walkErr != nil && firstErr == nil {
 		firstErr = walkErr
 	}
-	return paths, failed, firstErr
+	return treeRoots, singlePaths, failed, firstErr
 }
 
 func chownPaths(paths []string, newUID int, newGID int) (int, int, error) {
@@ -232,6 +279,27 @@ func chownPaths(paths []string, newUID int, newGID int) (int, int, error) {
 	return changed, failed, firstErr
 }
 
+func chownTrees(ctx context.Context, roots []string, newUID int, newGID int) (int, int, error) {
+	changed := 0
+	failed := 0
+	var firstErr error
+	for _, root := range roots {
+		root = filepath.Clean(strings.TrimSpace(root))
+		if root == "" || root == "." || root == "/" {
+			continue
+		}
+		if err := chownTree(ctx, root, newUID, newGID); err != nil {
+			failed++
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		changed++
+	}
+	return changed, failed, firstErr
+}
+
 func repairOwnershipUnderMnt(ctx context.Context, oldUID int, oldGID int, newUID int, newGID int) (int, int, error) {
 	root := "/mnt"
 	if _, err := os.Lstat(root); err != nil {
@@ -240,16 +308,20 @@ func repairOwnershipUnderMnt(ctx context.Context, oldUID int, oldGID int, newUID
 		}
 		return 0, 0, err
 	}
-	_ = ctx
-	paths, scanFailed, scanErr := collectLegacyOwnershipPaths(root, oldUID, oldGID)
-	changed, chownFailed, chownErr := chownPaths(paths, newUID, newGID)
+	treeRoots, singlePaths, scanFailed, scanErr := collectLegacyOwnershipTargets(root, oldUID, oldGID)
+	treeChanged, treeFailed, treeErr := chownTrees(ctx, treeRoots, newUID, newGID)
+	pathChanged, pathFailed, pathErr := chownPaths(singlePaths, newUID, newGID)
+	changed := treeChanged + pathChanged
 	if scanErr != nil {
-		return changed, scanFailed + chownFailed, scanErr
+		return changed, scanFailed + treeFailed + pathFailed, scanErr
 	}
-	if chownErr != nil {
-		return changed, scanFailed + chownFailed, chownErr
+	if treeErr != nil {
+		return changed, scanFailed + treeFailed + pathFailed, treeErr
 	}
-	return changed, scanFailed + chownFailed, nil
+	if pathErr != nil {
+		return changed, scanFailed + treeFailed + pathFailed, pathErr
+	}
+	return changed, scanFailed + treeFailed + pathFailed, nil
 }
 
 func repairOwnershipAfterIdentityChange(ctx context.Context, homeDir string, oldUID int, oldGID int, newUID int, newGID int) (int, int, error) {

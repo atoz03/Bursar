@@ -70,6 +70,8 @@
         </el-form-item>
       </el-form>
 
+      <TwoFactorSettingsCard />
+
       <el-divider class="user-fun-divider" />
       <h3 class="record-title">关键信息变更申请记录</h3>
       <el-table :data="requests" stripe>
@@ -94,6 +96,7 @@ import { ApiClient, type ProfileChangeRequest } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
 import { formatServerDateTime, getServerCurrentYear } from "../../lib/time";
+import TwoFactorSettingsCard from "../../components/TwoFactorSettingsCard.vue";
 
 function toYYYYMM(year: number, month: number): string {
   return `${year}-${String(month).padStart(2, "0")}`;

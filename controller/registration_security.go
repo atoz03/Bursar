@@ -9,6 +9,7 @@ import (
 	"net/mail"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -21,6 +22,8 @@ const (
 	registerIPCooldown           = 8 * time.Second
 	registerEmailCooldown        = 90 * time.Second
 	registerSecurityDefaultLimit = 500
+	registerUsernamePrefixMinLen = 2
+	registerUsernamePrefixMaxLen = 8
 )
 
 var (
@@ -66,6 +69,33 @@ func normalizeRegisterEmail(rawEmail string, studentIDUpper string) (string, str
 		return "", "", errors.New("邮箱格式不合法")
 	}
 	return normalized, domain, nil
+}
+
+func validateRegisterUsername(username string, studentIDUpper string) error {
+	username = strings.TrimSpace(username)
+	studentIDUpper = normalizeStudentID(studentIDUpper)
+	if username == "" {
+		return errors.New("用户名不能为空")
+	}
+	if studentIDUpper == "" {
+		return errors.New("请先填写学号，再按“姓名缩写+学号”格式填写用户名")
+	}
+	if utf8.RuneCountInString(username) > 18 {
+		return errors.New("用户名不得超过 18 个字符")
+	}
+	if !strings.HasSuffix(username, studentIDUpper) {
+		return fmt.Errorf("用户名必须以学号 %s 结尾，例如 zs%s", studentIDUpper, studentIDUpper)
+	}
+	prefix := strings.TrimSuffix(username, studentIDUpper)
+	if len(prefix) < registerUsernamePrefixMinLen || len(prefix) > registerUsernamePrefixMaxLen {
+		return fmt.Errorf("用户名必须写成“姓名缩写+学号”，前缀需为 %d-%d 个小写字母，例如 zs%s", registerUsernamePrefixMinLen, registerUsernamePrefixMaxLen, studentIDUpper)
+	}
+	for _, r := range prefix {
+		if r < 'a' || r > 'z' {
+			return fmt.Errorf("用户名必须写成“姓名缩写+学号”，前缀只能使用小写英文字母，例如 zs%s", studentIDUpper)
+		}
+	}
+	return nil
 }
 
 func trimmedClientIP(ip string) string {

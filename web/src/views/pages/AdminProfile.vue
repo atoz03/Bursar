@@ -32,6 +32,8 @@
         <el-button :loading="loading" type="primary" @click="save">保存</el-button>
       </el-form-item>
     </el-form>
+
+    <TwoFactorSettingsCard />
   </el-card>
 </template>
 
@@ -41,6 +43,7 @@ import { ApiClient } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
 import { UserFilled } from "@element-plus/icons-vue";
+import TwoFactorSettingsCard from "../../components/TwoFactorSettingsCard.vue";
 
 const loading = ref(false);
 const error = ref("");

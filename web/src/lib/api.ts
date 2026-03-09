@@ -19,6 +19,8 @@ function normalizeServerError(status: number, bodyText: string): ApiError {
     unauthorized: "未授权，请重新登录后重试",
     csrf_required: "登录状态已过期，请刷新页面后重试",
     invalid_credentials: "用户名或密码错误",
+    totp_required: "该账号已启用双重验证，请输入 6 位动态验证码",
+    totp_invalid: "双重验证码错误，请重试",
     pending_review: "管理员正在审核该账号，请耐心等待审核结果",
     pending_email_verification: "该账号尚未完成邮箱验证，请先前往邮箱点击验证链接",
     blacklisted_account: "该账号已进入黑名单，无法登录",
@@ -38,6 +40,7 @@ export type AuthMeResp = {
   authenticated: boolean;
   username?: string;
   role?: string;
+  two_factor_enabled?: boolean;
   can_view_board?: boolean;
   can_view_nodes?: boolean;
   can_manage_nodes?: boolean;
@@ -76,6 +79,25 @@ export type AdminProfile = {
   phone: string;
   created_at: string;
   updated_at: string;
+};
+
+export type TwoFactorState = {
+  username: string;
+  role: string;
+  enabled: boolean;
+  pending_setup: boolean;
+  issuer: string;
+  account_name: string;
+};
+
+export type TwoFactorSetup = {
+  username: string;
+  role: string;
+  enabled: boolean;
+  issuer: string;
+  account_name: string;
+  secret: string;
+  otpauth_url: string;
 };
 
 export type BalanceResp = {
@@ -756,6 +778,7 @@ export type RegistrationSecurityEvent = {
   email: string;
   student_id: string;
   user_agent: string;
+  retry_at?: string;
   created_at: string;
 };
 
@@ -786,6 +809,7 @@ export type AdminUserDetail = {
   can_view_board: boolean;
   can_view_nodes: boolean;
   can_review_requests: boolean;
+  two_factor_enabled?: boolean;
   email: string;
   student_id: string;
   real_name: string;
@@ -815,6 +839,7 @@ export type PlatformUserDetail = {
   expected_graduation_month: number;
   phone: string;
   role: string;
+  two_factor_enabled?: boolean;
   balance: number;
   general_balance?: number;
   carryover_balance?: number;
@@ -1156,10 +1181,11 @@ export class ApiClient {
     return await this.getJson("/api/auth/me");
   }
 
-  async authLogin(username: string, password: string, captchaID: string, captchaOption: number): Promise<{ ok: boolean }> {
+  async authLogin(username: string, password: string, captchaID: string, captchaOption: number, totpCode = ""): Promise<{ ok: boolean }> {
     return await this.postJson("/api/auth/login", {
       username,
       password,
+      totp_code: totpCode,
       captcha_id: captchaID,
       captcha_option: captchaOption,
     });
@@ -1211,6 +1237,22 @@ export class ApiClient {
       current_password: currentPassword,
       new_password: newPassword,
     });
+  }
+
+  async auth2faStatus(): Promise<TwoFactorState> {
+    return await this.getJson("/api/auth/2fa");
+  }
+
+  async auth2faSetup(): Promise<TwoFactorSetup> {
+    return await this.postJson("/api/auth/2fa/setup", {});
+  }
+
+  async auth2faEnable(code: string): Promise<{ ok: boolean; state?: TwoFactorState }> {
+    return await this.postJson("/api/auth/2fa/enable", { code });
+  }
+
+  async auth2faDisable(password: string, code: string): Promise<{ ok: boolean }> {
+    return await this.postJson("/api/auth/2fa/disable", { password, code });
   }
 
   async authLogout(): Promise<{ ok: boolean }> {
@@ -1411,6 +1453,14 @@ export class ApiClient {
     return await this.getJson(`/api/admin/users/${encodeURIComponent(username)}/profile`, this.adminHeaders());
   }
 
+  async adminUserTwoFactorEnable(username: string, role: string): Promise<{ ok: boolean; setup: TwoFactorSetup }> {
+    return await this.postJson(`/api/admin/users/${encodeURIComponent(username)}/2fa/enable`, { role }, this.adminHeaders());
+  }
+
+  async adminUserTwoFactorDisable(username: string, role: string): Promise<{ ok: boolean }> {
+    return await this.postJson(`/api/admin/users/${encodeURIComponent(username)}/2fa/disable`, { role }, this.adminHeaders());
+  }
+
   async adminPlatformUserDetail(username: string): Promise<{ user: PlatformUserDetail }> {
     const u = String(username || "").trim();
     if (!u) throw { message: "username 不能为空", status: 400 } as ApiError;
@@ -1437,6 +1487,7 @@ export class ApiClient {
         expected_graduation_month: row.expected_graduation_month,
         phone: row.phone,
         role: row.role,
+        two_factor_enabled: row.two_factor_enabled,
         balance: row.balance,
         status: row.status,
         node_accounts: row.node_accounts ?? [],

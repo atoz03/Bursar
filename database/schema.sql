@@ -227,7 +227,7 @@ CREATE TABLE IF NOT EXISTS node_exclusive_gpu_users (
     gpu_index INTEGER NOT NULL CHECK (gpu_index >= 0),
     updated_by VARCHAR(50) NOT NULL DEFAULT 'admin',
     updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (node_id, gpu_index)
+    PRIMARY KEY (node_id, local_username, gpu_index)
 );
 CREATE INDEX IF NOT EXISTS idx_node_exclusive_gpu_users_node_user
     ON node_exclusive_gpu_users(node_id, local_username);
@@ -248,6 +248,9 @@ CREATE TABLE IF NOT EXISTS admin_accounts (
     password_hash TEXT NOT NULL,
     platform_uid INT NULL,
     last_login_at TIMESTAMP NULL,
+    two_factor_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    two_factor_secret TEXT NOT NULL DEFAULT '',
+    two_factor_pending_secret TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
@@ -267,6 +270,9 @@ CREATE TABLE IF NOT EXISTS power_users (
     created_by VARCHAR(50) NOT NULL DEFAULT 'admin',
     updated_by VARCHAR(50) NOT NULL DEFAULT 'admin',
     last_login_at TIMESTAMP NULL,
+    two_factor_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    two_factor_secret TEXT NOT NULL DEFAULT '',
+    two_factor_pending_secret TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
@@ -491,6 +497,9 @@ CREATE TABLE IF NOT EXISTS user_accounts (
     platform_uid INT NULL,
     role VARCHAR(20) NOT NULL DEFAULT 'user',
     last_login_at TIMESTAMP NULL,
+    two_factor_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    two_factor_secret TEXT NOT NULL DEFAULT '',
+    two_factor_pending_secret TEXT NOT NULL DEFAULT '',
     reset_token_hash TEXT NULL,
     reset_token_expire_at TIMESTAMP NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),

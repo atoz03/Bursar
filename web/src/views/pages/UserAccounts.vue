@@ -159,12 +159,12 @@
             <div class="head">
               <div>
                 <strong>当前 challenge 窗口</strong>
-                <div class="mini">请在节点上用目标账号登录后执行以下命令（5 分钟内有效）。</div>
+                <div class="mini">系统已临时开放该账号的 SSH，请在当前 challenge 时限内登录节点并执行以下命令。</div>
               </div>
             </div>
           </template>
           <el-alert
-            title="挑战窗口剩余时间结束后立即关闭：请立刻ssh登录到该节点执行 gpuops-claim 命令，超时会失效并进入冷却。"
+            title="点击确认后，该账号只会短暂开放 SSH。请在当前 challenge 时限内完成 gpuops-claim；命令执行后 SSH 会再次关闭，待账号初始化完成后即可正常使用。"
             type="info"
             :closable="false"
             show-icon
@@ -265,10 +265,13 @@
               <span class="blue-keyword">禁止写入</span>。
             </p>
             <p class="quota-tip-line">
-              建议将大文件转入 <span class="blue-keyword">/mnt/disk{x}/{用户名}</span> 或
+              建议将大文件优先放到 <span class="blue-keyword">/mnt/{你的磁盘目录}/{用户名}</span> 或
               <span class="blue-keyword">/shared/node/{用户名}</span>、
               <span class="blue-keyword">/shared/cluster/{用户名}</span>，再通过
               <span class="blue-keyword">软链接</span> 使用。
+            </p>
+            <p class="quota-tip-line quota-tip-subline">
+              <span class="blue-keyword">/mnt</span> 下通常是节点本地硬盘，速度更快，且无需经过网络传输；能放本地大文件时，优先使用这里。
             </p>
             <p class="quota-tip-line quota-tip-subline">
               <span class="blue-keyword">/shared/cluster</span> 是所有节点共享的 NFS，
@@ -877,7 +880,7 @@ async function add() {
     }
     try {
       await ElMessageBox.confirm(
-        `请确认是否绑定节点 ${node} 的账号 ${local}。\n\n继续前请先确认：\n1. 你现在就能 SSH 登录这个节点账号；\n2. 点击后会立即进入 5 分钟 challenge 窗口；\n3. 你需要在时限内登录节点并执行 gpuops-claim。\n\n确认无误后再继续。`,
+        `请确认是否绑定节点 ${node} 的账号 ${local}。\n\n点击确认后：\n1. 系统会临时短暂开放这个节点账号的 SSH 登录；\n2. 你需要在当前 challenge 时限内登录节点并执行 gpuops-claim；\n3. 命令执行后，该账号的 SSH 会再次关闭；\n4. 等待账号初始化完成后，才可以正常使用该节点账号。\n\n确认无误后再继续。`,
         "发起 challenge 前确认",
         {
           type: "warning",
@@ -890,7 +893,7 @@ async function add() {
     }
     const r = await client().userUpsertAccount(node, local, "用户页面发起 challenge 绑定");
     activeChallenge.value = r.challenge || null;
-    success.value = `challenge 已创建：请在 5 分钟内登录节点 ${node} 的账号 ${local}，执行 gpuops-claim 完成校验`;
+    success.value = `challenge 已创建：系统已临时开放节点 ${node} 的账号 ${local} 的 SSH，请在当前 challenge 时限内登录并执行 gpuops-claim；完成后 SSH 会再次关闭，待账号初始化完成后即可正常使用`;
     nodeId.value = "";
     localUsername.value = "";
     await reload();

@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 )
@@ -22,6 +21,7 @@ const sessionCookieName = "gpuops_session"
 type loginReq struct {
 	Username      string `json:"username"`
 	Password      string `json:"password"`
+	TOTPCode      string `json:"totp_code"`
 	CaptchaID     string `json:"captcha_id"`
 	CaptchaOption int    `json:"captcha_option"`
 }
@@ -99,10 +99,16 @@ func (s *Server) handleAuthMe(c *gin.Context) {
 		writeWithServerTime(http.StatusOK, gin.H{"authenticated": false})
 		return
 	}
+	twoFactorState, err := s.store.GetAccountTwoFactorState(c.Request.Context(), p.Username, role)
+	if err != nil {
+		writeWithServerTime(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	writeWithServerTime(http.StatusOK, gin.H{
 		"authenticated":       true,
 		"username":            p.Username,
 		"role":                role,
+		"two_factor_enabled":  twoFactorState.Enabled,
 		"can_view_board":      (perms & permViewBoard) != 0,
 		"can_view_nodes":      (perms & permViewNodes) != 0,
 		"can_manage_nodes":    (perms & permManageNodes) != 0,
@@ -110,6 +116,28 @@ func (s *Server) handleAuthMe(c *gin.Context) {
 		"can_review_requests": (perms & permReviewRequests) != 0,
 		"expires_at":          formatRFC3339InBeijing(time.Unix(p.ExpUnix, 0)),
 		"csrf_token":          p.Nonce,
+	})
+}
+
+func registerRetryAfterSeconds(d time.Duration) int {
+	if d <= 0 {
+		return 1
+	}
+	sec := int(d / time.Second)
+	if d%time.Second != 0 {
+		sec++
+	}
+	if sec < 1 {
+		sec = 1
+	}
+	return sec
+}
+
+func writeRegisterRateLimited(c *gin.Context, errMsg string, retryAt time.Time, now time.Time) {
+	c.JSON(http.StatusTooManyRequests, gin.H{
+		"error":               errMsg,
+		"retry_after_seconds": registerRetryAfterSeconds(retryAt.Sub(now)),
+		"retry_at":            formatRFC3339InBeijing(retryAt),
 	})
 }
 
@@ -154,6 +182,7 @@ func (s *Server) handleAuthLogin(c *gin.Context) {
 	}
 	role := "admin"
 	perms := uint32(permViewBoard | permViewNodes | permManageNodes | permReviewRequests | permManagePoints)
+	var twoFactorState authAccountTwoFactorState
 	if !ok {
 		power, okPower, err := s.store.VerifyPowerUserPassword(c.Request.Context(), req.Username, req.Password)
 		if err != nil {
@@ -178,6 +207,11 @@ func (s *Server) handleAuthLogin(c *gin.Context) {
 			if power.CanReviewRequests {
 				perms |= permReviewRequests
 			}
+			twoFactorState, err = s.store.getAuthAccountTwoFactorState(c.Request.Context(), req.Username, role)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
 		} else {
 			hint, hintErr := s.store.LoginHintByUsername(c.Request.Context(), req.Username)
 			if hintErr != nil {
@@ -199,7 +233,38 @@ func (s *Server) handleAuthLogin(c *gin.Context) {
 			}
 			role = "user"
 			perms = 0
+			twoFactorState, err = s.store.getAuthAccountTwoFactorState(c.Request.Context(), req.Username, role)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
 		}
+	} else {
+		twoFactorState, err = s.store.getAuthAccountTwoFactorState(c.Request.Context(), req.Username, role)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
+
+	if twoFactorState.Enabled {
+		if strings.TrimSpace(req.TOTPCode) == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "totp_required"})
+			return
+		}
+		if strings.TrimSpace(twoFactorState.Secret) == "" {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "账号 2FA 配置异常，请联系管理员"})
+			return
+		}
+		if !verifyTOTPCode(twoFactorState.Secret, req.TOTPCode, now) {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "totp_invalid"})
+			return
+		}
+	}
+
+	if err := s.store.RecordSuccessfulLogin(c.Request.Context(), req.Username, role, now); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
 
 	secret := strings.TrimSpace(s.cfg.AuthSecret)
@@ -268,9 +333,9 @@ func (s *Server) handleAuthRegister(c *gin.Context) {
 		return
 	}
 	req.Email = normalizedEmail
-	if utf8.RuneCountInString(req.Username) > 18 {
-		recordEvent("deny", "username_too_long")
-		c.JSON(http.StatusBadRequest, gin.H{"error": "用户名不得超过 18 个字符"})
+	if err := validateRegisterUsername(req.Username, req.StudentID); err != nil {
+		recordEvent("deny", "invalid_username_rule")
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	if err := validateStrongPassword(req.Password); err != nil {
@@ -292,22 +357,38 @@ func (s *Server) handleAuthRegister(c *gin.Context) {
 	}
 	if stats.IPCount >= registerIPLimit {
 		recordEvent("deny", "rate_limited_by_ip_window")
-		c.JSON(http.StatusTooManyRequests, gin.H{"error": "请求过于频繁，请稍后再试"})
+		retryAt := now.Add(registerIPWindow)
+		if stats.IPWindowRetryAt != nil && stats.IPWindowRetryAt.After(now) {
+			retryAt = *stats.IPWindowRetryAt
+		}
+		writeRegisterRateLimited(c, "请求过于频繁，请稍后再试", retryAt, now)
 		return
 	}
 	if stats.EmailCount >= registerEmailLimit {
 		recordEvent("deny", "rate_limited_by_email_window")
-		c.JSON(http.StatusTooManyRequests, gin.H{"error": "该邮箱请求过于频繁，请稍后再试"})
+		retryAt := now.Add(registerEmailWindow)
+		if stats.EmailWindowRetryAt != nil && stats.EmailWindowRetryAt.After(now) {
+			retryAt = *stats.EmailWindowRetryAt
+		}
+		writeRegisterRateLimited(c, "该邮箱请求过于频繁，请稍后再试", retryAt, now)
 		return
 	}
 	if stats.LastIPAt != nil && now.Sub(*stats.LastIPAt) < registerIPCooldown {
 		recordEvent("deny", "cooldown_by_ip")
-		c.JSON(http.StatusTooManyRequests, gin.H{"error": "请求过于频繁，请稍后再试"})
+		retryAt := stats.LastIPAt.Add(registerIPCooldown)
+		if !retryAt.After(now) {
+			retryAt = now.Add(time.Second)
+		}
+		writeRegisterRateLimited(c, "请求过于频繁，请稍后再试", retryAt, now)
 		return
 	}
 	if stats.LastEmailAt != nil && now.Sub(*stats.LastEmailAt) < registerEmailCooldown {
 		recordEvent("deny", "cooldown_by_email")
-		c.JSON(http.StatusTooManyRequests, gin.H{"error": "该邮箱请求过于频繁，请稍后再试"})
+		retryAt := stats.LastEmailAt.Add(registerEmailCooldown)
+		if !retryAt.After(now) {
+			retryAt = now.Add(time.Second)
+		}
+		writeRegisterRateLimited(c, "该邮箱请求过于频繁，请稍后再试", retryAt, now)
 		return
 	}
 	blocked, err := s.store.IsDisposableEmailDomainBlocked(c.Request.Context(), emailDomain)
@@ -395,8 +476,10 @@ func (s *Server) handleAuthRegisterCheck(c *gin.Context) {
 	email := strings.TrimSpace(c.Query("email"))
 	studentID := normalizeStudentID(c.Query("student_id"))
 	localErrs := map[string]string{}
-	if utf8.RuneCountInString(username) > 18 {
-		localErrs["username"] = "用户名不得超过 18 个字符"
+	if username != "" {
+		if err := validateRegisterUsername(username, studentID); err != nil {
+			localErrs["username"] = err.Error()
+		}
 	}
 	if email != "" {
 		if studentID == "" {

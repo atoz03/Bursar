@@ -22,16 +22,37 @@
         <span class="section-icon tone-list"><el-icon><List /></el-icon></span>
         <div>
           <div class="title">平台账号列表</div>
-          <div class="sub">支持筛选、加分、拉黑/解黑、删除和重复身份排查。</div>
+          <div class="sub">支持字段筛选、排序、改分、拉黑/解黑、删除和重复身份排查。</div>
         </div>
       </div>
       <el-form inline>
+        <el-form-item label="匹配字段">
+          <el-select v-model="keywordField" style="width: 170px">
+            <el-option label="全字段" value="all" />
+            <el-option label="平台账号" value="username" />
+            <el-option label="平台UID" value="platform_uid" />
+            <el-option label="真实姓名" value="real_name" />
+            <el-option label="学号" value="student_id" />
+            <el-option label="导师" value="advisor" />
+            <el-option label="邮箱" value="email" />
+            <el-option label="手机号" value="phone" />
+            <el-option label="角色" value="role" />
+            <el-option label="状态" value="status" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="平台账号查询">
-          <el-input v-model="keyword" placeholder="输入平台账号过滤" clearable />
+          <el-input v-model="keyword" :placeholder="keywordPlaceholder" clearable />
         </el-form-item>
       </el-form>
+      <el-alert
+        title="筛选排序说明：未筛选时管理员始终置顶；输入筛选条件后，管理员不参与条件筛选。排序仅作用于当前匹配结果。"
+        type="info"
+        :closable="false"
+        show-icon
+        class="mb"
+      />
 
-      <el-table :data="filteredRows" stripe height="520" empty-text="暂无数据">
+      <el-table :data="filteredRows" stripe height="520" empty-text="暂无数据" @sort-change="onAdminUserSortChange">
         <el-table-column type="expand">
           <template #default="{ row }">
             <div class="expand-wrap">
@@ -51,7 +72,7 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="平台账号" width="160">
+        <el-table-column prop="username" label="平台账号" width="160" sortable="custom">
           <template #default="{ row }">
             <span class="username-cell">
               <button type="button" class="username-link" @click="openProfile(row.username)">{{ row.username }}</button>
@@ -61,30 +82,37 @@
             </span>
           </template>
         </el-table-column>
-        <el-table-column label="平台UID" width="110">
+        <el-table-column prop="platform_uid" label="平台UID" width="110" sortable="custom">
           <template #default="{ row }">{{ row.platform_uid ?? "-" }}</template>
         </el-table-column>
-        <el-table-column prop="real_name" label="真实姓名" width="120" />
-        <el-table-column label="账号类型" width="110">
+        <el-table-column prop="real_name" label="真实姓名" width="120" sortable="custom" />
+        <el-table-column prop="role" label="账号类型" width="110" sortable="custom">
           <template #default="{ row }">
             {{ roleText(row.role) }}
           </template>
         </el-table-column>
-        <el-table-column prop="student_id" label="学号" width="160" />
-        <el-table-column prop="email" label="邮箱" min-width="220" />
-        <el-table-column label="预计毕业" width="120">
+        <el-table-column prop="two_factor_enabled" label="2FA" width="100" sortable="custom">
+          <template #default="{ row }">
+            <el-tag size="small" :type="row.two_factor_enabled ? 'success' : 'info'">
+              {{ row.two_factor_enabled ? "已开启" : "未开启" }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="student_id" label="学号" width="160" sortable="custom" />
+        <el-table-column prop="email" label="邮箱" min-width="220" sortable="custom" />
+        <el-table-column prop="expected_graduation_year" label="预计毕业" width="120" sortable="custom">
           <template #default="{ row }">{{ fmtGrad(row.expected_graduation_year, row.expected_graduation_month) }}</template>
         </el-table-column>
-        <el-table-column label="积分余额" width="120">
+        <el-table-column prop="balance" label="积分余额" width="120" sortable="custom">
           <template #default="{ row }">{{ fmt2(row.balance) }}</template>
         </el-table-column>
-        <el-table-column label="状态" width="100">
+        <el-table-column prop="status" label="状态" width="100" sortable="custom">
           <template #default="{ row }">{{ effectiveStatus(row) }}</template>
         </el-table-column>
         <el-table-column label="操作" width="420" fixed="right">
           <template #default="{ row }">
             <el-space>
-              <el-button size="small" :disabled="row.role !== 'user'" @click="openRecharge(row)">加分</el-button>
+              <el-button size="small" :disabled="row.role !== 'user'" @click="openRecharge(row)">改分</el-button>
               <el-button v-if="!isBlack(row)" size="small" type="danger" :disabled="row.role !== 'user'" @click="blockUser(row)">拉黑</el-button>
               <el-button v-else size="small" type="success" :disabled="row.role !== 'user'" @click="unblockUser(row)">解黑</el-button>
               <el-button size="small" type="warning" :disabled="row.role !== 'user'" @click="deleteUser(row)">删除</el-button>
@@ -186,8 +214,9 @@
           <div v-if="rechargeBalanceLoading" class="sub">正在同步最新积分...</div>
           <div v-if="rechargeBalanceError" class="sub recharge-balance-error">{{ rechargeBalanceError }}</div>
         </el-form-item>
-        <el-form-item label="积分">
-          <el-input-number v-model="rechargeAmount" :min="0.01" :max="100000" :step="10" />
+        <el-form-item label="调整值">
+          <el-input-number v-model="rechargeAmount" :min="-100000" :max="100000" :step="10" />
+          <div class="sub">正数表示加分，负数表示扣分</div>
         </el-form-item>
         <el-form-item label="方式">
           <el-input v-model="rechargeMethod" placeholder="admin/wechat/alipay" />
@@ -223,8 +252,23 @@
         <el-descriptions-item label="总可用积分">{{ fmt2(profileData.total_balance ?? ((profileData.general_balance ?? profileData.balance) + (profileData.carryover_balance ?? 0) + (profileData.exclusive_balance ?? 0))) }}</el-descriptions-item>
         <el-descriptions-item label="状态">{{ profileData.status || "-" }}</el-descriptions-item>
         <el-descriptions-item label="角色">{{ profileData.role || "-" }}</el-descriptions-item>
+        <el-descriptions-item label="2FA 状态">
+          <el-tag :type="profileData.two_factor_enabled ? 'success' : 'info'">{{ profileData.two_factor_enabled ? "已开启" : "未开启" }}</el-tag>
+        </el-descriptions-item>
       </el-descriptions>
       <template v-if="profileData">
+        <div class="section-title-wrap mt10">
+          <span class="section-icon tone-profile"><el-icon><UserFilled /></el-icon></span>
+          <div class="title">账号安全</div>
+        </div>
+        <el-alert
+          :title="profileData.two_factor_enabled ? '该账号当前已启用 2FA。登录时必须同时校验密码、登录验证码和动态码。' : '该账号当前未启用 2FA。如需开启，请由用户本人登录后自行配置。'"
+          :type="profileData.two_factor_enabled ? 'success' : 'warning'"
+          show-icon
+          :closable="false"
+          class="mb"
+        />
+
         <div class="section-title-wrap mt10">
           <span class="section-icon tone-map"><el-icon><Connection /></el-icon></span>
           <div class="title">节点账号映射</div>
@@ -232,6 +276,16 @@
         <el-table :data="profileData.node_accounts || []" stripe max-height="220" empty-text="暂无映射">
           <el-table-column prop="node_id" label="节点编号" width="140" />
           <el-table-column prop="local_username" label="节点账号" width="160" />
+          <el-table-column label="状态" width="220">
+            <template #default="{ row }">
+              <div class="mapping-state-cell">
+                <el-tag v-if="row.identity_aligned" type="success" effect="light">已就绪</el-tag>
+                <el-tag v-else-if="row.identity_initializing" type="warning" effect="light">初始化中</el-tag>
+                <el-tag v-else type="info" effect="light">待同步</el-tag>
+                <div v-if="mappingStateTip(row)" class="mapping-state-tip">{{ mappingStateTip(row) }}</div>
+              </div>
+            </template>
+          </el-table-column>
           <el-table-column label="更新时间" min-width="180">
             <template #default="{ row }">{{ fmtTime(row.updated_at) }}</template>
           </el-table-column>
@@ -345,7 +399,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { ApiClient, type AdminUserDetail, type DeletedUserAccount, type GraduationDueUser, type UserNodeUnbindRecord, type UserProfile } from "../../lib/api";
+import { ApiClient, type AdminUserDetail, type DeletedUserAccount, type GraduationDueUser, type UserNodeAccount, type UserNodeUnbindRecord, type UserProfile } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
 import { formatServerDateTime } from "../../lib/time";
@@ -361,14 +415,42 @@ const blacklistKeySet = ref<Set<string>>(new Set());
 const whitelistSet = ref<Set<string>>(new Set());
 const exemptionSet = ref<Set<string>>(new Set());
 const keyword = ref("");
+type UserKeywordField = "all" | "username" | "platform_uid" | "real_name" | "student_id" | "advisor" | "email" | "phone" | "role" | "status";
+type UserSortOrder = "ascending" | "descending" | null;
+type UserSortKey = "username" | "platform_uid" | "real_name" | "role" | "two_factor_enabled" | "student_id" | "email" | "expected_graduation_year" | "balance" | "status";
+const keywordField = ref<UserKeywordField>("all");
+const userSortKey = ref<UserSortKey | "">("");
+const userSortOrder = ref<UserSortOrder>(null);
+const keywordPlaceholder = computed(() => {
+  if (keywordField.value === "username") return "输入平台账号关键词";
+  if (keywordField.value === "platform_uid") return "输入平台UID关键词";
+  if (keywordField.value === "real_name") return "输入真实姓名关键词";
+  if (keywordField.value === "student_id") return "输入学号关键词";
+  if (keywordField.value === "advisor") return "输入导师关键词";
+  if (keywordField.value === "email") return "输入邮箱关键词";
+  if (keywordField.value === "phone") return "输入手机号关键词";
+  if (keywordField.value === "role") return "输入角色关键词";
+  if (keywordField.value === "status") return "输入状态关键词";
+  return "平台账号 / UID / 姓名 / 学号 / 导师 / 邮箱 / 手机 / 角色 / 状态";
+});
 const filteredRows = computed(() => {
+  const source = rows.value || [];
   const k = keyword.value.trim().toLowerCase();
-  if (!k) return rows.value;
-  return rows.value.filter((x) => {
-    const uname = (x.username ?? "").toLowerCase();
-    const uid = String(x.platform_uid ?? "");
-    return uname.includes(k) || uid.includes(k);
+  const filterActive = k !== "";
+  const matched = source.filter((row) => {
+    if (filterActive && isAdminRole(row.role)) return false;
+    if (!filterActive) return true;
+    return matchesAdminUserKeyword(row, k, keywordField.value);
   });
+  if (filterActive) {
+    return sortAdminUsers(matched, userSortKey.value, userSortOrder.value);
+  }
+  const admins = matched.filter((row) => isAdminRole(row.role));
+  const others = matched.filter((row) => !isAdminRole(row.role));
+  return [
+    ...sortAdminUsers(admins, userSortKey.value, userSortOrder.value),
+    ...sortAdminUsers(others, userSortKey.value, userSortOrder.value),
+  ];
 });
 
 const rechargeVisible = ref(false);
@@ -399,13 +481,14 @@ const profileData = ref<{
   expected_graduation_month: number;
   phone: string;
   role: string;
+  two_factor_enabled?: boolean;
   balance: number;
   general_balance?: number;
   carryover_balance?: number;
   exclusive_balance?: number;
   total_balance?: number;
   status: string;
-  node_accounts: Array<{ node_id: string; local_username: string; updated_at: string }>;
+  node_accounts: UserNodeAccount[];
 } | null>(null);
 const profileUnbindRecords = ref<UserNodeUnbindRecord[]>([]);
 const duplicatesVisible = ref(false);
@@ -422,6 +505,86 @@ function client() {
 
 function fmt2(v: number): string {
   return Number(v ?? 0).toFixed(2);
+}
+
+function isAdminRole(role?: string): boolean {
+  return String(role || "").trim() === "admin";
+}
+
+function compareNumberLike(a: number, b: number): number {
+  return a === b ? 0 : (a < b ? -1 : 1);
+}
+
+function compareTextLike(a: string, b: string): number {
+  return a.localeCompare(b, "zh-Hans-CN", { numeric: true, sensitivity: "base" });
+}
+
+function adminRoleWeight(role?: string): number {
+  const value = String(role || "").trim();
+  if (value === "admin") return 0;
+  if (value === "power_user") return 1;
+  return 2;
+}
+
+function adminUserFieldValue(row: AdminUserDetail, field: UserKeywordField): string {
+  if (field === "username") return String(row.username || "").trim();
+  if (field === "platform_uid") return String(row.platform_uid ?? "").trim();
+  if (field === "real_name") return String(row.real_name || "").trim();
+  if (field === "student_id") return String(row.student_id || "").trim();
+  if (field === "advisor") return String(row.advisor || "").trim();
+  if (field === "email") return String(row.email || "").trim();
+  if (field === "phone") return String(row.phone || "").trim();
+  if (field === "role") return `${String(row.role || "").trim()} ${roleText(row.role)}`.trim();
+  if (field === "status") return `${String(row.status || "").trim()} ${effectiveStatus(row)}`.trim();
+  return [
+    row.username,
+    row.platform_uid,
+    row.real_name,
+    row.student_id,
+    row.advisor,
+    row.email,
+    row.phone,
+    row.role,
+    roleText(row.role),
+    row.status,
+    effectiveStatus(row),
+  ].map((value) => String(value ?? "").trim()).join(" ");
+}
+
+function matchesAdminUserKeyword(row: AdminUserDetail, keywordText: string, field: UserKeywordField): boolean {
+  return adminUserFieldValue(row, field).toLowerCase().includes(keywordText);
+}
+
+function adminUserSortValue(row: AdminUserDetail, key: UserSortKey): number | string {
+  if (key === "platform_uid") return Number(row.platform_uid ?? 0);
+  if (key === "role") return adminRoleWeight(row.role);
+  if (key === "two_factor_enabled") return row.two_factor_enabled ? 1 : 0;
+  if (key === "expected_graduation_year") {
+    const year = Number(row.expected_graduation_year ?? 0);
+    const month = Number(row.expected_graduation_month ?? 0);
+    return year * 100 + month;
+  }
+  if (key === "balance") return Number(row.balance ?? 0);
+  if (key === "status") return effectiveStatus(row);
+  return String((row as any)?.[key] ?? "").trim();
+}
+
+function sortAdminUsers(items: AdminUserDetail[], key: UserSortKey | "", order: UserSortOrder): AdminUserDetail[] {
+  const base = Array.isArray(items) ? [...items] : [];
+  if (!key || !order) return base;
+  const direction = order === "descending" ? -1 : 1;
+  return base
+    .map((row, index) => ({ row, index }))
+    .sort((left, right) => {
+      const a = adminUserSortValue(left.row, key);
+      const b = adminUserSortValue(right.row, key);
+      const delta = typeof a === "number" && typeof b === "number"
+        ? compareNumberLike(a, b)
+        : compareTextLike(String(a), String(b));
+      if (delta !== 0) return delta * direction;
+      return left.index - right.index;
+    })
+    .map((entry) => entry.row);
 }
 
 function setRechargeBalances(generalBalance: number, carryoverBalance: number, exclusiveBalance: number, totalBalance?: number) {
@@ -505,6 +668,12 @@ function fmtGrad(year: number, month: number): string {
 
 function fmtTime(v: string): string {
   return formatServerDateTime(v);
+}
+
+function mappingStateTip(row: UserNodeAccount): string {
+  if (row.identity_initializing) return "正在同步 UID/GID，完成前无法 SSH 登录";
+  if (!row.identity_aligned) return "节点尚未回传最新 UID/GID 快照，请稍后自动刷新";
+  return "";
 }
 
 function fmtDurationFromSeconds(seconds?: number): string {
@@ -1003,6 +1172,10 @@ async function queryDuplicates(row: AdminUserDetail) {
 }
 
 async function doRecharge() {
+  if (!rechargeAmount.value) {
+    error.value = "调整值不能为 0";
+    return;
+  }
   rechargeLoading.value = true;
   error.value = "";
   success.value = "";
@@ -1041,6 +1214,16 @@ async function loadGraduationDueUsers() {
 
 function onDueSelectionChange(rows: GraduationDueView[]) {
   selectedDueRows.value = rows ?? [];
+}
+
+function onAdminUserSortChange({ prop, order }: { prop: string; order: UserSortOrder }) {
+  if (!prop || !order) {
+    userSortKey.value = "";
+    userSortOrder.value = null;
+    return;
+  }
+  userSortKey.value = prop as UserSortKey;
+  userSortOrder.value = order;
 }
 
 async function sendReminder(usernames: string[]) {
@@ -1221,6 +1404,16 @@ reload();
 }
 .mb {
   margin-bottom: 10px;
+}
+.mapping-state-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mapping-state-tip {
+  font-size: 12px;
+  line-height: 1.4;
+  color: #64748b;
 }
 .username-link {
   padding: 0;

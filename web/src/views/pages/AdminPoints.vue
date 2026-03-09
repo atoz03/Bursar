@@ -30,6 +30,13 @@
         show-icon
         style="margin-bottom: 12px"
       />
+      <el-alert
+        title="筛选排序说明：排序仅作用于当前匹配结果；输入筛选条件后，管理员账号不参与条件筛选。"
+        type="info"
+        :closable="false"
+        show-icon
+        style="margin-bottom: 12px"
+      />
 
       <el-form inline>
         <el-form-item label="匹配字段">
@@ -58,40 +65,40 @@
         </el-form-item>
       </el-form>
 
-      <el-table :data="users" stripe height="420">
+      <el-table :data="displayUsers" stripe height="420" @sort-change="onPointsUserSortChange">
         <el-table-column label="调整" width="94" fixed="left">
           <template #default="{ row }">
             <el-button size="small" type="primary" @click="openAdjust(row)">调整</el-button>
           </template>
         </el-table-column>
-        <el-table-column label="总积分" width="120">
+        <el-table-column prop="total_balance" label="总积分" width="120" sortable="custom">
           <template #default="{ row }">{{ fmt2(row.total_balance ?? ((row.general_balance ?? row.balance) + (row.carryover_balance ?? 0) + (row.exclusive_balance ?? 0))) }}</template>
         </el-table-column>
-        <el-table-column label="通用积分" width="120">
+        <el-table-column prop="general_balance" label="通用积分" width="120" sortable="custom">
           <template #default="{ row }">{{ fmt2(row.general_balance ?? row.balance) }}</template>
         </el-table-column>
-        <el-table-column label="结转积分" width="120">
+        <el-table-column prop="carryover_balance" label="结转积分" width="120" sortable="custom">
           <template #default="{ row }">{{ fmt2(row.carryover_balance ?? 0) }}</template>
         </el-table-column>
-        <el-table-column label="专属积分" width="120">
+        <el-table-column prop="exclusive_balance" label="专属积分" width="120" sortable="custom">
           <template #default="{ row }">{{ fmt2(row.exclusive_balance ?? 0) }}</template>
         </el-table-column>
-        <el-table-column label="用户名" width="180" show-overflow-tooltip>
+        <el-table-column prop="username" label="用户名" width="180" show-overflow-tooltip sortable="custom">
           <template #default="{ row }">
             <el-button link type="primary" @click="openUserDetail(row.username)">{{ row.username }}</el-button>
           </template>
         </el-table-column>
-        <el-table-column label="用户级别" width="120">
+        <el-table-column prop="role" label="用户级别" width="120" sortable="custom">
           <template #default="{ row }">
             <el-tag :type="roleTagType(row.role)">{{ roleText(row.role) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="status" label="状态" width="120" />
-        <el-table-column prop="real_name" label="姓名" width="120" show-overflow-tooltip />
-        <el-table-column prop="student_id" label="学号" width="180" show-overflow-tooltip />
-        <el-table-column prop="advisor" label="导师" width="160" show-overflow-tooltip />
-        <el-table-column prop="email" label="邮箱" min-width="220" show-overflow-tooltip />
-        <el-table-column prop="phone" label="手机号" width="140" show-overflow-tooltip />
+        <el-table-column prop="status" label="状态" width="120" sortable="custom" />
+        <el-table-column prop="real_name" label="姓名" width="120" show-overflow-tooltip sortable="custom" />
+        <el-table-column prop="student_id" label="学号" width="180" show-overflow-tooltip sortable="custom" />
+        <el-table-column prop="advisor" label="导师" width="160" show-overflow-tooltip sortable="custom" />
+        <el-table-column prop="email" label="邮箱" min-width="220" show-overflow-tooltip sortable="custom" />
+        <el-table-column prop="phone" label="手机号" width="140" show-overflow-tooltip sortable="custom" />
       </el-table>
     </el-card>
 
@@ -411,6 +418,20 @@ import { Clock, Coin, DataBoard, Document, UserFilled } from "@element-plus/icon
 
 type PointsKeywordField = "all" | "username" | "real_name" | "student_id" | "advisor" | "email" | "phone";
 type PointsScope = "general" | "carryover" | "node_exclusive";
+type SortOrder = "ascending" | "descending" | null;
+type PointsUserSortKey =
+  | "total_balance"
+  | "general_balance"
+  | "carryover_balance"
+  | "exclusive_balance"
+  | "username"
+  | "role"
+  | "status"
+  | "real_name"
+  | "student_id"
+  | "advisor"
+  | "email"
+  | "phone";
 
 const loading = ref(false);
 const batchLoading = ref(false);
@@ -479,6 +500,9 @@ const adjustNodeExclusiveCurrent = computed<number | null>(() => {
   const row = adjustNodeBalances.value.find((x) => String(x.node_id || "").trim() === nodeID);
   return Number(row?.balance ?? 0);
 });
+const pointsUserSortKey = ref<PointsUserSortKey | "">("");
+const pointsUserSortOrder = ref<SortOrder>(null);
+const hasPointsFilter = computed(() => keyword.value.trim() !== "");
 const keywordPlaceholder = computed(() => {
   if (keywordField.value === "username") return "输入用户名关键词";
   if (keywordField.value === "real_name") return "输入姓名关键词";
@@ -489,8 +513,13 @@ const keywordPlaceholder = computed(() => {
   return "用户名/姓名/学号/导师/邮箱/手机号";
 });
 
+const displayUsers = computed<PointsUser[]>(() => {
+  const base = (users.value || []).filter((row) => !(hasPointsFilter.value && isAdminRole(row.role)));
+  return sortPointsUsers(base, pointsUserSortKey.value, pointsUserSortOrder.value);
+});
+
 const filteredBatchTargetUsernames = computed<string[]>(() => {
-  const base = users.value || [];
+  const base = displayUsers.value || [];
   const out: string[] = [];
   const seen = new Set<string>();
   for (const row of base) {
@@ -512,6 +541,56 @@ function client() {
 
 function normalizeUserKey(v: string): string {
   return String(v || "").trim().toLowerCase();
+}
+
+function isAdminRole(role?: string): boolean {
+  return String(role || "").trim() === "admin";
+}
+
+function roleSortWeight(role?: string): number {
+  const v = String(role || "").trim();
+  if (v === "admin") return 0;
+  if (v === "power_user") return 1;
+  return 2;
+}
+
+function pointsUserTotalBalance(row: PointsUser): number {
+  return Number(row.total_balance ?? ((row.general_balance ?? row.balance) + (row.carryover_balance ?? 0) + (row.exclusive_balance ?? 0)));
+}
+
+function compareNumberLike(a: number, b: number): number {
+  return a === b ? 0 : (a < b ? -1 : 1);
+}
+
+function compareTextLike(a: string, b: string): number {
+  return a.localeCompare(b, "zh-Hans-CN", { numeric: true, sensitivity: "base" });
+}
+
+function pointsUserSortValue(row: PointsUser, key: PointsUserSortKey): number | string {
+  if (key === "total_balance") return pointsUserTotalBalance(row);
+  if (key === "general_balance") return Number(row.general_balance ?? row.balance ?? 0);
+  if (key === "carryover_balance") return Number(row.carryover_balance ?? 0);
+  if (key === "exclusive_balance") return Number(row.exclusive_balance ?? 0);
+  if (key === "role") return roleSortWeight(row.role);
+  return String((row as any)?.[key] ?? "").trim();
+}
+
+function sortPointsUsers(rows: PointsUser[], key: PointsUserSortKey | "", order: SortOrder): PointsUser[] {
+  const base = Array.isArray(rows) ? [...rows] : [];
+  if (!key || !order) return base;
+  const direction = order === "descending" ? -1 : 1;
+  return base
+    .map((row, index) => ({ row, index }))
+    .sort((left, right) => {
+      const a = pointsUserSortValue(left.row, key);
+      const b = pointsUserSortValue(right.row, key);
+      const delta = typeof a === "number" && typeof b === "number"
+        ? compareNumberLike(a, b)
+        : compareTextLike(String(a), String(b));
+      if (delta !== 0) return delta * direction;
+      return left.index - right.index;
+    })
+    .map((entry) => entry.row);
 }
 
 function dedupUsers(rows: PointsUser[]): PointsUser[] {
@@ -604,6 +683,7 @@ function fetchPointsQuerySuggestions(queryString: string, cb: (items: Array<{ va
   const seen = new Set<string>();
   const items = base
     .filter((u) => {
+      if (q && isAdminRole(u.role)) return false;
       if (!q) return true;
       return matchesPointsKeyword(u, q, field);
     })
@@ -1143,6 +1223,16 @@ function autoFillRuleForUsername(rawUsername: string) {
 function onKeywordSelect(item: any) {
   keyword.value = String(item?.value || "").trim();
   void loadUsers();
+}
+
+function onPointsUserSortChange({ prop, order }: { prop: string; order: SortOrder }) {
+  if (!prop || !order) {
+    pointsUserSortKey.value = "";
+    pointsUserSortOrder.value = null;
+    return;
+  }
+  pointsUserSortKey.value = prop as PointsUserSortKey;
+  pointsUserSortOrder.value = order;
 }
 
 function onRecordKeywordSelect(item: any) {

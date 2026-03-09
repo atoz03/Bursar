@@ -7,6 +7,7 @@ export type AuthState = {
   authenticated: boolean;
   username: string;
   role: string;
+  twoFactorEnabled: boolean;
   canViewBoard: boolean;
   canViewNodes: boolean;
   canManageNodes: boolean;
@@ -24,6 +25,7 @@ export const authState = reactive<AuthState>({
   authenticated: false,
   username: "",
   role: "",
+  twoFactorEnabled: false,
   canViewBoard: false,
   canViewNodes: false,
   canManageNodes: false,
@@ -43,6 +45,7 @@ export async function refreshAuth(): Promise<void> {
   authState.authenticated = !!me.authenticated;
   authState.username = me.username ?? "";
   authState.role = me.role ?? "";
+  authState.twoFactorEnabled = !!me.two_factor_enabled;
   authState.canViewBoard = !!me.can_view_board;
   authState.canViewNodes = !!me.can_view_nodes;
   authState.canManageNodes = !!me.can_manage_nodes;
@@ -57,9 +60,9 @@ export async function refreshAuth(): Promise<void> {
     : Number.NaN;
 }
 
-export async function login(username: string, password: string, captchaID: string, captchaOption: number): Promise<void> {
+export async function login(username: string, password: string, captchaID: string, captchaOption: number, totpCode = ""): Promise<void> {
   const client = new ApiClient(settingsState.baseUrl);
-  await client.authLogin(username, password, captchaID, captchaOption);
+  await client.authLogin(username, password, captchaID, captchaOption, totpCode);
   await refreshAuth();
 }
 

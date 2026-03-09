@@ -30,6 +30,17 @@
 
       <el-alert v-if="error" :title="error" type="error" show-icon />
       <el-alert
+        v-if="authState.authenticated && !authState.twoFactorEnabled"
+        title="建议开启双重验证（2FA）。启用后，登录时需要额外输入 Microsoft Authenticator、数盾等验证器生成的 6 位动态码。"
+        type="warning"
+        show-icon
+        :closable="false"
+        style="margin-bottom: 12px"
+      />
+      <div v-if="authState.authenticated && !authState.twoFactorEnabled" style="margin-bottom: 12px">
+        <el-button type="warning" plain @click="goProfile">前往个人资料开启 2FA</el-button>
+      </div>
+      <el-alert
         v-if="resp"
         :title="`当前状态：${statusLabel(resp.status)}${statusReason ? `；${statusReason}` : ''}`"
         :type="statusAlertType(resp.status)"
