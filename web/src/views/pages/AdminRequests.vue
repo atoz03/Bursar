@@ -273,6 +273,7 @@
         <el-table-column prop="node_id" label="端口" width="110" />
         <el-table-column prop="local_username" label="节点账号" width="160" />
         <el-table-column prop="message" label="开通理由" min-width="240" />
+        <el-table-column prop="reject_reason" label="拒绝理由" min-width="220" />
         <el-table-column prop="status" label="状态" width="120" />
         <el-table-column prop="apply_count_by_billing" label="申请次数" width="100" />
         <el-table-column prop="duplicate_reason" label="风险提示" width="220" />
@@ -842,23 +843,22 @@ async function reject(row: UserRequest) {
   const id = Number(row.request_id || 0);
   if (!id) return;
   let reason = "";
-  if (String(row.request_type || "").trim() === "unbind") {
-    try {
-      const input: any = await ElMessageBox.prompt(
-        "请填写拒绝解绑申请理由（必填）。",
-        "拒绝解绑申请",
-        {
-          confirmButtonText: "确认拒绝",
-          cancelButtonText: "取消",
-          inputType: "textarea",
-          inputPlaceholder: "例如：当前理由不充分，请补充真实解绑原因后重提",
-          inputValidator: (v: string) => String(v || "").trim().length > 0 || "拒绝理由不能为空",
-        },
-      );
-      reason = String(input?.value || "").trim();
-    } catch {
-      return;
-    }
+  try {
+    const isUnbind = String(row.request_type || "").trim() === "unbind";
+    const input: any = await ElMessageBox.prompt(
+      isUnbind ? "请填写拒绝解绑申请理由（必填）。" : "请填写拒绝理由（必填，用户端可见）。",
+      isUnbind ? "拒绝解绑申请" : "拒绝申请",
+      {
+        confirmButtonText: "确认拒绝",
+        cancelButtonText: "取消",
+        inputType: "textarea",
+        inputPlaceholder: isUnbind ? "例如：当前理由不充分，请补充真实解绑原因后重提" : "例如：申请理由不完整，请补充研究方向、课题和资源需求后重提",
+        inputValidator: (v: string) => String(v || "").trim().length > 0 || "拒绝理由不能为空",
+      },
+    );
+    reason = String(input?.value || "").trim();
+  } catch {
+    return;
   }
   actionLoadingId.value = id;
   error.value = "";
@@ -884,10 +884,29 @@ async function batchReject() {
 }
 async function batchReview(newStatus: "approved" | "rejected") {
   if (selectedIds.value.length === 0) return;
+  let reason = "";
+  if (newStatus === "rejected") {
+    try {
+      const input: any = await ElMessageBox.prompt(
+        `请填写批量拒绝理由（必填，用户端可见）。\n本次共 ${selectedIds.value.length} 条申请。`,
+        "批量拒绝申请",
+        {
+          confirmButtonText: "确认拒绝",
+          cancelButtonText: "取消",
+          inputType: "textarea",
+          inputPlaceholder: "例如：申请材料不完整，请按要求补充后重新提交",
+          inputValidator: (v: string) => String(v || "").trim().length > 0 || "拒绝理由不能为空",
+        },
+      );
+      reason = String(input?.value || "").trim();
+    } catch {
+      return;
+    }
+  }
   batchLoading.value = true;
   error.value = "";
   try {
-    await client().adminBatchReview(selectedIds.value, newStatus);
+    await client().adminBatchReview(selectedIds.value, newStatus, reason);
     selectedIds.value = [];
     await reloadRequests();
   } catch (e: any) {

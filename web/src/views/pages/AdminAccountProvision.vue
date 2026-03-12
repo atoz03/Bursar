@@ -311,10 +311,15 @@
             <el-tag size="small" :type="requestTypeTagType(row.request_type)">{{ requestTypeText(row.request_type) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="billing_username" label="平台账号" width="170" />
+        <el-table-column label="平台账号" width="170">
+          <template #default="{ row }">
+            <el-button link type="primary" @click="openProfile(row.billing_username)">{{ row.billing_username }}</el-button>
+          </template>
+        </el-table-column>
         <el-table-column prop="node_id" label="节点编号" width="130" />
         <el-table-column prop="local_username" label="节点账号" width="150" />
         <el-table-column prop="message" label="申请说明/备注" min-width="260" />
+        <el-table-column prop="reject_reason" label="拒绝理由" min-width="240" />
         <el-table-column label="审核信息" min-width="220">
           <template #default="{ row }">
             <div class="mini">审核人：{{ row.reviewed_by || "-" }}</div>
@@ -887,7 +892,7 @@ async function markOpenRequestRejected(row: UserRequest) {
   let reason = "";
   try {
     const input: any = await ElMessageBox.prompt(
-      `请填写拒绝理由（建议必填，便于历史追踪）：\n平台账号：${row.billing_username}\n申请类型：${requestTypeText(row.request_type)}\n节点：${row.node_id || "-"}\n节点账号：${row.local_username || "-"}`,
+      `请填写拒绝理由（必填，用户端可见）：\n平台账号：${row.billing_username}\n申请类型：${requestTypeText(row.request_type)}\n节点：${row.node_id || "-"}\n节点账号：${row.local_username || "-"}`,
       "拒绝申请",
       {
         type: "warning",
@@ -895,6 +900,7 @@ async function markOpenRequestRejected(row: UserRequest) {
         cancelButtonText: "取消",
         inputType: "textarea",
         inputPlaceholder: "例如：申请信息不完整，请补充后重提",
+        inputValidator: (v: string) => String(v || "").trim().length > 0 || "拒绝理由不能为空",
       },
     );
     reason = String(input?.value || "").trim();

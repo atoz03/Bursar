@@ -170,6 +170,18 @@ func gcdInt(a int, b int) int {
 	return a
 }
 
+func sumDigitsInt(v int) int {
+	if v < 0 {
+		v = -v
+	}
+	sum := 0
+	for v > 0 {
+		sum += v % 10
+		v /= 10
+	}
+	return sum
+}
+
 func buildCaptchaOptions(answer int, minValue int) ([]int, int, error) {
 	candidates := []int{-41, -29, -23, -19, -17, -13, -11, -9, -7, -5, -3, -2, 2, 3, 5, 7, 9, 11, 13, 17, 19, 23, 29, 41}
 	choices := map[int]struct{}{
@@ -217,37 +229,35 @@ func buildNumericChoiceCaptcha() (string, []int, int, error) {
 	minValue := 0
 	switch kind {
 	case 0:
-		a, err := randomInt(18, 79)
+		a, err := randomInt(12, 79)
 		if err != nil {
 			return "", nil, 0, err
 		}
-		b, err := randomInt(7, 31)
+		b, err := randomInt(8, 43)
 		if err != nil {
 			return "", nil, 0, err
 		}
-		c, err := randomInt(3, 9)
+		c, err := randomInt(3, 21)
 		if err != nil {
 			return "", nil, 0, err
 		}
-		d, err := randomInt(5, 37)
-		if err != nil {
-			return "", nil, 0, err
-		}
-		question = fmt.Sprintf("请计算：(%d + %d) × %d - %d = ?", a, b, c, d)
-		answer = (a+b)*c - d
+		question = fmt.Sprintf("请计算：%d + %d + %d = ?", a, b, c)
+		answer = a + b + c
 	case 1:
-		start, err := randomInt(4, 11)
+		a, err := randomInt(14, 48)
 		if err != nil {
 			return "", nil, 0, err
 		}
-		values := make([]int, 5)
-		for i := 0; i < len(values); i++ {
-			n := start + i
-			values[i] = n*n + n
+		b, err := randomInt(2, 8)
+		if err != nil {
+			return "", nil, 0, err
 		}
-		next := start + len(values)
-		question = fmt.Sprintf("数列规律：%d, %d, %d, %d, %d，下一个数是？", values[0], values[1], values[2], values[3], values[4])
-		answer = next*next + next
+		c, err := randomInt(5, a*b-1)
+		if err != nil {
+			return "", nil, 0, err
+		}
+		question = fmt.Sprintf("请计算：%d × %d - %d = ?", a, b, c)
+		answer = a*b - c
 	case 2:
 		digit, err := randomInt(1, 9)
 		if err != nil {
@@ -288,15 +298,12 @@ func buildNumericChoiceCaptcha() (string, []int, int, error) {
 		question = fmt.Sprintf("请计算 %d 和 %d 的最大公约数。", left, right)
 		answer = gcdInt(left, right)
 	default:
-		n, err := randomInt(90, 255)
+		n, err := randomInt(1000, 99999)
 		if err != nil {
 			return "", nil, 0, err
 		}
-		question = fmt.Sprintf("十进制数 %d 转成二进制后，其中数字 1 的个数是多少？", n)
-		answer = 0
-		for x := n; x > 0; x >>= 1 {
-			answer += x & 1
-		}
+		question = fmt.Sprintf("请计算数字 %d 的各位数字之和。", n)
+		answer = sumDigitsInt(n)
 	}
 	options, answerIndex, err := buildCaptchaOptions(answer, minValue)
 	if err != nil {

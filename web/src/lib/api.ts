@@ -488,6 +488,14 @@ export type UserNodeAccount = {
   updated_at: string;
 };
 
+export type AdminAccountReadinessResp = {
+  status: "all" | "initializing" | "failed" | string;
+  total_not_ready: number;
+  total_initializing: number;
+  total_failed: number;
+  accounts: UserNodeAccount[];
+};
+
 export type UserNodeBindChallengeInfo = {
   challenge_id: number;
   request_id: number;
@@ -719,6 +727,7 @@ export type UserRequest = {
   status: "pending" | "approved" | "rejected" | string;
   reviewed_by?: string;
   reviewed_at?: string;
+  reject_reason?: string;
   created_at: string;
   updated_at: string;
   apply_count_by_billing?: number;
@@ -2352,8 +2361,8 @@ export class ApiClient {
     return await this.postJson(`/api/admin/requests/${requestId}/reopen`, {}, this.adminHeaders());
   }
 
-  async adminBatchReview(requestIds: number[], newStatus: "approved" | "rejected"): Promise<{ ok: boolean; ok_count: number; fail_count: number; fail_items: Array<{request_id:number;error:string}> }> {
-    return await this.postJson(`/api/admin/requests/batch-review`, { request_ids: requestIds, new_status: newStatus }, this.adminHeaders());
+  async adminBatchReview(requestIds: number[], newStatus: "approved" | "rejected", reason = ""): Promise<{ ok: boolean; ok_count: number; fail_count: number; fail_items: Array<{request_id:number;error:string}> }> {
+    return await this.postJson(`/api/admin/requests/batch-review`, { request_ids: requestIds, new_status: newStatus, reason }, this.adminHeaders());
   }
 
   async adminProfileChangeRequests(params: { status?: string; username?: string; limit?: number }): Promise<{ requests: ProfileChangeRequest[] }> {
@@ -2525,6 +2534,16 @@ export class ApiClient {
       if (localUsername) q.set("local_username", localUsername);
     }
     return await this.getJson(`/api/admin/accounts?${q.toString()}`, this.adminHeaders());
+  }
+
+  async adminAccountsNotReady(params: {
+    status?: "all" | "initializing" | "failed" | string;
+    limit?: number;
+  } = {}): Promise<AdminAccountReadinessResp> {
+    const q = new URLSearchParams();
+    if (String(params.status || "").trim()) q.set("status", String(params.status).trim());
+    if (Number.isFinite(params.limit) && Number(params.limit) > 0) q.set("limit", String(Math.floor(Number(params.limit))));
+    return await this.getJson(`/api/admin/accounts/not-ready?${q.toString()}`, this.adminHeaders());
   }
 
   async adminGetBindPolicy(): Promise<NodeBindSecurityPolicy> {

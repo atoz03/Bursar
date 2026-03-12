@@ -20,6 +20,7 @@ type MetricsData struct {
 	OSVersion               string                    `json:"os_version,omitempty"`
 	KernelVersion           string                    `json:"kernel_version,omitempty"`
 	AgentVersion            string                    `json:"agent_version,omitempty"`
+	AgentSessionID          string                    `json:"agent_session_id,omitempty"`
 	NodeIP                  string                    `json:"node_ip,omitempty"`
 	NodeMAC                 string                    `json:"node_mac,omitempty"`
 	NetRxBytes              uint64                    `json:"net_rx_bytes,omitempty"`

@@ -1,0 +1,2 @@
+ALTER TABLE user_requests
+ADD COLUMN IF NOT EXISTS reject_reason TEXT NOT NULL DEFAULT '';

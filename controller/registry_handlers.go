@@ -742,6 +742,7 @@ func (s *Server) handleAdminRequestReview(c *gin.Context, newStatus string) {
 type batchReviewReq struct {
 	RequestIDs []int  `json:"request_ids"`
 	NewStatus  string `json:"new_status"` // approved/rejected
+	Reason     string `json:"reason"`
 }
 
 type registrationRequestView struct {
@@ -1075,6 +1076,11 @@ func (s *Server) handleAdminRequestsBatchReview(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "request_ids 不能为空"})
 		return
 	}
+	req.Reason = strings.TrimSpace(req.Reason)
+	if req.NewStatus == "rejected" && req.Reason == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "reason 不能为空"})
+		return
+	}
 	reviewedBy := "admin"
 	if v, ok := c.Get("auth_user"); ok {
 		if s, ok2 := v.(string); ok2 && strings.TrimSpace(s) != "" {
@@ -1085,7 +1091,6 @@ func (s *Server) handleAdminRequestsBatchReview(c *gin.Context) {
 	okCount := 0
 	failCount := 0
 	failItems := make([]gin.H, 0)
-	defaultRejectReason := "管理员批量拒绝"
 	for _, id := range req.RequestIDs {
 		if id <= 0 {
 			failCount++
@@ -1095,7 +1100,7 @@ func (s *Server) handleAdminRequestsBatchReview(c *gin.Context) {
 		err := s.store.WithTx(c.Request.Context(), func(tx *sql.Tx) error {
 			rejectReason := ""
 			if req.NewStatus == "rejected" {
-				rejectReason = defaultRejectReason
+				rejectReason = req.Reason
 			}
 			updated, err := s.store.ReviewUserRequestTx(c.Request.Context(), tx, id, req.NewStatus, reviewedBy, now, rejectReason)
 			if err != nil {

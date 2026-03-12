@@ -28,10 +28,11 @@ type cpuSample struct {
 
 func (a *NodeAgent) CollectMetrics(ctx context.Context) (*MetricsData, error) {
 	metrics := &MetricsData{
-		NodeID:       a.nodeID,
-		Timestamp:    formatRFC3339InBeijing(nowInBeijing()),
-		AgentVersion: currentAgentVersionLabel(),
-		Users:        []UserProcess{},
+		NodeID:         a.nodeID,
+		Timestamp:      formatRFC3339InBeijing(nowInBeijing()),
+		AgentVersion:   currentAgentVersionLabel(),
+		AgentSessionID: strings.TrimSpace(a.sessionID),
+		Users:          []UserProcess{},
 	}
 	metrics.CPUCount = a.numCPU
 	if infos, err := cpu.InfoWithContext(ctx); err == nil && len(infos) > 0 {

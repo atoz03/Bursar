@@ -13,19 +13,66 @@ TARGET_BASE="${TARGET_BASE:-/home}"
 SSH_TIMEOUT="${SSH_TIMEOUT:-10}"
 PARALLEL="${PARALLEL:-6}"
 REPORT_FILE="${REPORT_FILE:-$(pwd)/计算节点部署情况.txt}"
+NODE_IDS_RAW="${NODE_IDS:-}"
+NODE_IDS_CANON=""
+NODE_IDS_DISPLAY=""
 
 CONTROLLER_URL="${CONTROLLER_URL:-}"
 AGENT_TOKEN="${AGENT_TOKEN:-}"
 SSH_GUARD_EXCLUDE_USERS="${SSH_GUARD_EXCLUDE_USERS:-root}"
 SKIP_CONTROLLER_HEALTHCHECK="${SKIP_CONTROLLER_HEALTHCHECK:-0}"
-ENABLE_USER_SLICE_CPU_RESERVE="${ENABLE_USER_SLICE_CPU_RESERVE:-1}"
-USER_SLICE_CPU_RESERVE_PERCENT="${USER_SLICE_CPU_RESERVE_PERCENT:-95}"
-ENABLE_USER_SLICE_MEMORY_RESERVE="${ENABLE_USER_SLICE_MEMORY_RESERVE:-1}"
-USER_SLICE_MEMORY_RESERVE_GB="${USER_SLICE_MEMORY_RESERVE_GB:-8}"
-HOME_RESERVE_GB="${HOME_RESERVE_GB:-8}"
-HOME_RESERVE_CHECK_PATH="${HOME_RESERVE_CHECK_PATH:-/home}"
-HOME_RESERVE_EXEMPT_USERS="${HOME_RESERVE_EXEMPT_USERS:-root gpuops}"
-HOME_RESERVE_ENFORCE_INTERVAL="${HOME_RESERVE_ENFORCE_INTERVAL:-30s}"
+LEGACY_ENABLE_USER_SLICE_CPU_RESERVE="${ENABLE_USER_SLICE_CPU_RESERVE:-}"
+LEGACY_USER_SLICE_CPU_RESERVE_PERCENT="${USER_SLICE_CPU_RESERVE_PERCENT:-}"
+LEGACY_ENABLE_USER_SLICE_MEMORY_RESERVE="${ENABLE_USER_SLICE_MEMORY_RESERVE:-}"
+LEGACY_USER_SLICE_MEMORY_RESERVE_GB="${USER_SLICE_MEMORY_RESERVE_GB:-}"
+ENABLE_SYSTEM_CPU_RESERVE="${ENABLE_SYSTEM_CPU_RESERVE:-${LEGACY_ENABLE_USER_SLICE_CPU_RESERVE:-1}}"
+ENABLE_SYSTEM_MEMORY_RESERVE="${ENABLE_SYSTEM_MEMORY_RESERVE:-${LEGACY_ENABLE_USER_SLICE_MEMORY_RESERVE:-1}}"
+LEGACY_CPU_RESERVE_COMPAT_USED=0
+LEGACY_MEMORY_RESERVE_COMPAT_USED=0
+if [[ -n "${SYSTEM_CPU_RESERVE_PERCENT:-}" ]]; then
+  SYSTEM_CPU_RESERVE_PERCENT="${SYSTEM_CPU_RESERVE_PERCENT}"
+elif [[ -n "${LEGACY_USER_SLICE_CPU_RESERVE_PERCENT}" ]]; then
+  LEGACY_CPU_RESERVE_COMPAT_USED=1
+  if [[ "${LEGACY_USER_SLICE_CPU_RESERVE_PERCENT}" =~ ^[0-9]+$ ]] \
+    && [[ "${LEGACY_USER_SLICE_CPU_RESERVE_PERCENT}" -ge 10 ]] \
+    && [[ "${LEGACY_USER_SLICE_CPU_RESERVE_PERCENT}" -le 100 ]]; then
+    SYSTEM_CPU_RESERVE_PERCENT="$((100 - LEGACY_USER_SLICE_CPU_RESERVE_PERCENT))"
+  else
+    SYSTEM_CPU_RESERVE_PERCENT="5"
+  fi
+else
+  SYSTEM_CPU_RESERVE_PERCENT="5"
+fi
+if [[ -n "${SYSTEM_MEMORY_RESERVE_GB:-}" ]]; then
+  SYSTEM_MEMORY_RESERVE_GB="${SYSTEM_MEMORY_RESERVE_GB}"
+elif [[ -n "${LEGACY_USER_SLICE_MEMORY_RESERVE_GB}" ]]; then
+  LEGACY_MEMORY_RESERVE_COMPAT_USED=1
+  SYSTEM_MEMORY_RESERVE_GB="${LEGACY_USER_SLICE_MEMORY_RESERVE_GB}"
+else
+  SYSTEM_MEMORY_RESERVE_GB="8"
+fi
+
+init_node_filter() {
+  local raw="${NODE_IDS_RAW}"
+  raw="${raw//$'\n'/ }"
+  raw="${raw//$'\t'/ }"
+  raw="${raw//,/ }"
+  for node in ${raw}; do
+    [[ -z "${node}" ]] && continue
+    if [[ "${NODE_IDS_CANON}" != *",${node},"* ]]; then
+      NODE_IDS_CANON+=",${node},"
+      if [[ -n "${NODE_IDS_DISPLAY}" ]]; then
+        NODE_IDS_DISPLAY+=" "
+      fi
+      NODE_IDS_DISPLAY+="${node}"
+    fi
+  done
+}
+
+should_process_node() {
+  local node_id="$1"
+  [[ -z "${NODE_IDS_CANON}" || "${NODE_IDS_CANON}" == *",${node_id},"* ]]
+}
 
 if [[ ! -f "${MAP_FILE}" ]]; then
   echo "映射表不存在：${MAP_FILE}" >&2
@@ -40,14 +87,26 @@ if [[ -z "${CONTROLLER_URL}" || -z "${AGENT_TOKEN}" ]]; then
   exit 2
 fi
 
+init_node_filter
+
 echo "SOURCE_DIR=${SOURCE_DIR}"
 echo "MAP_FILE=${MAP_FILE}"
 echo "TARGET=<${TARGET_BASE}>/<用户名>/${PROJECT_DIR_NAME}"
 echo "PARALLEL=${PARALLEL}"
 echo "REPORT_FILE=${REPORT_FILE}"
-echo "USER_SLICE_CPU_RESERVE_PERCENT=${USER_SLICE_CPU_RESERVE_PERCENT} (enable=${ENABLE_USER_SLICE_CPU_RESERVE})"
-echo "USER_SLICE_MEMORY_RESERVE_GB=${USER_SLICE_MEMORY_RESERVE_GB} (enable=${ENABLE_USER_SLICE_MEMORY_RESERVE})"
-echo "HOME_RESERVE_GB=${HOME_RESERVE_GB} (path=${HOME_RESERVE_CHECK_PATH})"
+if [[ -n "${NODE_IDS_DISPLAY}" ]]; then
+  echo "NODE_IDS=${NODE_IDS_DISPLAY}"
+else
+  echo "NODE_IDS=<all>"
+fi
+echo "SYSTEM_CPU_RESERVE_PERCENT=${SYSTEM_CPU_RESERVE_PERCENT} (enable=${ENABLE_SYSTEM_CPU_RESERVE})"
+echo "SYSTEM_MEMORY_RESERVE_GB=${SYSTEM_MEMORY_RESERVE_GB} (enable=${ENABLE_SYSTEM_MEMORY_RESERVE})"
+if [[ "${LEGACY_CPU_RESERVE_COMPAT_USED}" == "1" ]]; then
+  echo "兼容旧变量：USER_SLICE_CPU_RESERVE_PERCENT=${LEGACY_USER_SLICE_CPU_RESERVE_PERCENT} -> SYSTEM_CPU_RESERVE_PERCENT=${SYSTEM_CPU_RESERVE_PERCENT}"
+fi
+if [[ "${LEGACY_MEMORY_RESERVE_COMPAT_USED}" == "1" ]]; then
+  echo "兼容旧变量：USER_SLICE_MEMORY_RESERVE_GB=${LEGACY_USER_SLICE_MEMORY_RESERVE_GB} -> SYSTEM_MEMORY_RESERVE_GB=${SYSTEM_MEMORY_RESERVE_GB}"
+fi
 
 RESULT_DIR="$(mktemp -d /tmp/node-deploy-result.XXXXXX)"
 trap 'rm -rf "${RESULT_DIR}"' EXIT
@@ -129,23 +188,24 @@ run_install_agent() {
   local esc_skip_health
   esc_skip_health="$(printf "%s" "${SKIP_CONTROLLER_HEALTHCHECK}" | sed "s/'/'\"'\"'/g")"
   local esc_enable_cpu_reserve
-  esc_enable_cpu_reserve="$(printf "%s" "${ENABLE_USER_SLICE_CPU_RESERVE}" | sed "s/'/'\"'\"'/g")"
+  esc_enable_cpu_reserve="$(printf "%s" "${ENABLE_SYSTEM_CPU_RESERVE}" | sed "s/'/'\"'\"'/g")"
   local esc_cpu_reserve_pct
-  esc_cpu_reserve_pct="$(printf "%s" "${USER_SLICE_CPU_RESERVE_PERCENT}" | sed "s/'/'\"'\"'/g")"
+  esc_cpu_reserve_pct="$(printf "%s" "${SYSTEM_CPU_RESERVE_PERCENT}" | sed "s/'/'\"'\"'/g")"
   local esc_enable_mem_reserve
-  esc_enable_mem_reserve="$(printf "%s" "${ENABLE_USER_SLICE_MEMORY_RESERVE}" | sed "s/'/'\"'\"'/g")"
+  esc_enable_mem_reserve="$(printf "%s" "${ENABLE_SYSTEM_MEMORY_RESERVE}" | sed "s/'/'\"'\"'/g")"
   local esc_mem_reserve_gb
-  esc_mem_reserve_gb="$(printf "%s" "${USER_SLICE_MEMORY_RESERVE_GB}" | sed "s/'/'\"'\"'/g")"
-  local esc_home_reserve_gb
-  esc_home_reserve_gb="$(printf "%s" "${HOME_RESERVE_GB}" | sed "s/'/'\"'\"'/g")"
-  local esc_home_reserve_path
-  esc_home_reserve_path="$(printf "%s" "${HOME_RESERVE_CHECK_PATH}" | sed "s/'/'\"'\"'/g")"
-  local esc_home_reserve_exempt
-  esc_home_reserve_exempt="$(printf "%s" "${HOME_RESERVE_EXEMPT_USERS}" | sed "s/'/'\"'\"'/g")"
-  local esc_home_reserve_interval
-  esc_home_reserve_interval="$(printf "%s" "${HOME_RESERVE_ENFORCE_INTERVAL}" | sed "s/'/'\"'\"'/g")"
+  esc_mem_reserve_gb="$(printf "%s" "${SYSTEM_MEMORY_RESERVE_GB}" | sed "s/'/'\"'\"'/g")"
   ssh -n -i "${key_use_path}" -p "${port}" -o StrictHostKeyChecking=no -o ConnectTimeout="${SSH_TIMEOUT}" "${user}@${ip}" \
-    "cd '${target_dir}' && SSH_GUARD_EXCLUDE_USERS='${esc_exclude}' SKIP_CONTROLLER_HEALTHCHECK='${esc_skip_health}' ENABLE_USER_SLICE_CPU_RESERVE='${esc_enable_cpu_reserve}' USER_SLICE_CPU_RESERVE_PERCENT='${esc_cpu_reserve_pct}' ENABLE_USER_SLICE_MEMORY_RESERVE='${esc_enable_mem_reserve}' USER_SLICE_MEMORY_RESERVE_GB='${esc_mem_reserve_gb}' HOME_RESERVE_GB='${esc_home_reserve_gb}' HOME_RESERVE_CHECK_PATH='${esc_home_reserve_path}' HOME_RESERVE_EXEMPT_USERS='${esc_home_reserve_exempt}' HOME_RESERVE_ENFORCE_INTERVAL='${esc_home_reserve_interval}' sudo -n /bin/bash '${target_dir}/scripts/install_agent_local.sh'"
+    "cd '${target_dir}' && SSH_GUARD_EXCLUDE_USERS='${esc_exclude}' SKIP_CONTROLLER_HEALTHCHECK='${esc_skip_health}' ENABLE_SYSTEM_CPU_RESERVE='${esc_enable_cpu_reserve}' SYSTEM_CPU_RESERVE_PERCENT='${esc_cpu_reserve_pct}' ENABLE_SYSTEM_MEMORY_RESERVE='${esc_enable_mem_reserve}' SYSTEM_MEMORY_RESERVE_GB='${esc_mem_reserve_gb}' sudo -n /bin/bash '${target_dir}/scripts/install_agent_local.sh'"
+}
+
+agent_service_ready() {
+  local key_use_path="$1"
+  local port="$2"
+  local user="$3"
+  local ip="$4"
+  ssh -n -i "${key_use_path}" -p "${port}" -o StrictHostKeyChecking=no -o ConnectTimeout="${SSH_TIMEOUT}" "${user}@${ip}" \
+    "systemctl is-enabled gpu-node-agent >/dev/null 2>&1 && systemctl is-active gpu-node-agent >/dev/null 2>&1"
 }
 
 can_run_sudo_nopass() {
@@ -219,8 +279,16 @@ process_one() {
   if node_has_agent_service "${key_use_path}" "${port}" "${user}" "${ip}"; then
     if can_run_sudo_nopass "${key_use_path}" "${port}" "${user}" "${ip}" "${target_dir}"; then
       if run_install_agent "${key_use_path}" "${port}" "${user}" "${ip}" "${target_dir}" >"${install_log}" 2>&1; then
-        end_ts="$(date '+%F %T')"
-        write_result "${node_id}" "DEPLOYED" "${start_ts}" "${end_ts}" "${ip}" "${user}" "已安装服务，执行 install_agent_local.sh 成功（sudoers 命令匹配）" "${result_file}"
+        if agent_service_ready "${key_use_path}" "${port}" "${user}" "${ip}"; then
+          end_ts="$(date '+%F %T')"
+          write_result "${node_id}" "DEPLOYED" "${start_ts}" "${end_ts}" "${ip}" "${user}" "已安装服务，执行 install_agent_local.sh 成功，已自动 enable --now gpu-node-agent" "${result_file}"
+        else
+          local status_tail
+          status_tail="$(tail -n 6 "${install_log}" | tr '\n' ';' | sed 's/[[:space:]]\+/ /g; s/;$/ /')"
+          [[ -z "${status_tail}" ]] && status_tail="无输出（可手动到节点执行 systemctl status gpu-node-agent 查看）"
+          end_ts="$(date '+%F %T')"
+          write_result "${node_id}" "FAILED" "${start_ts}" "${end_ts}" "${ip}" "${user}" "install_agent_local.sh 执行成功，但 gpu-node-agent 未处于 enabled+active；末尾日志: ${status_tail}" "${result_file}"
+        fi
       else
         local fail_tail
         fail_tail="$(tail -n 3 "${install_log}" | tr '\n' ';' | sed 's/[[:space:]]\+/ /g; s/;$/ /')"
@@ -255,6 +323,9 @@ while IFS=',' read -r txt_file port ip node_id user <&3; do
   if [[ -z "${txt_file}" || -z "${port}" || -z "${ip}" || -z "${node_id}" ]]; then
     continue
   fi
+  if ! should_process_node "${node_id}"; then
+    continue
+  fi
 
   wait_for_slot "${PARALLEL}"
   (
@@ -273,6 +344,11 @@ report_time="$(date '+%F %T')"
   echo "生成时间: ${report_time}"
   echo "映射表: ${MAP_FILE}"
   echo "并发数: ${PARALLEL}"
+  if [[ -n "${NODE_IDS_DISPLAY}" ]]; then
+    echo "目标节点: ${NODE_IDS_DISPLAY}"
+  else
+    echo "目标节点: 全部"
+  fi
   echo "控制器地址: ${CONTROLLER_URL}"
   echo
 

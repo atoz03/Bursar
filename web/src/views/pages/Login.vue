@@ -69,7 +69,6 @@
                   {{ op }}
                 </el-radio-button>
               </el-radio-group>
-              <div class="captcha-tip">{{ t("每次登录都需要重新完成验证码。", "A new captcha is required for every login.") }}</div>
             </div>
           </el-form-item>
         </el-form>
@@ -158,8 +157,15 @@ async function doLogin() {
   } catch (e: any) {
     error.value = e?.message ?? String(e);
     const raw = String(e?.body ?? "").trim();
-    if (raw.includes("totp_required") || raw.includes("totp_invalid")) {
+    if (raw.includes("totp_required")) {
       showTotpInput.value = true;
+      return;
+    }
+    if (raw.includes("totp_invalid")) {
+      showTotpInput.value = true;
+      totpCode.value = "";
+      await loadCaptcha();
+      return;
     }
     await loadCaptcha();
   } finally {

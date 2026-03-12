@@ -141,6 +141,17 @@ func writeRegisterRateLimited(c *gin.Context, errMsg string, retryAt time.Time, 
 	})
 }
 
+func writeLoginCaptchaError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, errRegisterCaptchaExpired):
+		c.JSON(http.StatusBadRequest, gin.H{"error": "captcha_expired"})
+	case errors.Is(err, errRegisterCaptchaUsed):
+		c.JSON(http.StatusBadRequest, gin.H{"error": "captcha_used"})
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "captcha_invalid"})
+	}
+}
+
 func (s *Server) handleAuthLogin(c *gin.Context) {
 	if s.cfg.SessionHours == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "session_disabled"})
@@ -163,15 +174,8 @@ func (s *Server) handleAuthLogin(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "captcha_missing"})
 		return
 	}
-	if err := s.store.VerifyAndConsumeRegisterCaptcha(c.Request.Context(), req.CaptchaID, clientIP, req.CaptchaOption, now); err != nil {
-		switch {
-		case errors.Is(err, errRegisterCaptchaExpired):
-			c.JSON(http.StatusBadRequest, gin.H{"error": "captcha_expired"})
-		case errors.Is(err, errRegisterCaptchaUsed):
-			c.JSON(http.StatusBadRequest, gin.H{"error": "captcha_used"})
-		default:
-			c.JSON(http.StatusBadRequest, gin.H{"error": "captcha_invalid"})
-		}
+	if err := s.store.VerifyRegisterCaptcha(c.Request.Context(), req.CaptchaID, clientIP, req.CaptchaOption, now); err != nil {
+		writeLoginCaptchaError(c, err)
 		return
 	}
 
@@ -219,6 +223,10 @@ func (s *Server) handleAuthLogin(c *gin.Context) {
 				return
 			}
 			if hint != "" {
+				if err := s.store.ConsumeRegisterCaptcha(c.Request.Context(), req.CaptchaID, now); err != nil {
+					writeLoginCaptchaError(c, err)
+					return
+				}
 				c.JSON(http.StatusUnauthorized, gin.H{"error": hint})
 				return
 			}
@@ -228,6 +236,10 @@ func (s *Server) handleAuthLogin(c *gin.Context) {
 				return
 			}
 			if !ok {
+				if err := s.store.ConsumeRegisterCaptcha(c.Request.Context(), req.CaptchaID, now); err != nil {
+					writeLoginCaptchaError(c, err)
+					return
+				}
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_credentials"})
 				return
 			}
@@ -257,9 +269,17 @@ func (s *Server) handleAuthLogin(c *gin.Context) {
 			return
 		}
 		if !verifyTOTPCode(twoFactorState.Secret, req.TOTPCode, now) {
+			if err := s.store.ConsumeRegisterCaptcha(c.Request.Context(), req.CaptchaID, now); err != nil {
+				writeLoginCaptchaError(c, err)
+				return
+			}
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "totp_invalid"})
 			return
 		}
+	}
+	if err := s.store.ConsumeRegisterCaptcha(c.Request.Context(), req.CaptchaID, now); err != nil {
+		writeLoginCaptchaError(c, err)
+		return
 	}
 
 	if err := s.store.RecordSuccessfulLogin(c.Request.Context(), req.Username, role, now); err != nil {
