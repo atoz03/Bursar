@@ -374,6 +374,9 @@
             </el-table-column>
             <el-table-column prop="status" label="状态" width="110" />
             <el-table-column prop="message" label="开通理由" min-width="260" />
+            <el-table-column label="拒绝理由" min-width="240">
+              <template #default="{ row }">{{ (row.reject_reason || "").trim() || "-" }}</template>
+            </el-table-column>
             <el-table-column prop="created_at" label="提交时间" min-width="170" :formatter="tableTimeFormatter" />
           </el-table>
         </el-card>

@@ -38,8 +38,8 @@
 - 作用：在“节点状态监控 -> 节点详情”中生成“疑似恶意用户名单”和“安全审计日志”，支持管理员一键拉黑（SSH 黑名单）。
 
 ### 4) 资源预留策略
-- 默认开启 CPU 预留：`ENABLE_USER_SLICE_CPU_RESERVE=1`，并通过 `USER_SLICE_CPU_RESERVE_PERCENT` 给 `user.slice` 设置 CPU 上限（默认 `95`，约保留 `5%` 给系统）。
-- 默认内存预留：给系统保留 `8G`（`USER_SLICE_MEMORY_RESERVE_GB=8`），避免用户任务把节点内存打满导致卡死。
+- 默认开启 CPU 预留：`ENABLE_SYSTEM_CPU_RESERVE=1`，并通过 `SYSTEM_CPU_RESERVE_PERCENT=5` 约保留 `5%` CPU 给系统（脚本会据此设置 `user.slice` 的 CPU 上限）。
+- 默认内存预留：`ENABLE_SYSTEM_MEMORY_RESERVE=1`，并通过 `SYSTEM_MEMORY_RESERVE_GB=8` 给系统保留 `8G` 内存，避免用户任务把节点内存打满导致卡死。
 
 ---
 
@@ -50,11 +50,10 @@
 | `scripts/install_deps_ubuntu2204.sh` | 安装基础依赖（Go/Node/pnpm/Docker，可选） | `bash scripts/install_deps_ubuntu2204.sh` |
 | `scripts/install_controller_local.sh` | 本机安装控制器到 systemd（后台+开机自启） | `bash scripts/install_controller_local.sh` |
 | `scripts/install_agent_local.sh` | 在计算节点本机安装 node-agent、SSH Guard 与安全基线 | `CONTROLLER_URL=... AGENT_TOKEN=... bash scripts/install_agent_local.sh` |
-| `scripts/install_home_reserve_guard.sh` | 安装 `/home` 预留空间保护（低于阈值限制非豁免用户 `/home` 写入） | `HOME_RESERVE_GB=8 bash scripts/install_home_reserve_guard.sh` |
 | `scripts/deploy_controller.sh` | 远程部署控制器二进制和 systemd | `HOST=<ip> bash scripts/deploy_controller.sh` |
 | `scripts/deploy_agent.sh` | 批量远程部署 node-agent 到多节点 | `NODES='60000:ip1 60001:ip2' ... bash scripts/deploy_agent.sh` |
-| `scripts/distribute_workspace.sh` | 按 `my_ssh_keys/server_ssh_map.csv` 把工作区分发到所有节点 | `bash scripts/distribute_workspace.sh` |
-| `scripts/deploy_installed_nodes_only.sh` | 并发分发到所有节点；仅对已安装 `gpu-node-agent` 的节点重装，输出部署报告 | `CONTROLLER_URL=... AGENT_TOKEN=... bash scripts/deploy_installed_nodes_only.sh` |
+| `scripts/distribute_workspace.sh` | 按 `my_ssh_keys/server_ssh_map.csv` 把工作区分发到节点；支持 `NODE_IDS='60020 60002'` 只跑指定节点 | `bash scripts/distribute_workspace.sh` |
+| `scripts/deploy_installed_nodes_only.sh` | 并发分发到节点；仅对已安装 `gpu-node-agent` 的节点重装，支持 `NODE_IDS='60020 60002'`，输出部署报告 | `CONTROLLER_URL=... AGENT_TOKEN=... bash scripts/deploy_installed_nodes_only.sh` |
 | `scripts/check_server_connectivity.sh` | 按 `server_ssh_map.csv` 检查所有节点 SSH 连通性并输出报告 | `bash scripts/check_server_connectivity.sh` |
 | `scripts/check_status.sh` | 快速检查控制器健康、节点、metrics | `bash scripts/check_status.sh` |
 | `scripts/node_prereq_check.sh` | 节点环境预检查（systemd/cgroup/cpu 控制能力） | `bash scripts/node_prereq_check.sh` |
@@ -62,10 +61,10 @@
 
 补充说明：
 - `install_agent_local.sh` 默认支持 `NODE_ID` 自动识别（按本机 IP 匹配 `my_ssh_keys/server_ssh_map.csv`）。
-- `install_agent_local.sh` 已内置 SSH 防爆破（`fail2ban`）和 `user.slice` 资源预留（默认开启 CPU 预留 + 保留 `8G` 内存，可通过 `USER_SLICE_CPU_RESERVE_PERCENT`、`USER_SLICE_MEMORY_RESERVE_GB` 调整）。
-- `install_agent_local.sh` 与 `install_controller_local.sh` 会自动调用 `install_home_reserve_guard.sh`，可通过 `HOME_RESERVE_GB` 一行调整预留空间。
+- `install_agent_local.sh` 已内置 SSH 防爆破（`fail2ban`）和 `user.slice` 资源预留（默认给系统保留 `5%` CPU + `8G` 内存，可通过 `SYSTEM_CPU_RESERVE_PERCENT`、`SYSTEM_MEMORY_RESERVE_GB` 调整）。
 - `distribute_workspace.sh` 支持并发，默认 `PARALLEL=6`。
-- `distribute_workspace.sh`/`check_server_connectivity.sh` 默认都是全量读取 `my_ssh_keys/server_ssh_map.csv`，不是只跑单节点。
+- `distribute_workspace.sh`、`deploy_installed_nodes_only.sh` 都支持 `NODE_IDS` 过滤，例如 `NODE_IDS='60020 60002'` 或 `NODE_IDS='60020,60002'`。
+- `check_server_connectivity.sh` 默认仍是全量读取 `my_ssh_keys/server_ssh_map.csv`。
 
 ---
 
@@ -287,57 +286,81 @@ NODE_ID=60000 CONTROLLER_URL=http://127.0.0.1:60039 AGENT_TOKEN=<agent_token> go
 ## 🧪 计算节点快速测试与构建（首次安装）
 
 ```bash
+# 1) 在控制节点把代码分发到“新节点”（示例只分发 60020）
+cd /home/gpuops/gpu-ops && NODE_IDS="60020" bash scripts/distribute_workspace.sh
+
+# 2) 登录到对应计算节点，在节点本机执行首次安装
+cd /home/gpuops/gpu-ops && \
+SSH_GUARD_EXCLUDE_USERS="root gpuops" \
+ENABLE_SYSTEM_CPU_RESERVE=1 \
+SYSTEM_CPU_RESERVE_PERCENT=5 \
+ENABLE_SYSTEM_MEMORY_RESERVE=1 \
+SYSTEM_MEMORY_RESERVE_GB=8 \
+CONTROLLER_URL=http://192.0.2.10:60039 \
+AGENT_TOKEN=6af5911256a62c73d8ecaaf60ffec363f23247a0cf262a8f7c78b188fdeaaf4b \
+bash scripts/install_agent_local.sh && \
+sudo systemctl status gpu-node-agent --no-pager
+```
+
+首次安装完成后，如需让该节点以后支持控制节点上的 `deploy_installed_nodes_only.sh` 远程重装，再在该节点额外执行一次 sudoers 放行：
+
+```bash
 cd /home/gpuops/gpu-ops && \
 echo "gpuops ALL=(root) NOPASSWD: /bin/bash /home/gpuops/gpu-ops/scripts/install_agent_local.sh, /bin/bash /home/gpuops/gpu-ops/scripts/install_agent_local.sh *" | sudo tee /etc/sudoers.d/gpu-deploy >/dev/null && \
 sudo chmod 440 /etc/sudoers.d/gpu-deploy && \
 sudo chown root:root /etc/sudoers.d/gpu-deploy && \
-sudo visudo -cf /etc/sudoers.d/gpu-deploy && \
-SSH_GUARD_EXCLUDE_USERS="root gpuops" ENABLE_USER_SLICE_CPU_RESERVE=1 USER_SLICE_CPU_RESERVE_PERCENT=90 USER_SLICE_MEMORY_RESERVE_GB=8 HOME_RESERVE_GB=8 CONTROLLER_URL=http://192.0.2.10:60039 AGENT_TOKEN=6af5911256a62c73d8ecaaf60ffec363f23247a0cf262a8f7c78b188fdeaaf4b bash scripts/install_agent_local.sh && \
-sudo systemctl enable --now gpu-node-agent && \
-sudo systemctl status gpu-node-agent --no-pager
+sudo visudo -cf /etc/sudoers.d/gpu-deploy
 ```
 
-说明：`scripts/install_agent_local.sh` 默认已经会安装并启用 `gpu-node-agent`，上述命令用于手动确认或补开启。`USER_SLICE_CPU_RESERVE_PERCENT` 默认 `95`（预留约 `5%` CPU 给系统，保证 SSH 登录和系统服务响应），可按需改为 `90`、`85`；`USER_SLICE_MEMORY_RESERVE_GB` 默认 `8`，按节点实际情况可改为 `6`、`10` 等；`HOME_RESERVE_GB` 可改成任意整数（单位 GB），例如 `HOME_RESERVE_GB=12`。
+说明：
+- `scripts/install_agent_local.sh` 已经会自动 `enable --now gpu-node-agent`，首次安装时不需要再手动执行一次 `sudo systemctl enable --now gpu-node-agent`。
+- `deploy_installed_nodes_only.sh` 只负责“已安装过 agent 的节点”的后续重装；新节点第一次安装，先按上面的“分发代码 + 节点本机执行 install_agent_local.sh”做。
+- `SYSTEM_CPU_RESERVE_PERCENT` 默认 `5`，表示给系统保留约 `5%` CPU；`SYSTEM_MEMORY_RESERVE_GB` 默认 `8`，可按节点规格改成 `6`、`10` 等。
+- 兼容旧变量：`USER_SLICE_CPU_RESERVE_PERCENT=90` 会自动换算成系统保留 `10%` CPU，`USER_SLICE_MEMORY_RESERVE_GB=8` 等价于 `SYSTEM_MEMORY_RESERVE_GB=8`。
 
 ---
 
 ## 🧪 控制节点快速测试与构建
 
 ```bash
-# 分发最新版脚本给计算节点
-bash ./scripts/distribute_workspace.sh
+# "60020 60000 60002 60005 60014 60016 60001" 第一批节点
+# "60006 60010" 第二批节点
+# "60020 60018 60017 60015 60014 60012 60010 60008 60007 60006 60005 60004 60003 60002 60000" 全部节点
+# 60013 60009 60003 特殊节点
+# NODE_IDS="60020" bash ./scripts/distribute_workspace.sh
 # 一键并发分发并“仅重装已安装过 agent 的节点”，结果写入当前目录“计算节点部署情况.txt”
-cd /home/gpuops/gpu-ops && CONTROLLER_URL=http://192.0.2.10:60039 AGENT_TOKEN=6af5911256a62c73d8ecaaf60ffec363f23247a0cf262a8f7c78b188fdeaaf4b SSH_GUARD_EXCLUDE_USERS="root gpuops" ENABLE_USER_SLICE_CPU_RESERVE=1 USER_SLICE_CPU_RESERVE_PERCENT=95 USER_SLICE_MEMORY_RESERVE_GB=8 HOME_RESERVE_GB=8 PARALLEL=8 bash scripts/deploy_installed_nodes_only.sh
-# 计算节点服务开机自启（在每个计算节点执行一次）
-sudo systemctl enable --now gpu-node-agent
-sudo systemctl status gpu-node-agent --no-pager
-# 先构建前端
+# cd /home/gpuops/gpu-ops && CONTROLLER_URL=http://192.0.2.10:60039 AGENT_TOKEN=6af5911256a62c73d8ecaaf60ffec363f23247a0cf262a8f7c78b188fdeaaf4b SSH_GUARD_EXCLUDE_USERS="root gpuops" ENABLE_SYSTEM_CPU_RESERVE=1 SYSTEM_CPU_RESERVE_PERCENT=5 ENABLE_SYSTEM_MEMORY_RESERVE=1 SYSTEM_MEMORY_RESERVE_GB=8 PARALLEL=8 bash scripts/deploy_installed_nodes_only.sh
+
+# 控制节点先构建前端
 cd /home/gpuops/gpu-ops/web && pnpm build
-# 后台运行 + 开机自启（推荐）
-cd /home/gpuops/gpu-ops && HOME_RESERVE_GB=8 bash scripts/install_controller_local.sh
-# 重启服务
+# 控制节点后台运行 + 开机自启（推荐）
+cd /home/gpuops/gpu-ops && bash scripts/install_controller_local.sh
+# 控制节点重启服务
 sudo systemctl restart gpu-controller
+# 分发最新版脚本给全部计算节点
+bash ./scripts/distribute_workspace.sh
+# 只对指定节点分发并重装（示例：60020、60002）
+cd /home/gpuops/gpu-ops && NODE_IDS="60020 60018 60017 60015 60014 60012 60010 60008 60007 60006 60005 60004 60003 60002 60000" CONTROLLER_URL=http://192.0.2.10:60039 AGENT_TOKEN=6af5911256a62c73d8ecaaf60ffec363f23247a0cf262a8f7c78b188fdeaaf4b SSH_GUARD_EXCLUDE_USERS="root gpuops" ENABLE_SYSTEM_CPU_RESERVE=1 SYSTEM_CPU_RESERVE_PERCENT=10 ENABLE_SYSTEM_MEMORY_RESERVE=1 SYSTEM_MEMORY_RESERVE_GB=8 PARALLEL=8 bash scripts/deploy_installed_nodes_only.sh
+
 # 停止控制节点服务（需要时）
 sudo systemctl stop gpu-controller && sudo systemctl disable gpu-controller && sudo systemctl status gpu-controller --no-pager
-# 停止计算节点服务（node-agent + SSH Guard + /home 预留保护定时任务，需要时）
-sudo systemctl stop gpu-node-agent gpu-ssh-guard-sync.timer gpu-ssh-guard-enforce.timer gpu-home-reserve-enforce.timer && sudo systemctl disable gpu-node-agent gpu-ssh-guard-sync.timer gpu-ssh-guard-enforce.timer gpu-home-reserve-enforce.timer && sudo systemctl status gpu-node-agent gpu-ssh-guard-sync.timer gpu-ssh-guard-enforce.timer gpu-home-reserve-enforce.timer --no-pager
+# 停止计算节点服务（node-agent + SSH Guard，需要时）
+sudo systemctl stop gpu-node-agent gpu-ssh-guard-sync.timer gpu-ssh-guard-enforce.timer && sudo systemctl disable gpu-node-agent gpu-ssh-guard-sync.timer gpu-ssh-guard-enforce.timer && sudo systemctl status gpu-node-agent gpu-ssh-guard-sync.timer gpu-ssh-guard-enforce.timer --no-pager
 # 前台运行（与上面后台方式二选一）
 cd /home/gpuops/gpu-ops/controller && go run . --config ../config/controller.yaml
 # 看 agent 主服务是否在运行
 sudo systemctl status gpu-node-agent --no-pager
 # 只看是否 active（适合脚本）
 systemctl is-active gpu-node-agent
-# 看 SSH Guard 与 /home 预留保护定时器是否在跑
-systemctl is-active gpu-ssh-guard-sync.timer gpu-ssh-guard-enforce.timer gpu-home-reserve-enforce.timer
-systemctl list-timers --all | grep -E 'gpu-ssh-guard-(sync|enforce)\.timer|gpu-home-reserve-enforce\.timer'
-
+# 看 SSH Guard 定时器是否在跑
+systemctl is-active gpu-ssh-guard-sync.timer gpu-ssh-guard-enforce.timer
+systemctl list-timers --all | grep -E 'gpu-ssh-guard-(sync|enforce)\.timer'
 ```
 
 说明：
 - 计算节点安全防护由 `install_agent_local.sh` 安装并启用（SSH Guard + fail2ban + user.slice 资源预留）。
 - 计算节点需启用 `gpu-node-agent` 开机自启（上面的 `systemctl enable --now gpu-node-agent`）。
 - 控制节点需启用 `gpu-controller` 开机自启（`install_controller_local.sh` 会配置并启用 systemd 服务）。
-- 两类节点都会安装 `/home` 预留保护（默认 `HOME_RESERVE_GB=8`，`HOME_RESERVE_EXEMPT_USERS` 默认 `root gpuops`）。
 
 ---
 
@@ -376,9 +399,9 @@ bash scripts/deploy_dr_node_60019.sh
 ### 1) 在 `60009` 上停止并禁用计算节点服务
 
 ```bash
-sudo systemctl stop gpu-node-agent gpu-ssh-guard-sync.timer gpu-ssh-guard-enforce.timer gpu-home-reserve-enforce.timer
-sudo systemctl disable gpu-node-agent gpu-ssh-guard-sync.timer gpu-ssh-guard-enforce.timer gpu-home-reserve-enforce.timer
-systemctl is-active gpu-node-agent gpu-ssh-guard-sync.timer gpu-ssh-guard-enforce.timer gpu-home-reserve-enforce.timer
+sudo systemctl stop gpu-node-agent gpu-ssh-guard-sync.timer gpu-ssh-guard-enforce.timer
+sudo systemctl disable gpu-node-agent gpu-ssh-guard-sync.timer gpu-ssh-guard-enforce.timer
+systemctl is-active gpu-node-agent gpu-ssh-guard-sync.timer gpu-ssh-guard-enforce.timer
 ```
 
 ### 2) （可选）从控制器清理 `60009` 的“计算节点实时状态”
@@ -442,7 +465,7 @@ sed -i 's/^ha_node:.*/ha_node: "controller-60009"/' config/controller.yaml
 sed -i 's/^ha_role:.*/ha_role: "standby"/' config/controller.yaml
 sed -i 's#^ha_peer_url:.*#ha_peer_url: "http://<PRIMARY-IP>:60039"#' config/controller.yaml
 sed -i 's#^ha_token:.*#ha_token: "<同一份HA_TOKEN>"#' config/controller.yaml
-cd /home/gpuops/gpu-ops && HOME_RESERVE_GB=8 bash scripts/install_controller_local.sh
+cd /home/gpuops/gpu-ops && bash scripts/install_controller_local.sh
 sudo systemctl restart gpu-controller
 ```
 
@@ -548,8 +571,8 @@ sudo systemctl start gpu-controller
 | `install_agent_local.sh` | 在计算节点本机一键安装并启用 `gpu-node-agent` | `NODE_ID=60001 CONTROLLER_URL=http://<控制器IP>:60039 AGENT_TOKEN=<token> bash scripts/install_agent_local.sh` |
 | `deploy_agent.sh` | 从控制端批量部署 agent 到多台节点 | `NODES='60000:192.0.2.10 60001:192.0.2.10' AGENT_TOKEN=<token> CONTROLLER_URL=http://<控制器IP>:60039 bash scripts/deploy_agent.sh` |
 | `deploy_controller.sh` | 部署 controller 二进制与配置到远端控制器主机 | `HOST=<控制器主机> CONTROLLER_BIN=./controller/controller bash scripts/deploy_controller.sh` |
-| `distribute_workspace.sh` | 将当前仓库分发到各计算节点 `/home/<用户>/<项目目录>`（支持并发，默认 `PARALLEL=6`） | `PARALLEL=8 bash scripts/distribute_workspace.sh` |
-| `deploy_installed_nodes_only.sh` | 并发分发并仅重装“已安装过 gpu-node-agent”的节点，未安装节点仅更新目录，自动生成 `计算节点部署情况.txt` | `CONTROLLER_URL=http://<控制器IP>:60039 AGENT_TOKEN=<token> SSH_GUARD_EXCLUDE_USERS='root ...' PARALLEL=8 bash scripts/deploy_installed_nodes_only.sh` |
+| `distribute_workspace.sh` | 将当前仓库分发到各计算节点 `/home/<用户>/<项目目录>`（支持并发，默认 `PARALLEL=6`，支持 `NODE_IDS` 只跑指定节点） | `NODE_IDS='60020 60002' PARALLEL=8 bash scripts/distribute_workspace.sh` |
+| `deploy_installed_nodes_only.sh` | 并发分发并仅重装“已安装过 gpu-node-agent”的节点，未安装节点仅更新目录，自动生成 `计算节点部署情况.txt`，支持 `NODE_IDS` 过滤 | `NODE_IDS='60020 60002' CONTROLLER_URL=http://<控制器IP>:60039 AGENT_TOKEN=<token> SSH_GUARD_EXCLUDE_USERS='root ...' PARALLEL=8 bash scripts/deploy_installed_nodes_only.sh` |
 | `build_linux.sh` | 构建 Linux 可部署二进制（controller + node-agent） | `bash scripts/build_linux.sh` |
 | `node_prereq_check.sh` | 计算节点上线前检查（只检查，不改系统） | `bash scripts/node_prereq_check.sh` |
 | `check_server_connectivity.sh` | 检查节点 SSH 连通性并输出报告 | `bash scripts/check_server_connectivity.sh` |

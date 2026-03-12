@@ -13,6 +13,31 @@ TARGET_BASE="${TARGET_BASE:-/home}"
 SSH_TIMEOUT="${SSH_TIMEOUT:-10}"
 DRY_RUN="${DRY_RUN:-0}"
 PARALLEL="${PARALLEL:-6}"
+NODE_IDS_RAW="${NODE_IDS:-}"
+NODE_IDS_CANON=""
+NODE_IDS_DISPLAY=""
+
+init_node_filter() {
+  local raw="${NODE_IDS_RAW}"
+  raw="${raw//$'\n'/ }"
+  raw="${raw//$'\t'/ }"
+  raw="${raw//,/ }"
+  for node in ${raw}; do
+    [[ -z "${node}" ]] && continue
+    if [[ "${NODE_IDS_CANON}" != *",${node},"* ]]; then
+      NODE_IDS_CANON+=",${node},"
+      if [[ -n "${NODE_IDS_DISPLAY}" ]]; then
+        NODE_IDS_DISPLAY+=" "
+      fi
+      NODE_IDS_DISPLAY+="${node}"
+    fi
+  done
+}
+
+should_process_node() {
+  local node_id="$1"
+  [[ -z "${NODE_IDS_CANON}" || "${NODE_IDS_CANON}" == *",${node_id},"* ]]
+}
 
 if [[ ! -f "${MAP_FILE}" ]]; then
   echo "映射表不存在：${MAP_FILE}" >&2
@@ -24,10 +49,17 @@ if [[ ! -d "${SOURCE_DIR}" ]]; then
   exit 2
 fi
 
+init_node_filter
+
 echo "SOURCE_DIR=${SOURCE_DIR}"
 echo "MAP_FILE=${MAP_FILE}"
 echo "TARGET=<${TARGET_BASE}>/<用户名>/${PROJECT_DIR_NAME}"
 echo "PARALLEL=${PARALLEL}"
+if [[ -n "${NODE_IDS_DISPLAY}" ]]; then
+  echo "NODE_IDS=${NODE_IDS_DISPLAY}"
+else
+  echo "NODE_IDS=<all>"
+fi
 
 copy_one() {
   local txt_file="$1"
@@ -132,6 +164,9 @@ while IFS=',' read -r txt_file port ip node_id user <&3; do
 
   if [[ -z "${txt_file}" || -z "${port}" || -z "${ip}" || -z "${node_id}" ]]; then
     echo "[SKIP] 行字段不完整：${txt_file},${port},${ip},${node_id},${user}"
+    continue
+  fi
+  if ! should_process_node "${node_id}"; then
     continue
   fi
 

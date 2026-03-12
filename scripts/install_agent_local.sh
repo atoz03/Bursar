@@ -43,15 +43,37 @@ SSH_FAIL2BAN_MAXRETRY="${SSH_FAIL2BAN_MAXRETRY:-20}"
 SSH_FAIL2BAN_FINDTIME="${SSH_FAIL2BAN_FINDTIME:-5m}"
 SSH_FAIL2BAN_BANTIME="${SSH_FAIL2BAN_BANTIME:-12h}"
 SSH_FAIL2BAN_IGNOREIP="${SSH_FAIL2BAN_IGNOREIP:-}"
-ENABLE_USER_SLICE_CPU_RESERVE="${ENABLE_USER_SLICE_CPU_RESERVE:-1}"
-USER_SLICE_CPU_RESERVE_PERCENT="${USER_SLICE_CPU_RESERVE_PERCENT:-95}"
-ENABLE_USER_SLICE_MEMORY_RESERVE="${ENABLE_USER_SLICE_MEMORY_RESERVE:-1}"
-USER_SLICE_MEMORY_RESERVE_GB="${USER_SLICE_MEMORY_RESERVE_GB:-8}"
+LEGACY_ENABLE_USER_SLICE_CPU_RESERVE="${ENABLE_USER_SLICE_CPU_RESERVE:-}"
+LEGACY_USER_SLICE_CPU_RESERVE_PERCENT="${USER_SLICE_CPU_RESERVE_PERCENT:-}"
+LEGACY_ENABLE_USER_SLICE_MEMORY_RESERVE="${ENABLE_USER_SLICE_MEMORY_RESERVE:-}"
+LEGACY_USER_SLICE_MEMORY_RESERVE_GB="${USER_SLICE_MEMORY_RESERVE_GB:-}"
+ENABLE_SYSTEM_CPU_RESERVE="${ENABLE_SYSTEM_CPU_RESERVE:-${LEGACY_ENABLE_USER_SLICE_CPU_RESERVE:-1}}"
+ENABLE_SYSTEM_MEMORY_RESERVE="${ENABLE_SYSTEM_MEMORY_RESERVE:-${LEGACY_ENABLE_USER_SLICE_MEMORY_RESERVE:-1}}"
+LEGACY_CPU_RESERVE_COMPAT_USED=0
+LEGACY_MEMORY_RESERVE_COMPAT_USED=0
+if [[ -n "${SYSTEM_CPU_RESERVE_PERCENT:-}" ]]; then
+  SYSTEM_CPU_RESERVE_PERCENT="${SYSTEM_CPU_RESERVE_PERCENT}"
+elif [[ -n "${LEGACY_USER_SLICE_CPU_RESERVE_PERCENT}" ]]; then
+  LEGACY_CPU_RESERVE_COMPAT_USED=1
+  if [[ "${LEGACY_USER_SLICE_CPU_RESERVE_PERCENT}" =~ ^[0-9]+$ ]] \
+    && [[ "${LEGACY_USER_SLICE_CPU_RESERVE_PERCENT}" -ge 10 ]] \
+    && [[ "${LEGACY_USER_SLICE_CPU_RESERVE_PERCENT}" -le 100 ]]; then
+    SYSTEM_CPU_RESERVE_PERCENT="$((100 - LEGACY_USER_SLICE_CPU_RESERVE_PERCENT))"
+  else
+    SYSTEM_CPU_RESERVE_PERCENT="5"
+  fi
+else
+  SYSTEM_CPU_RESERVE_PERCENT="5"
+fi
+if [[ -n "${SYSTEM_MEMORY_RESERVE_GB:-}" ]]; then
+  SYSTEM_MEMORY_RESERVE_GB="${SYSTEM_MEMORY_RESERVE_GB}"
+elif [[ -n "${LEGACY_USER_SLICE_MEMORY_RESERVE_GB}" ]]; then
+  LEGACY_MEMORY_RESERVE_COMPAT_USED=1
+  SYSTEM_MEMORY_RESERVE_GB="${LEGACY_USER_SLICE_MEMORY_RESERVE_GB}"
+else
+  SYSTEM_MEMORY_RESERVE_GB="8"
+fi
 RESET_USER_CPU_QUOTA_ON_INSTALL="${RESET_USER_CPU_QUOTA_ON_INSTALL:-1}"
-HOME_RESERVE_GB="${HOME_RESERVE_GB:-8}"
-HOME_RESERVE_CHECK_PATH="${HOME_RESERVE_CHECK_PATH:-/home}"
-HOME_RESERVE_EXEMPT_USERS="${HOME_RESERVE_EXEMPT_USERS:-root gpuops}"
-HOME_RESERVE_ENFORCE_INTERVAL="${HOME_RESERVE_ENFORCE_INTERVAL:-30s}"
 
 NODE_ID="${NODE_ID:-}"
 CONTROLLER_URL="${CONTROLLER_URL:-}"
@@ -96,6 +118,87 @@ load_existing_guard_conf() {
 
 load_existing_service_env
 load_existing_guard_conf
+
+cleanup_runtime_limit_residue() {
+  if [[ "${RESET_USER_CPU_QUOTA_ON_INSTALL}" != "1" ]]; then
+    return 0
+  fi
+
+  echo "清理历史用户 CPU/内存运行态残留"
+  while IFS=: read -r username _ uid _ _ home shell; do
+    username="$(echo "${username}" | xargs)"
+    uid="$(echo "${uid}" | xargs)"
+    home="$(echo "${home}" | xargs)"
+    shell="$(echo "${shell}" | xargs)"
+    if [[ -z "${username}" || -z "${uid}" || -z "${home}" ]]; then
+      continue
+    fi
+    if [[ ! "${uid}" =~ ^[0-9]+$ ]] || [[ "${uid}" -lt 1000 ]]; then
+      continue
+    fi
+    if [[ "${home}" != /home/* ]]; then
+      continue
+    fi
+    if [[ "${shell}" == *nologin* || "${shell}" == *false* ]]; then
+      continue
+    fi
+
+    ${SUDO} systemctl set-property --runtime "user-${uid}.slice" CPUQuota= >/dev/null 2>&1 || true
+    ${SUDO} systemctl set-property --runtime "user-${uid}.slice" MemoryAccounting=yes MemoryHigh=infinity MemoryMax=infinity >/dev/null 2>&1 || true
+    ${SUDO} systemctl set-property --runtime "user@${uid}.service" MemoryAccounting=yes MemoryHigh=infinity MemoryMax=infinity >/dev/null 2>&1 || true
+    ${SUDO} rm -f "/etc/systemd/system/user-${uid}.slice.d/90-gpuops-cpu-quota.conf" >/dev/null 2>&1 || true
+    ${SUDO} rm -f "/etc/systemd/system/user-${uid}.slice.d/90-gpuops-memory-limit.conf" >/dev/null 2>&1 || true
+    ${SUDO} rmdir "/etc/systemd/system/user-${uid}.slice.d" >/dev/null 2>&1 || true
+
+    if [[ -w "/sys/fs/cgroup/user.slice/user-${uid}.slice/cpu.max" ]]; then
+      echo "max 100000" | ${SUDO} tee "/sys/fs/cgroup/user.slice/user-${uid}.slice/cpu.max" >/dev/null || true
+    fi
+    if [[ -w "/sys/fs/cgroup/user-${uid}.slice/cpu.max" ]]; then
+      echo "max 100000" | ${SUDO} tee "/sys/fs/cgroup/user-${uid}.slice/cpu.max" >/dev/null || true
+    fi
+
+    if [[ -w "/sys/fs/cgroup/cpu/gpuops/user-${uid}/cpu.cfs_quota_us" ]]; then
+      echo "-1" | ${SUDO} tee "/sys/fs/cgroup/cpu/gpuops/user-${uid}/cpu.cfs_quota_us" >/dev/null || true
+    fi
+    if [[ -w "/sys/fs/cgroup/user.slice/user-${uid}.slice/memory.high" ]]; then
+      echo "max" | ${SUDO} tee "/sys/fs/cgroup/user.slice/user-${uid}.slice/memory.high" >/dev/null || true
+    fi
+    if [[ -w "/sys/fs/cgroup/user.slice/user-${uid}.slice/memory.max" ]]; then
+      echo "max" | ${SUDO} tee "/sys/fs/cgroup/user.slice/user-${uid}.slice/memory.max" >/dev/null || true
+    fi
+    if [[ -w "/sys/fs/cgroup/user.slice/user-${uid}.slice/user@${uid}.service/memory.high" ]]; then
+      echo "max" | ${SUDO} tee "/sys/fs/cgroup/user.slice/user-${uid}.slice/user@${uid}.service/memory.high" >/dev/null || true
+    fi
+    if [[ -w "/sys/fs/cgroup/user.slice/user-${uid}.slice/user@${uid}.service/memory.max" ]]; then
+      echo "max" | ${SUDO} tee "/sys/fs/cgroup/user.slice/user-${uid}.slice/user@${uid}.service/memory.max" >/dev/null || true
+    fi
+  done < /etc/passwd
+
+  # 清理旧状态文件，避免 agent 重启时先恢复过期的运行态限制。
+  ${SUDO} find /home -mindepth 2 -maxdepth 2 -type f \( -name ".cpu_quota" -o -name ".memory_limit" \) -delete >/dev/null 2>&1 || true
+  ${SUDO} systemctl daemon-reload >/dev/null 2>&1 || true
+}
+
+build_agent_ldflags() {
+  local build_at commit dirty modified=""
+  build_at="$(date -u '+%Y%m%dT%H%M%SZ')"
+  if git -C "${PROJECT_ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    commit="$(git -C "${PROJECT_ROOT}" rev-parse --short=12 HEAD 2>/dev/null || true)"
+    dirty="$(git -C "${PROJECT_ROOT}" status --porcelain --untracked-files=no 2>/dev/null || true)"
+    if [[ -n "${dirty}" ]]; then
+      modified="true"
+    fi
+  fi
+
+  local ldflags="-X main.agentBuildAt=${build_at}"
+  if [[ -n "${commit:-}" ]]; then
+    ldflags="${ldflags} -X main.agentCommit=${commit}"
+  fi
+  if [[ -n "${modified}" ]]; then
+    ldflags="${ldflags} -X main.agentVCSModified=${modified}"
+  fi
+  echo "${ldflags}"
+}
 
 trim_text() {
   echo "$1" | xargs
@@ -212,15 +315,15 @@ usage() {
   SSH_FAIL2BAN_FINDTIME=5m         fail2ban SSH 统计窗口（默认 5m）
   SSH_FAIL2BAN_BANTIME=12h         fail2ban SSH 封禁时长（默认 12h）
   SSH_FAIL2BAN_IGNOREIP="..."      fail2ban 忽略网段（默认空，不忽略 localhost）
-  ENABLE_USER_SLICE_CPU_RESERVE=1  为 user.slice 预留 CPU（默认 1，开启）
-  USER_SLICE_CPU_RESERVE_PERCENT=95 user.slice CPU 上限百分比（默认 95，约保留 5% 给系统）
-  ENABLE_USER_SLICE_MEMORY_RESERVE=1 是否为系统保留内存（默认 1，开启）
-  USER_SLICE_MEMORY_RESERVE_GB=8     为系统保留内存（GB，默认 8）
-  RESET_USER_CPU_QUOTA_ON_INSTALL=1 安装时清理历史用户 CPU 限速残留（默认 1）
-  HOME_RESERVE_GB=8                /home 最低保留空间（GB，默认 8；0 表示关闭）
-  HOME_RESERVE_CHECK_PATH=/home    保护检测路径（默认 /home）
-  HOME_RESERVE_EXEMPT_USERS="..."  /home 保护豁免用户（默认 root gpuops）
-  HOME_RESERVE_ENFORCE_INTERVAL=30s /home 保护会话巡检周期（默认 30s）
+  ENABLE_SYSTEM_CPU_RESERVE=1      是否为系统保留 CPU（默认 1，开启）
+  SYSTEM_CPU_RESERVE_PERCENT=5     为系统保留 CPU 百分比（默认 5）
+  ENABLE_SYSTEM_MEMORY_RESERVE=1   是否为系统保留内存（默认 1，开启）
+  SYSTEM_MEMORY_RESERVE_GB=8       为系统保留内存（GB，默认 8）
+  ENABLE_USER_SLICE_CPU_RESERVE=1  兼容旧写法，等价于 ENABLE_SYSTEM_CPU_RESERVE
+  USER_SLICE_CPU_RESERVE_PERCENT=95 兼容旧写法，表示 user.slice CPU 上限 95%，会自动换算成系统保留 5%
+  ENABLE_USER_SLICE_MEMORY_RESERVE=1 兼容旧写法，等价于 ENABLE_SYSTEM_MEMORY_RESERVE
+  USER_SLICE_MEMORY_RESERVE_GB=8   兼容旧写法，等价于 SYSTEM_MEMORY_RESERVE_GB
+  RESET_USER_CPU_QUOTA_ON_INSTALL=1 安装时清理历史用户 CPU/内存运行态残留（默认 1）
 USAGE
 }
 
@@ -268,8 +371,15 @@ echo "CONTROLLER_URL=${CONTROLLER_URL}"
 echo "SERVICE_NAME=${SERVICE_NAME}"
 echo "SYNC_TIME_WITH_CONTROLLER=${SYNC_TIME_WITH_CONTROLLER}"
 echo "ENABLE_SSH_GUARD=${ENABLE_SSH_GUARD} (FAIL_OPEN=${SSH_GUARD_FAIL_OPEN})"
-echo "ENABLE_USER_SLICE_CPU_RESERVE=${ENABLE_USER_SLICE_CPU_RESERVE} (USER_SLICE_CPU_RESERVE_PERCENT=${USER_SLICE_CPU_RESERVE_PERCENT})"
-echo "ENABLE_USER_SLICE_MEMORY_RESERVE=${ENABLE_USER_SLICE_MEMORY_RESERVE} (USER_SLICE_MEMORY_RESERVE_GB=${USER_SLICE_MEMORY_RESERVE_GB})"
+echo "ENABLE_SYSTEM_CPU_RESERVE=${ENABLE_SYSTEM_CPU_RESERVE} (SYSTEM_CPU_RESERVE_PERCENT=${SYSTEM_CPU_RESERVE_PERCENT})"
+echo "ENABLE_SYSTEM_MEMORY_RESERVE=${ENABLE_SYSTEM_MEMORY_RESERVE} (SYSTEM_MEMORY_RESERVE_GB=${SYSTEM_MEMORY_RESERVE_GB})"
+echo "RESET_USER_CPU_QUOTA_ON_INSTALL=${RESET_USER_CPU_QUOTA_ON_INSTALL}"
+if [[ "${LEGACY_CPU_RESERVE_COMPAT_USED}" == "1" ]]; then
+  echo "兼容旧变量：USER_SLICE_CPU_RESERVE_PERCENT=${LEGACY_USER_SLICE_CPU_RESERVE_PERCENT} -> SYSTEM_CPU_RESERVE_PERCENT=${SYSTEM_CPU_RESERVE_PERCENT}"
+fi
+if [[ "${LEGACY_MEMORY_RESERVE_COMPAT_USED}" == "1" ]]; then
+  echo "兼容旧变量：USER_SLICE_MEMORY_RESERVE_GB=${LEGACY_USER_SLICE_MEMORY_RESERVE_GB} -> SYSTEM_MEMORY_RESERVE_GB=${SYSTEM_MEMORY_RESERVE_GB}"
+fi
 echo "INSTALL_NODE_DEPS=${INSTALL_NODE_DEPS}"
 echo "INSTALL_DOCKER_DEPS=${INSTALL_DOCKER_DEPS}"
 echo "NODE_ID_AUTO_DETECT=${NODE_ID_AUTO_DETECT}"
@@ -350,7 +460,11 @@ fi
 echo "[7/9] 编译 node-agent"
 cd "${NODE_AGENT_DIR}"
 go mod download
-go build -o node-agent .
+AGENT_LDFLAGS="$(build_agent_ldflags)"
+echo "node-agent ldflags=${AGENT_LDFLAGS}"
+go build -ldflags "${AGENT_LDFLAGS}" -o node-agent .
+
+cleanup_runtime_limit_residue
 
 echo "[8/9] 安装 systemd 服务"
 ${SUDO} install -m 0755 node-agent /usr/local/bin/node-agent
@@ -380,7 +494,13 @@ EOF_SERVICE
 
 ${SUDO} systemctl daemon-reload
 ${SUDO} systemctl enable "${SERVICE_NAME}"
-${SUDO} systemctl restart "${SERVICE_NAME}"
+if ${SUDO} systemctl is-active --quiet "${SERVICE_NAME}"; then
+  echo "检测到 ${SERVICE_NAME} 已在运行，执行重启以加载新二进制"
+  ${SUDO} systemctl restart "${SERVICE_NAME}"
+else
+  echo "检测到 ${SERVICE_NAME} 未运行，执行启动"
+  ${SUDO} systemctl start "${SERVICE_NAME}"
+fi
 
 echo "[9/9] 服务状态"
 ${SUDO} systemctl --no-pager --full status "${SERVICE_NAME}" || true
@@ -867,16 +987,17 @@ EOF_FAIL2BAN
   # 兼容旧版文件名，避免和新拆分的 CPU/内存配置冲突。
   ${SUDO} rm -f /etc/systemd/system/user.slice.d/20-gpu-reserve.conf || true
 
-  if [[ "${ENABLE_USER_SLICE_CPU_RESERVE}" == "1" ]]; then
+  if [[ "${ENABLE_SYSTEM_CPU_RESERVE}" == "1" ]]; then
     cpu_cnt="$(nproc 2>/dev/null || echo 1)"
     if [[ ! "${cpu_cnt}" =~ ^[0-9]+$ || "${cpu_cnt}" -le 0 ]]; then
       cpu_cnt=1
     fi
-    reserve_pct="${USER_SLICE_CPU_RESERVE_PERCENT}"
-    if [[ ! "${reserve_pct}" =~ ^[0-9]+$ || "${reserve_pct}" -lt 10 || "${reserve_pct}" -gt 100 ]]; then
-      reserve_pct=95
+    reserve_pct="${SYSTEM_CPU_RESERVE_PERCENT}"
+    if [[ ! "${reserve_pct}" =~ ^[0-9]+$ || "${reserve_pct}" -lt 0 || "${reserve_pct}" -gt 99 ]]; then
+      reserve_pct=5
     fi
-    quota_pct=$((cpu_cnt * reserve_pct))
+    user_slice_pct=$((100 - reserve_pct))
+    quota_pct=$((cpu_cnt * user_slice_pct))
     ${SUDO} mkdir -p /etc/systemd/system/user.slice.d
     ${SUDO} tee /etc/systemd/system/user.slice.d/20-gpu-cpu-reserve.conf >/dev/null <<EOF_USER_SLICE_CPU
 [Slice]
@@ -885,17 +1006,17 @@ CPUQuota=${quota_pct}%
 EOF_USER_SLICE_CPU
     ${SUDO} systemctl daemon-reload || true
     ${SUDO} systemctl set-property --runtime user.slice "CPUQuota=${quota_pct}%" >/dev/null 2>&1 || true
-    echo "已设置 user.slice CPUQuota=${quota_pct}%（约保留 ${100-reserve_pct}% CPU 给系统）"
+    echo "已设置 user.slice CPUQuota=${quota_pct}%（约保留 ${reserve_pct}% CPU 给系统）"
   else
     # 默认不限制 user.slice，避免普通 SSH 会话出现明显卡顿。
     ${SUDO} rm -f /etc/systemd/system/user.slice.d/20-gpu-cpu-reserve.conf || true
     ${SUDO} systemctl daemon-reload || true
     ${SUDO} systemctl set-property --runtime user.slice "CPUQuota=infinity" >/dev/null 2>&1 || true
-    echo "已关闭 user.slice CPUQuota 预留（恢复为不限制）"
+    echo "已关闭系统 CPU 预留（恢复为不限制）"
   fi
 
-  if [[ "${ENABLE_USER_SLICE_MEMORY_RESERVE}" == "1" ]]; then
-    reserve_gb_raw="${USER_SLICE_MEMORY_RESERVE_GB}"
+  if [[ "${ENABLE_SYSTEM_MEMORY_RESERVE}" == "1" ]]; then
+    reserve_gb_raw="${SYSTEM_MEMORY_RESERVE_GB}"
     if [[ ! "${reserve_gb_raw}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
       reserve_gb_raw="8"
     fi
@@ -930,61 +1051,8 @@ EOF_USER_SLICE_MEM
     ${SUDO} rm -f /etc/systemd/system/user.slice.d/30-gpu-memory-reserve.conf || true
     ${SUDO} systemctl daemon-reload || true
     ${SUDO} systemctl set-property --runtime user.slice "MemoryMax=infinity" >/dev/null 2>&1 || true
-    echo "已关闭 user.slice 内存预留（恢复为不限制）"
+    echo "已关闭系统内存预留（恢复为不限制）"
   fi
-fi
-
-if [[ "${RESET_USER_CPU_QUOTA_ON_INSTALL}" == "1" ]]; then
-  echo "[12/12] 清理历史用户 CPU 限速残留"
-  while IFS=: read -r username _ uid _ _ home shell; do
-    username="$(echo "${username}" | xargs)"
-    uid="$(echo "${uid}" | xargs)"
-    home="$(echo "${home}" | xargs)"
-    shell="$(echo "${shell}" | xargs)"
-    if [[ -z "${username}" || -z "${uid}" || -z "${home}" ]]; then
-      continue
-    fi
-    if [[ ! "${uid}" =~ ^[0-9]+$ ]] || [[ "${uid}" -lt 1000 ]]; then
-      continue
-    fi
-    if [[ "${home}" != /home/* ]]; then
-      continue
-    fi
-    if [[ "${shell}" == *nologin* || "${shell}" == *false* ]]; then
-      continue
-    fi
-
-    # systemd user slice（runtime）解除限速
-    ${SUDO} systemctl set-property --runtime "user-${uid}.slice" CPUQuota= >/dev/null 2>&1 || true
-
-    # cgroup v2 直接兜底
-    if [[ -w "/sys/fs/cgroup/user.slice/user-${uid}.slice/cpu.max" ]]; then
-      echo "max 100000" | ${SUDO} tee "/sys/fs/cgroup/user.slice/user-${uid}.slice/cpu.max" >/dev/null || true
-    fi
-    if [[ -w "/sys/fs/cgroup/user-${uid}.slice/cpu.max" ]]; then
-      echo "max 100000" | ${SUDO} tee "/sys/fs/cgroup/user-${uid}.slice/cpu.max" >/dev/null || true
-    fi
-
-    # cgroup v1 兜底
-    if [[ -w "/sys/fs/cgroup/cpu/gpuops/user-${uid}/cpu.cfs_quota_us" ]]; then
-      echo "-1" | ${SUDO} tee "/sys/fs/cgroup/cpu/gpuops/user-${uid}/cpu.cfs_quota_us" >/dev/null || true
-    fi
-  done < /etc/passwd
-
-  # 清理旧状态文件，避免前端/排查误判
-  ${SUDO} find /home -mindepth 2 -maxdepth 2 -type f -name ".cpu_quota" -delete >/dev/null 2>&1 || true
-fi
-
-if [[ -f "${PROJECT_ROOT}/scripts/install_home_reserve_guard.sh" ]]; then
-  echo "[13/13] 安装 /home 预留空间保护"
-  ${SUDO} env \
-    HOME_RESERVE_GB="${HOME_RESERVE_GB}" \
-    HOME_RESERVE_CHECK_PATH="${HOME_RESERVE_CHECK_PATH}" \
-    HOME_RESERVE_EXEMPT_USERS="${HOME_RESERVE_EXEMPT_USERS}" \
-    HOME_RESERVE_ENFORCE_INTERVAL="${HOME_RESERVE_ENFORCE_INTERVAL}" \
-    /bin/bash "${PROJECT_ROOT}/scripts/install_home_reserve_guard.sh"
-else
-  echo "警告：未找到 scripts/install_home_reserve_guard.sh，跳过 /home 预留空间保护"
 fi
 
 echo

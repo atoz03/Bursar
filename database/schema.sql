@@ -371,6 +371,7 @@ CREATE TABLE IF NOT EXISTS user_requests (
     status VARCHAR(20) NOT NULL DEFAULT 'pending', -- pending, verified, approved, rejected, challenge_active
     reviewed_by VARCHAR(50) NULL,
     reviewed_at TIMESTAMP NULL,
+    reject_reason TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );

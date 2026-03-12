@@ -23,6 +23,7 @@ type MetricsData struct {
 	OSVersion               string                    `json:"os_version,omitempty"`
 	KernelVersion           string                    `json:"kernel_version,omitempty"`
 	AgentVersion            string                    `json:"agent_version,omitempty"`
+	AgentSessionID          string                    `json:"agent_session_id,omitempty"`
 	NodeIP                  string                    `json:"node_ip,omitempty"`
 	NodeMAC                 string                    `json:"node_mac,omitempty"`
 	NetRxBytes              uint64                    `json:"net_rx_bytes,omitempty"`
@@ -489,6 +490,7 @@ type UserRequest struct {
 	Status          string     `json:"status"` // pending/challenge_active/verified/approved/rejected
 	ReviewedBy      *string    `json:"reviewed_by,omitempty"`
 	ReviewedAt      *time.Time `json:"reviewed_at,omitempty"`
+	RejectReason    string     `json:"reject_reason,omitempty"`
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
 }
@@ -594,25 +596,25 @@ type RegistrationDisposableEmailDomain struct {
 }
 
 type RegistrationSecurityEvent struct {
-	EventID   int64     `json:"event_id"`
-	Action    string    `json:"action"`
-	Decision  string    `json:"decision"`
-	Reason    string    `json:"reason"`
-	ClientIP  string    `json:"client_ip"`
-	Username  string    `json:"username"`
-	Email     string    `json:"email"`
-	StudentID string    `json:"student_id"`
-	UserAgent string    `json:"user_agent"`
+	EventID   int64      `json:"event_id"`
+	Action    string     `json:"action"`
+	Decision  string     `json:"decision"`
+	Reason    string     `json:"reason"`
+	ClientIP  string     `json:"client_ip"`
+	Username  string     `json:"username"`
+	Email     string     `json:"email"`
+	StudentID string     `json:"student_id"`
+	UserAgent string     `json:"user_agent"`
 	RetryAt   *time.Time `json:"retry_at,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	CreatedAt time.Time  `json:"created_at"`
 }
 
 type RegistrationRateStats struct {
-	IPCount          int
-	EmailCount       int
-	LastIPAt         *time.Time
-	LastEmailAt      *time.Time
-	IPWindowRetryAt  *time.Time
+	IPCount            int
+	EmailCount         int
+	LastIPAt           *time.Time
+	LastEmailAt        *time.Time
+	IPWindowRetryAt    *time.Time
 	EmailWindowRetryAt *time.Time
 }
 

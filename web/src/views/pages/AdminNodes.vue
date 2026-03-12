@@ -1323,6 +1323,12 @@
         <el-form-item label="节点ID">
           <el-text>{{ nodePriceNodeId || "-" }}</el-text>
         </el-form-item>
+        <el-form-item label="CPU 型号">
+          <el-text>{{ nodePriceCPUModel || "-" }}</el-text>
+        </el-form-item>
+        <el-form-item label="GPU 型号">
+          <el-text>{{ nodePriceGPUModel || "-" }}</el-text>
+        </el-form-item>
         <el-form-item label="GPU 单价">
           <el-input-number
             v-model="nodePricePerMinute"
@@ -1537,6 +1543,8 @@ const nodeDiskQuotaUsers = ref<DiskQuotaUserRow[]>([]);
 const nodePriceVisible = ref(false);
 const nodePriceSaving = ref(false);
 const nodePriceNodeId = ref("");
+const nodePriceCPUModel = ref("");
+const nodePriceGPUModel = ref("");
 const nodePricePerMinute = ref(0.1);
 const nodeCPUPricePerCoreMinute = ref(0.02);
 const nodePriceDefaultPerMinute = ref(0.1);
@@ -1589,8 +1597,10 @@ const platformProfile = ref<{
   node_accounts: UserNodeAccount[];
 } | null>(null);
 let detailTimer: ReturnType<typeof setTimeout> | null = null;
+let listTimer: ReturnType<typeof setTimeout> | null = null;
 let sshResolveSeq = 0;
 const DETAIL_AUTO_REFRESH_MS = 10 * 1000;
+const LIST_AUTO_REFRESH_MS = 10 * 1000;
 
 const totalGpuProcesses = computed(() => rows.value.reduce((sum, node) => sum + node.gpu_process_count, 0));
 const totalCpuProcesses = computed(() => rows.value.reduce((sum, node) => sum + node.cpu_process_count, 0));
@@ -1906,7 +1916,7 @@ function normalizeAgentVersion(v: unknown): string {
   return String(v ?? "").trim();
 }
 
-const AGENT_VERSION_PATTERN = /^v(\d+)\.(\d+)$/;
+const AGENT_VERSION_PATTERN = /^v?(\d+)\.(\d+)(?:\.\d+)?(?:[-+].*)?$/i;
 
 function parseAgentMajorMinor(v: unknown): [number, number] | null {
   const m = normalizeAgentVersion(v).match(AGENT_VERSION_PATTERN);
@@ -1923,9 +1933,9 @@ function formatAgentMajorMinor(v: [number, number]): string {
 }
 
 function displayAgentVersion(v: unknown): string {
-  const parsed = parseAgentMajorMinor(v);
-  if (!parsed) return "-";
-  return formatAgentMajorMinor(parsed);
+  const raw = normalizeAgentVersion(v);
+  if (!raw) return "-";
+  return raw;
 }
 
 function compareAgentMajorMinor(a: [number, number], b: [number, number]): number {
@@ -2145,6 +2155,16 @@ async function reload() {
   } finally {
     loading.value = false;
   }
+}
+
+function applyNodeStatusSnapshot(node: NodeStatus | null | undefined) {
+  const id = String(node?.node_id || "").trim();
+  if (!id || !node) return;
+  const idx = rows.value.findIndex((x) => String(x.node_id || "").trim() === id);
+  if (idx < 0) return;
+  const next = [...rows.value];
+  next[idx] = { ...next[idx], ...node };
+  rows.value = next;
 }
 
 async function onNodeSSHGuardToggle(row: NodeStatus, enabled: boolean) {
@@ -2687,6 +2707,8 @@ async function openNodePriceDialog(row: NodeStatus) {
   const nodeId = String(row.node_id || "").trim();
   if (!nodeId) return;
   nodePriceNodeId.value = nodeId;
+  nodePriceCPUModel.value = String(row.cpu_model || "").trim();
+  nodePriceGPUModel.value = String(row.gpu_model || "").trim();
   nodePriceVisible.value = true;
   nodePriceSaving.value = false;
   nodePricePerMinute.value = Number(row.node_price_per_minute ?? 0.1);
@@ -2964,6 +2986,7 @@ async function loadNodeDetail(nodeID: string, withLoading = true) {
   try {
     const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
     detailData.value = await client.adminNodeDetail(nodeID, { minutes: 180, limit: 360 });
+    applyNodeStatusSnapshot(detailData.value?.node);
     securityEventsRows.value = detailData.value.security_events || [];
     securityEventSummariesRows.value = [];
     detailLastRefreshAt.value = Date.now();
@@ -2987,6 +3010,13 @@ function stopDetailAutoRefresh() {
   }
 }
 
+function stopListAutoRefresh() {
+  if (listTimer) {
+    clearTimeout(listTimer);
+    listTimer = null;
+  }
+}
+
 function startDetailAutoRefresh() {
   stopDetailAutoRefresh();
   detailTimer = setTimeout(async () => {
@@ -2995,6 +3025,19 @@ function startDetailAutoRefresh() {
       startDetailAutoRefresh();
     }
   }, DETAIL_AUTO_REFRESH_MS);
+}
+
+function startListAutoRefresh() {
+  stopListAutoRefresh();
+  listTimer = setTimeout(async () => {
+    try {
+      if (!loading.value) {
+        await reload();
+      }
+    } finally {
+      startListAutoRefresh();
+    }
+  }, LIST_AUTO_REFRESH_MS);
 }
 
 async function openNodeDetail(row: NodeStatus) {
@@ -3303,8 +3346,10 @@ async function disconnectSSHUser(localUsername: string) {
 }
 
 reload();
+startListAutoRefresh();
 onBeforeUnmount(() => {
   stopDetailAutoRefresh();
+  stopListAutoRefresh();
 });
 </script>
 

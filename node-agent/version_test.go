@@ -24,9 +24,51 @@ func TestNormalizeAgentVersionLabel(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := normalizeAgentVersionLabel(tc.input)
+			got := normalizeAgentVersionBase(tc.input)
 			if got != tc.wantOut {
-				t.Fatalf("normalizeAgentVersionLabel(%q)=%q, want %q", tc.input, got, tc.wantOut)
+				t.Fatalf("normalizeAgentVersionBase(%q)=%q, want %q", tc.input, got, tc.wantOut)
+			}
+		})
+	}
+}
+
+func TestFormatAgentVersionLabel(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		info agentBuildInfo
+		want string
+	}{
+		{
+			name: "base only",
+			info: agentBuildInfo{Version: "v2.6"},
+			want: "v2.6",
+		},
+		{
+			name: "commit and build time",
+			info: agentBuildInfo{Version: "v2.6", Commit: "abcdef1234567890", BuildAt: "2026-03-10T09:08:07Z"},
+			want: "v2.6+abcdef123456.20260310T090807Z",
+		},
+		{
+			name: "dirty flag",
+			info: agentBuildInfo{Version: "v2.6", Commit: "abcdef123456", VCSModified: "true"},
+			want: "v2.6+abcdef123456.dirty",
+		},
+		{
+			name: "invalid version fallback",
+			info: agentBuildInfo{Version: "dev", BuildAt: "20260310T090807Z"},
+			want: "v0.0+20260310T090807Z",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := formatAgentVersionLabel(tc.info)
+			if got != tc.want {
+				t.Fatalf("formatAgentVersionLabel(%+v)=%q, want %q", tc.info, got, tc.want)
 			}
 		})
 	}

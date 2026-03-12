@@ -22,6 +22,7 @@ type NodeAgent struct {
 	interval      time.Duration
 	actionPoll    time.Duration
 	stateDir      string
+	sessionID     string
 
 	client *http.Client
 	logger *log.Logger
@@ -69,6 +70,7 @@ func main() {
 		interval:                      60 * time.Second,
 		actionPoll:                    1 * time.Second,
 		stateDir:                      strings.TrimSpace(os.Getenv("STATE_DIR")),
+		sessionID:                     newReportID(),
 		logger:                        log.New(os.Stdout, "[node-agent] ", log.LstdFlags|log.Lmicroseconds),
 		cpuMinPercent:                 1.0,
 		numCPU:                        runtime.NumCPU(),
@@ -159,7 +161,15 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	agent.logger.Printf("启动：node_id=%s controller=%s interval=%s action_poll=%s", agent.nodeID, agent.controllerURL, agent.interval, agent.actionPoll)
+	agent.logger.Printf(
+		"启动：version=%s session=%s node_id=%s controller=%s interval=%s action_poll=%s",
+		currentAgentVersionLabel(),
+		strings.TrimSpace(agent.sessionID),
+		agent.nodeID,
+		agent.controllerURL,
+		agent.interval,
+		agent.actionPoll,
+	)
 	agent.Run(ctx)
 }
 
@@ -169,6 +179,9 @@ func (a *NodeAgent) Run(ctx context.Context) {
 	defer reportTicker.Stop()
 	defer actionTicker.Stop()
 
+	restoreCPUCtx, cancelCPU := context.WithTimeout(ctx, 45*time.Second)
+	a.reconcilePersistedCPUQuotas(restoreCPUCtx)
+	cancelCPU()
 	restoreCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	a.reconcilePersistedMemoryLimits(restoreCtx)
 	cancel()

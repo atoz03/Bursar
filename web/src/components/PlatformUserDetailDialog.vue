@@ -36,7 +36,7 @@
             <div class="mapping-state-cell">
               <el-tag v-if="row.identity_aligned" type="success" effect="light">已就绪</el-tag>
               <el-tag v-else-if="row.identity_initializing" type="warning" effect="light">初始化中</el-tag>
-              <el-tag v-else type="info" effect="light">待同步</el-tag>
+              <el-tag v-else type="danger" effect="light">初始化失败</el-tag>
               <div v-if="mappingStateTip(row)" class="mapping-state-tip">{{ mappingStateTip(row) }}</div>
             </div>
           </template>
@@ -83,7 +83,7 @@ function tableTimeFormatter(_: unknown, __: unknown, cellValue: unknown): string
 
 function mappingStateTip(row: UserNodeAccount): string {
   if (row.identity_initializing) return "正在同步 UID/GID，完成前无法 SSH 登录";
-  if (!row.identity_aligned) return "节点尚未回传最新 UID/GID 快照，请稍后自动刷新";
+  if (!row.identity_aligned) return "节点 UID/GID 尚未与平台 UID 对齐，请检查初始化状态或手动重同步";
   return "";
 }
 

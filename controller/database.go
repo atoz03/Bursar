@@ -4341,7 +4341,7 @@ func (s *Store) ListUserRequestsByBilling(ctx context.Context, billingUsername s
 	}
 	rows, err := s.db.QueryContext(ctx, `
 SELECT request_id, request_type, billing_username, node_id, local_username, message, status,
-       reviewed_by, reviewed_at, created_at, updated_at
+       reviewed_by, reviewed_at, reject_reason, created_at, updated_at
 FROM user_requests
 WHERE billing_username=$1
 ORDER BY created_at DESC
@@ -4358,7 +4358,7 @@ LIMIT $2`, billingUsername, limit)
 		var reviewedAt sql.NullTime
 		if err := rows.Scan(
 			&r.RequestID, &r.RequestType, &r.BillingUsername, &r.NodeID, &r.LocalUsername,
-			&r.Message, &r.Status, &reviewedBy, &reviewedAt, &r.CreatedAt, &r.UpdatedAt,
+			&r.Message, &r.Status, &reviewedBy, &reviewedAt, &r.RejectReason, &r.CreatedAt, &r.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -4386,14 +4386,14 @@ func (s *Store) ListUserRequestsAdmin(ctx context.Context, status string, limit 
 	if status == "" {
 		rows, err = s.db.QueryContext(ctx, `
 SELECT request_id, request_type, billing_username, node_id, local_username, message, status,
-       reviewed_by, reviewed_at, created_at, updated_at
+       reviewed_by, reviewed_at, reject_reason, created_at, updated_at
 FROM user_requests
 ORDER BY created_at DESC
 LIMIT $1`, limit)
 	} else {
 		rows, err = s.db.QueryContext(ctx, `
 SELECT request_id, request_type, billing_username, node_id, local_username, message, status,
-       reviewed_by, reviewed_at, created_at, updated_at
+       reviewed_by, reviewed_at, reject_reason, created_at, updated_at
 FROM user_requests
 WHERE status=$1
 ORDER BY created_at DESC
@@ -4411,7 +4411,7 @@ LIMIT $2`, status, limit)
 		var reviewedAt sql.NullTime
 		if err := rows.Scan(
 			&r.RequestID, &r.RequestType, &r.BillingUsername, &r.NodeID, &r.LocalUsername,
-			&r.Message, &r.Status, &reviewedBy, &reviewedAt, &r.CreatedAt, &r.UpdatedAt,
+			&r.Message, &r.Status, &reviewedBy, &reviewedAt, &r.RejectReason, &r.CreatedAt, &r.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -4456,12 +4456,12 @@ func (s *Store) ReviewUserRequestTx(
 	var reviewedAtPrev sql.NullTime
 	if err := tx.QueryRowContext(ctx, `
 SELECT request_id, request_type, billing_username, node_id, local_username, message, status,
-       reviewed_by, reviewed_at, created_at, updated_at
+       reviewed_by, reviewed_at, reject_reason, created_at, updated_at
 FROM user_requests
 WHERE request_id=$1
 FOR UPDATE`, requestID).Scan(
 		&r.RequestID, &r.RequestType, &r.BillingUsername, &r.NodeID, &r.LocalUsername,
-		&r.Message, &r.Status, &reviewedByPrev, &reviewedAtPrev, &r.CreatedAt, &r.UpdatedAt,
+		&r.Message, &r.Status, &reviewedByPrev, &reviewedAtPrev, &r.RejectReason, &r.CreatedAt, &r.UpdatedAt,
 	); err != nil {
 		return UserRequest{}, err
 	}
@@ -4471,11 +4471,17 @@ FOR UPDATE`, requestID).Scan(
 	if r.RequestType == "bind" && newStatus == "approved" && r.Status != "verified" {
 		return UserRequest{}, errors.New("绑定申请需先完成节点侧 challenge 校验，当前不能直接审批通过")
 	}
+	if newStatus == "rejected" && (r.RequestType == "open" || r.RequestType == "unbind") && rejectReason == "" {
+		return UserRequest{}, errors.New("拒绝该申请时必须填写理由")
+	}
+	if newStatus != "rejected" {
+		rejectReason = ""
+	}
 
 	if _, err := tx.ExecContext(ctx, `
 UPDATE user_requests
-SET status=$2, reviewed_by=$3, reviewed_at=$4, updated_at=NOW()
-WHERE request_id=$1`, requestID, newStatus, reviewedBy, reviewedAt); err != nil {
+SET status=$2, reviewed_by=$3, reviewed_at=$4, reject_reason=$5, updated_at=NOW()
+WHERE request_id=$1`, requestID, newStatus, reviewedBy, reviewedAt, rejectReason); err != nil {
 		return UserRequest{}, err
 	}
 	if r.RequestType == "unbind" && newStatus == "rejected" {
@@ -4559,6 +4565,7 @@ WHERE node_id=$1 AND local_username=$2 AND billing_username=$3`, r.NodeID, r.Loc
 	r.Status = newStatus
 	r.ReviewedBy = &reviewedBy
 	r.ReviewedAt = &reviewedAt
+	r.RejectReason = rejectReason
 	r.UpdatedAt = reviewedAt
 	return r, nil
 }
@@ -4583,12 +4590,12 @@ func (s *Store) ReopenUserOpenRequestTx(
 	var reviewedAtPrev sql.NullTime
 	if err := tx.QueryRowContext(ctx, `
 SELECT request_id, request_type, billing_username, node_id, local_username, message, status,
-       reviewed_by, reviewed_at, created_at, updated_at
+       reviewed_by, reviewed_at, reject_reason, created_at, updated_at
 FROM user_requests
 WHERE request_id=$1
 FOR UPDATE`, requestID).Scan(
 		&r.RequestID, &r.RequestType, &r.BillingUsername, &r.NodeID, &r.LocalUsername,
-		&r.Message, &r.Status, &reviewedByPrev, &reviewedAtPrev, &r.CreatedAt, &r.UpdatedAt,
+		&r.Message, &r.Status, &reviewedByPrev, &reviewedAtPrev, &r.RejectReason, &r.CreatedAt, &r.UpdatedAt,
 	); err != nil {
 		return UserRequest{}, err
 	}
@@ -4605,13 +4612,14 @@ FOR UPDATE`, requestID).Scan(
 
 	if _, err := tx.ExecContext(ctx, `
 UPDATE user_requests
-SET status='pending', reviewed_by=NULL, reviewed_at=NULL, updated_at=NOW()
+SET status='pending', reviewed_by=NULL, reviewed_at=NULL, reject_reason='', updated_at=NOW()
 WHERE request_id=$1`, requestID); err != nil {
 		return UserRequest{}, err
 	}
 	r.Status = "pending"
 	r.ReviewedBy = nil
 	r.ReviewedAt = nil
+	r.RejectReason = ""
 	r.UpdatedAt = reviewedAt
 	return r, nil
 }
@@ -6990,6 +6998,39 @@ LIMIT $2`, nodeID, limit)
 		local = strings.TrimSpace(local)
 		if local != "" {
 			out = append(out, local)
+		}
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListRegisteredLocalUsersByNodeTx(ctx context.Context, tx *sql.Tx, nodeID string, limit int) ([]string, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return nil, errors.New("node_id 不能为空")
+	}
+	if limit <= 0 || limit > 200000 {
+		limit = 50000
+	}
+	rows, err := tx.QueryContext(ctx, `
+SELECT local_username
+FROM user_node_accounts
+WHERE node_id=$1
+ORDER BY local_username
+LIMIT $2`, nodeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err != nil {
+			return nil, err
+		}
+		u = strings.TrimSpace(u)
+		if u != "" {
+			out = append(out, u)
 		}
 	}
 	return out, rows.Err()
@@ -10099,7 +10140,23 @@ VALUES($1,$2,$3,$4::jsonb,$5,$6)`,
 	})
 }
 
+func (s *Store) VerifyRegisterCaptcha(ctx context.Context, captchaID string, clientIP string, selectedOption int, now time.Time) error {
+	return s.verifyRegisterCaptcha(ctx, captchaID, clientIP, selectedOption, now, false, true)
+}
+
 func (s *Store) VerifyAndConsumeRegisterCaptcha(ctx context.Context, captchaID string, clientIP string, selectedOption int, now time.Time) error {
+	return s.verifyRegisterCaptcha(ctx, captchaID, clientIP, selectedOption, now, true, true)
+}
+
+func (s *Store) verifyRegisterCaptcha(
+	ctx context.Context,
+	captchaID string,
+	clientIP string,
+	selectedOption int,
+	now time.Time,
+	consumeOnSuccess bool,
+	consumeOnFailure bool,
+) error {
 	captchaID = strings.TrimSpace(captchaID)
 	clientIP = strings.TrimSpace(clientIP)
 	if captchaID == "" {
@@ -10136,19 +10193,58 @@ FOR UPDATE`, captchaID).Scan(&dbClientIP, &answerIdx, &expireAt, &consumedAt); e
 			return errRegisterCaptchaInvalid
 		}
 
-		// 一次一题：无论答对还是答错都立即消费，避免同一题被反复猜测爆破。
 		isAnswerCorrect := answerIdx == selectedOption
-		_, err := tx.ExecContext(ctx, `
+		shouldConsume := (isAnswerCorrect && consumeOnSuccess) || (!isAnswerCorrect && consumeOnFailure)
+		if shouldConsume {
+			_, err := tx.ExecContext(ctx, `
 UPDATE registration_captcha_challenges
 SET consumed_at=$2
 WHERE captcha_id=$1`, captchaID, now)
-		if err != nil {
-			return err
+			if err != nil {
+				return err
+			}
 		}
 		if !isAnswerCorrect {
 			return errRegisterCaptchaInvalid
 		}
 		return nil
+	})
+}
+
+func (s *Store) ConsumeRegisterCaptcha(ctx context.Context, captchaID string, now time.Time) error {
+	captchaID = strings.TrimSpace(captchaID)
+	if captchaID == "" {
+		return errRegisterCaptchaInvalid
+	}
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		if err := s.cleanupExpiredRegisterCaptchaChallengesTx(ctx, tx, now); err != nil {
+			return err
+		}
+		var (
+			expireAt   time.Time
+			consumedAt sql.NullTime
+		)
+		if err := tx.QueryRowContext(ctx, `
+SELECT expire_at, consumed_at
+FROM registration_captcha_challenges
+WHERE captcha_id=$1
+FOR UPDATE`, captchaID).Scan(&expireAt, &consumedAt); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return errRegisterCaptchaInvalid
+			}
+			return err
+		}
+		if consumedAt.Valid {
+			return errRegisterCaptchaUsed
+		}
+		if !expireAt.After(now) {
+			return errRegisterCaptchaExpired
+		}
+		_, err := tx.ExecContext(ctx, `
+UPDATE registration_captcha_challenges
+SET consumed_at=$2
+WHERE captcha_id=$1`, captchaID, now)
+		return err
 	})
 }
 

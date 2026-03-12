@@ -389,6 +389,26 @@
         <el-form-item><el-button @click="reload">查询</el-button></el-form-item>
         <el-form-item><el-button @click="resetFilter">重置</el-button></el-form-item>
       </el-form>
+      <div class="unready-overview">
+        <div class="unready-overview-head">
+          <div>
+            <div class="unready-overview-title">全平台未就绪账号概览</div>
+            <div class="unready-overview-subtitle">统计所有尚未完成 UID/GID 对齐的节点映射，点击可查看平台账号、节点账号和状态明细。</div>
+          </div>
+          <el-button size="small" :loading="accountReadinessLoading" @click="reloadAccountReadiness">刷新未就绪统计</el-button>
+        </div>
+        <div class="unready-overview-actions">
+          <el-button plain :type="accountReadinessTotal > 0 ? 'warning' : 'info'" @click="openAccountReadinessDialog('all')">
+            全部未就绪 {{ accountReadinessTotal }}
+          </el-button>
+          <el-button plain type="warning" @click="openAccountReadinessDialog('initializing')">
+            初始化中 {{ accountReadinessInitializingCount }}
+          </el-button>
+          <el-button plain type="danger" @click="openAccountReadinessDialog('failed')">
+            初始化失败 {{ accountReadinessFailedCount }}
+          </el-button>
+        </div>
+      </div>
     </el-card>
 
     <el-card class="section-card mapping-list-card">
@@ -398,10 +418,18 @@
             <span class="section-icon tone-list"><el-icon><List /></el-icon></span>
             <span>映射列表</span>
           </div>
-          <el-tag type="info" effect="plain">共 {{ rows.length }} 条</el-tag>
+          <div class="head-actions">
+            <el-tag type="info" effect="plain">共 {{ rows.length }} 条</el-tag>
+            <el-button v-if="mappingListNeedsCollapse" size="small" @click="mappingListExpanded = !mappingListExpanded">
+              {{ mappingListVisible ? "收起列表" : "展开列表" }}
+            </el-button>
+          </div>
         </div>
       </template>
-      <el-table :data="rows" stripe>
+      <div v-if="mappingListNeedsCollapse && !mappingListVisible" class="mapping-list-folded">
+        映射记录较多，列表默认折叠。点击“展开列表”查看全部 {{ rows.length }} 条映射。
+      </div>
+      <el-table v-else :data="rows" stripe>
         <el-table-column label="平台账号" width="190">
           <template #default="{ row }">
             <div class="map-user-cell">
@@ -412,6 +440,11 @@
         </el-table-column>
         <el-table-column prop="node_id" label="节点编号" width="140" />
         <el-table-column prop="local_username" label="节点账号" width="190" />
+        <el-table-column label="状态" width="130" align="center">
+          <template #default="{ row }">
+            <el-tag :type="mappingReadinessTagType(row)" effect="light">{{ mappingReadinessText(row) }}</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column label="更新时间" min-width="180">
           <template #default="{ row }">{{ fmtTime(row.updated_at) }}</template>
         </el-table-column>
@@ -583,7 +616,19 @@
             <el-tag size="small" :type="unbindStatusTagType(row.status)">{{ unbindStatusText(row.status) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="billing_username" label="平台账号" width="170" />
+        <el-table-column label="平台账号" width="170">
+          <template #default="{ row }">
+            <el-button
+              v-if="String(row.billing_username || '').trim()"
+              link
+              type="primary"
+              @click="openProfile(row.billing_username)"
+            >
+              {{ row.billing_username }}
+            </el-button>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="node_id" label="节点编号" width="130" />
         <el-table-column prop="local_username" label="节点账号" width="150" />
         <el-table-column prop="reason" label="理由" min-width="260" />
@@ -627,7 +672,19 @@
       <el-table :data="unbindRejectHistoryRows" stripe size="small" max-height="460" empty-text="暂无驳回记录">
         <el-table-column prop="record_id" label="记录ID" width="90" />
         <el-table-column prop="request_id" label="申请ID" width="90" />
-        <el-table-column prop="billing_username" label="平台账号" width="170" />
+        <el-table-column label="平台账号" width="170">
+          <template #default="{ row }">
+            <el-button
+              v-if="String(row.billing_username || '').trim()"
+              link
+              type="primary"
+              @click="openProfile(row.billing_username)"
+            >
+              {{ row.billing_username }}
+            </el-button>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="node_id" label="节点编号" width="130" />
         <el-table-column prop="local_username" label="节点账号" width="150" />
         <el-table-column prop="reason" label="驳回理由" min-width="260" />
@@ -641,6 +698,60 @@
       </el-table>
       <template #footer>
         <el-button @click="unbindRejectHistoryVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="accountReadinessVisible" :title="accountReadinessDialogTitle" width="980px" destroy-on-close>
+      <div class="unready-dialog-toolbar">
+        <div class="unready-dialog-summary">
+          <el-tag type="warning" effect="plain">未就绪 {{ accountReadinessTotal }}</el-tag>
+          <el-tag type="warning" effect="plain">初始化中 {{ accountReadinessInitializingCount }}</el-tag>
+          <el-tag type="danger" effect="plain">初始化失败 {{ accountReadinessFailedCount }}</el-tag>
+          <el-tag type="info" effect="plain">涉及平台账号 {{ accountReadinessDistinctUserCount }}</el-tag>
+        </div>
+        <el-button size="small" :loading="accountReadinessLoading" @click="reloadAccountReadiness">刷新</el-button>
+      </div>
+      <div class="unready-dialog-filters">
+        <el-button size="small" :type="accountReadinessDialogStatus === 'all' ? 'primary' : 'default'" @click="accountReadinessDialogStatus = 'all'">
+          全部未就绪
+        </el-button>
+        <el-button size="small" :type="accountReadinessDialogStatus === 'initializing' ? 'warning' : 'default'" @click="accountReadinessDialogStatus = 'initializing'">
+          初始化中
+        </el-button>
+        <el-button size="small" :type="accountReadinessDialogStatus === 'failed' ? 'danger' : 'default'" @click="accountReadinessDialogStatus = 'failed'">
+          初始化失败
+        </el-button>
+      </div>
+      <el-table :data="accountReadinessDialogRows" stripe size="small" max-height="460" empty-text="暂无未就绪账号">
+        <el-table-column label="平台账号" min-width="170">
+          <template #default="{ row }">
+            <el-button link type="primary" @click="openProfile(row.billing_username)">{{ row.billing_username }}</el-button>
+          </template>
+        </el-table-column>
+        <el-table-column prop="node_id" label="节点编号" width="130" />
+        <el-table-column prop="local_username" label="节点账号" width="150" />
+        <el-table-column label="状态" width="130" align="center">
+          <template #default="{ row }">
+            <el-tag :type="mappingReadinessTagType(row)" effect="light">{{ mappingReadinessText(row) }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="平台UID" width="110" align="center">
+          <template #default="{ row }">{{ Number.isFinite(Number(row.platform_uid)) ? row.platform_uid : "-" }}</template>
+        </el-table-column>
+        <el-table-column label="节点UID/GID" min-width="150" align="center">
+          <template #default="{ row }">
+            <span v-if="Number.isFinite(Number(row.node_uid)) && Number.isFinite(Number(row.node_primary_gid))">
+              {{ row.node_uid }}/{{ row.node_primary_gid }}
+            </span>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="更新时间" min-width="170">
+          <template #default="{ row }">{{ fmtTime(row.updated_at) }}</template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <el-button @click="accountReadinessVisible = false">关闭</el-button>
       </template>
     </el-dialog>
 
@@ -800,6 +911,16 @@ const provisioning = ref(false);
 const error = ref("");
 const success = ref("");
 const rows = ref<UserNodeAccount[]>([]);
+const mappingListCollapseThreshold = 18;
+const mappingListExpanded = ref(false);
+const accountReadinessLoading = ref(false);
+const accountReadinessLoaded = ref(false);
+const accountReadinessRows = ref<UserNodeAccount[]>([]);
+const accountReadinessTotal = ref(0);
+const accountReadinessInitializingCount = ref(0);
+const accountReadinessFailedCount = ref(0);
+const accountReadinessVisible = ref(false);
+const accountReadinessDialogStatus = ref<"all" | "initializing" | "failed">("all");
 const mappingRiskLoading = ref(false);
 const mappingRiskClearKey = ref("");
 const mappingRisks = ref<UserNodeAccountMappingRisk[]>([]);
@@ -867,6 +988,8 @@ const nodeId = ref("");
 const localUsername = ref("");
 const billingOptions = ref<string[]>([]);
 const localUserOptions = ref<string[]>([]);
+const mappingListNeedsCollapse = computed(() => rows.value.length > mappingListCollapseThreshold);
+const mappingListVisible = computed(() => !mappingListNeedsCollapse.value || mappingListExpanded.value);
 const nodeOptions = ref<string[]>([]);
 const nodeIPByID = ref<Record<string, string>>({});
 const nodeGPUCountByID = ref<Record<string, number>>({});
@@ -940,6 +1063,27 @@ const provisionForm = reactive({
 
 const pendingOpenRequestCount = computed(() => pendingOpenRequests.value.length);
 const pendingUnbindRequestCount = computed(() => pendingUnbindRequests.value.length);
+const accountReadinessDistinctUserCount = computed(() => {
+  const set = new Set<string>();
+  for (const row of accountReadinessRows.value || []) {
+    const username = String(row.billing_username || "").trim();
+    if (username) set.add(username);
+  }
+  return set.size;
+});
+const accountReadinessDialogRows = computed<UserNodeAccount[]>(() => {
+  const status = accountReadinessDialogStatus.value;
+  return (accountReadinessRows.value || []).filter((row) => {
+    if (status === "all") return !row.identity_aligned;
+    if (status === "initializing") return !!row.identity_initializing;
+    return !row.identity_aligned && !row.identity_initializing;
+  });
+});
+const accountReadinessDialogTitle = computed(() => {
+  if (accountReadinessDialogStatus.value === "initializing") return "未就绪账号明细：初始化中";
+  if (accountReadinessDialogStatus.value === "failed") return "未就绪账号明细：初始化失败";
+  return "未就绪账号明细";
+});
 const displayUnbindRecords = computed<UserNodeUnbindRecord[]>(() => {
   const base = [...(unbindRecords.value || [])];
   const existingRequestIDs = new Set<number>();
@@ -1027,6 +1171,18 @@ function isPlatformBlocked(username: string): boolean {
   const u = String(username || "").trim();
   if (!u) return false;
   return blacklistedPlatformUserSet.value.has(u);
+}
+
+function mappingReadinessText(row: UserNodeAccount): string {
+  if (row.identity_aligned) return "已就绪";
+  if (row.identity_initializing) return "初始化中";
+  return "初始化失败";
+}
+
+function mappingReadinessTagType(row: UserNodeAccount): "success" | "warning" | "danger" | "info" {
+  if (row.identity_aligned) return "success";
+  if (row.identity_initializing) return "warning";
+  return "danger";
 }
 
 function formatSwitchHistoryItem(item: string): string {
@@ -1467,6 +1623,7 @@ async function reload() {
     refreshLocalOptions(rows.value);
     mergeBillingOptions(rows.value, platformUsers.value);
     await Promise.all([
+      reloadAccountReadiness(),
       reloadProvisionLogs(),
       reloadOpenRequests(),
       reloadUnbindRecords(),
@@ -1479,6 +1636,36 @@ async function reload() {
     error.value = e?.message ?? String(e);
   } finally {
     loading.value = false;
+  }
+}
+
+async function reloadAccountReadiness() {
+  accountReadinessLoading.value = true;
+  try {
+    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+    const r = await client.adminAccountsNotReady({ status: "all", limit: 20000 });
+    accountReadinessRows.value = Array.isArray(r.accounts) ? (r.accounts ?? []) : [];
+    accountReadinessTotal.value = Number(r.total_not_ready ?? accountReadinessRows.value.length ?? 0);
+    accountReadinessInitializingCount.value = Number(r.total_initializing ?? 0);
+    accountReadinessFailedCount.value = Number(r.total_failed ?? 0);
+    accountReadinessLoaded.value = true;
+  } catch (e: any) {
+    accountReadinessRows.value = [];
+    accountReadinessTotal.value = 0;
+    accountReadinessInitializingCount.value = 0;
+    accountReadinessFailedCount.value = 0;
+    accountReadinessLoaded.value = false;
+    ElMessage.error(e?.message ?? String(e));
+  } finally {
+    accountReadinessLoading.value = false;
+  }
+}
+
+function openAccountReadinessDialog(status: "all" | "initializing" | "failed") {
+  accountReadinessDialogStatus.value = status;
+  accountReadinessVisible.value = true;
+  if (!accountReadinessLoading.value && !accountReadinessLoaded.value) {
+    void reloadAccountReadiness();
   }
 }
 
@@ -2308,7 +2495,7 @@ async function markOpenRequestRejected(row: UserRequest) {
   let reason = "";
   try {
     const input: any = await ElMessageBox.prompt(
-      `请填写拒绝理由（建议必填，便于历史追踪）：\n平台账号：${row.billing_username}\n申请类型：${requestTypeText(row.request_type)}\n节点：${row.node_id || "-"}\n节点账号：${row.local_username || "-"}`,
+      `请填写拒绝理由（必填，用户端可见）：\n平台账号：${row.billing_username}\n申请类型：${requestTypeText(row.request_type)}\n节点：${row.node_id || "-"}\n节点账号：${row.local_username || "-"}`,
       "拒绝申请",
       {
         type: "warning",
@@ -2316,6 +2503,7 @@ async function markOpenRequestRejected(row: UserRequest) {
         cancelButtonText: "取消",
         inputType: "textarea",
         inputPlaceholder: "例如：申请信息不完整，请补充后重提",
+        inputValidator: (v: string) => String(v || "").trim().length > 0 || "拒绝理由不能为空",
       },
     );
     reason = String(input?.value || "").trim();
@@ -2798,6 +2986,60 @@ init();
 .tone-user {
   background: linear-gradient(135deg, #1d4ed8, #2563eb);
   color: #dbeafe;
+}
+.mapping-list-folded {
+  padding: 14px 16px;
+  border: 1px dashed #cbd5e1;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #f8fafc, #eff6ff);
+  color: var(--text-secondary);
+}
+.unready-overview {
+  margin-top: 12px;
+  padding: 14px 16px;
+  border: 1px dashed #fdba74;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #fff7ed, #fffbeb);
+}
+.unready-overview-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.unready-overview-title {
+  font-weight: 700;
+  color: #9a3412;
+}
+.unready-overview-subtitle {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #78716c;
+}
+.unready-overview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.unready-dialog-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.unready-dialog-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.unready-dialog-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
 }
 .mb { margin-bottom: 12px; }
 .policy-label {

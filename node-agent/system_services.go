@@ -13,7 +13,6 @@ func defaultSystemServiceUnits() []string {
 		"gpu-node-agent.service",
 		"gpu-ssh-guard-sync.timer",
 		"gpu-ssh-guard-enforce.timer",
-		"gpu-home-reserve-enforce.timer",
 	}
 }
 

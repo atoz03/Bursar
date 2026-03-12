@@ -92,7 +92,7 @@ func setMemoryLimitBySystemd(ctx context.Context, uid int, limitGB float64) erro
 		return fmt.Errorf("systemctl daemon-reload 失败：%w（out=%s）", err, strings.TrimSpace(string(out)))
 	}
 
-	props := []string{"MemoryAccounting=yes", "MemoryMax=infinity"}
+	props := []string{"MemoryAccounting=yes", "MemoryHigh=infinity", "MemoryMax=infinity"}
 	if limitGB > 0 {
 		props = []string{
 			"MemoryAccounting=yes",

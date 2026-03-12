@@ -41,6 +41,8 @@ type Server struct {
 	gpuAccessState     map[string]bool // key: node_id::local_username, true=blocked
 	gpuVisibilityMu    sync.Mutex
 	gpuVisibilityState map[string]string // key: node_id::local_username, value=sorted gpu indices signature, e.g. "0,1,2"
+	agentSessionMu     sync.Mutex
+	agentSessionState  map[string]string // key: node_id, value=last seen agent_session_id
 	securitySignalMu   sync.Mutex
 	securitySignalSeen map[string]securitySignalState // key: node_id::event_type
 	haSyncMu           sync.Mutex
@@ -70,6 +72,7 @@ func NewServer(cfg Config, store *Store) *Server {
 		memoryLimitState:   make(map[string]float64),
 		gpuAccessState:     make(map[string]bool),
 		gpuVisibilityState: make(map[string]string),
+		agentSessionState:  make(map[string]string),
 		securitySignalSeen: make(map[string]securitySignalState),
 	}
 }
@@ -586,6 +589,120 @@ func (s *Server) clearNodeCPUQuotaState(nodeID string) {
 	s.cpuQuotaMu.Unlock()
 }
 
+func (s *Server) clearNodeMemoryLimitState(nodeID string) {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return
+	}
+	prefix := nodeID + "::"
+	s.memoryLimitMu.Lock()
+	for k := range s.memoryLimitState {
+		if strings.HasPrefix(k, prefix) {
+			delete(s.memoryLimitState, k)
+		}
+	}
+	s.memoryLimitMu.Unlock()
+}
+
+func (s *Server) clearNodeGPUAccessState(nodeID string) {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return
+	}
+	prefix := nodeID + "::"
+	s.gpuAccessMu.Lock()
+	for k := range s.gpuAccessState {
+		if strings.HasPrefix(k, prefix) {
+			delete(s.gpuAccessState, k)
+		}
+	}
+	s.gpuAccessMu.Unlock()
+}
+
+func (s *Server) clearNodeGPUVisibilityState(nodeID string) {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return
+	}
+	prefix := nodeID + "::"
+	s.gpuVisibilityMu.Lock()
+	for k := range s.gpuVisibilityState {
+		if strings.HasPrefix(k, prefix) {
+			delete(s.gpuVisibilityState, k)
+		}
+	}
+	s.gpuVisibilityMu.Unlock()
+}
+
+func (s *Server) clearNodeRuntimePolicyState(nodeID string) {
+	s.clearNodeCPUQuotaState(nodeID)
+	s.clearNodeMemoryLimitState(nodeID)
+	s.clearNodeGPUAccessState(nodeID)
+	s.clearNodeGPUVisibilityState(nodeID)
+}
+
+func (s *Server) noteAgentSession(nodeID, sessionID string) (previous string, changed bool, firstObserved bool) {
+	nodeID = strings.TrimSpace(nodeID)
+	sessionID = strings.TrimSpace(sessionID)
+	if nodeID == "" || sessionID == "" {
+		return "", false, false
+	}
+	s.agentSessionMu.Lock()
+	defer s.agentSessionMu.Unlock()
+	previous = strings.TrimSpace(s.agentSessionState[nodeID])
+	if previous == sessionID {
+		return previous, false, false
+	}
+	s.agentSessionState[nodeID] = sessionID
+	return previous, previous != "", previous == ""
+}
+
+func (s *Server) hasNodeRuntimePolicyState(nodeID string) bool {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return false
+	}
+	prefix := nodeID + "::"
+
+	s.cpuQuotaMu.Lock()
+	for k := range s.cpuQuotaState {
+		if strings.HasPrefix(k, prefix) {
+			s.cpuQuotaMu.Unlock()
+			return true
+		}
+	}
+	s.cpuQuotaMu.Unlock()
+
+	s.memoryLimitMu.Lock()
+	for k := range s.memoryLimitState {
+		if strings.HasPrefix(k, prefix) {
+			s.memoryLimitMu.Unlock()
+			return true
+		}
+	}
+	s.memoryLimitMu.Unlock()
+
+	s.gpuAccessMu.Lock()
+	for k := range s.gpuAccessState {
+		if strings.HasPrefix(k, prefix) {
+			s.gpuAccessMu.Unlock()
+			return true
+		}
+	}
+	s.gpuAccessMu.Unlock()
+
+	s.gpuVisibilityMu.Lock()
+	for k := range s.gpuVisibilityState {
+		if strings.HasPrefix(k, prefix) {
+			s.gpuVisibilityMu.Unlock()
+			return true
+		}
+	}
+	s.gpuVisibilityMu.Unlock()
+
+	return false
+}
+
 func manualCPUQuotaReason(limit NodeUserCPULimit) string {
 	base := strings.TrimSpace(limit.Reason)
 	if base == "" {
@@ -1098,6 +1215,7 @@ func (s *Server) RouterWeb() *gin.Engine {
 	admin.GET("/guideline", s.requireSuperAdmin(), s.handleAdminGuidelineGet)
 	admin.POST("/guideline", s.requireSuperAdmin(), s.handleAdminGuidelineSet)
 	admin.GET("/accounts", s.requireSuperAdmin(), s.handleAdminAccountsList)
+	admin.GET("/accounts/not-ready", s.requireSuperAdmin(), s.handleAdminAccountsNotReadyList)
 	admin.GET("/accounts/bind-policy", s.requireSuperAdmin(), s.handleAdminBindPolicyGet)
 	admin.POST("/accounts/bind-policy", s.requireSuperAdmin(), s.handleAdminBindPolicySet)
 	admin.GET("/accounts/bind-cooldowns", s.requireSuperAdmin(), s.handleAdminBindCooldownsList)
@@ -3005,6 +3123,43 @@ func (s *Server) annotateUserNodeAccountsIdentityState(ctx context.Context, rows
 	return nil
 }
 
+func classifyUserNodeAccountReadiness(row UserNodeAccount) string {
+	if row.IdentityAligned {
+		return "ready"
+	}
+	if row.IdentityInitializing {
+		return "initializing"
+	}
+	return "failed"
+}
+
+func summarizeUserNodeAccountReadiness(rows []UserNodeAccount, statusFilter string) ([]UserNodeAccount, int, int, int) {
+	statusFilter = strings.TrimSpace(statusFilter)
+	if statusFilter == "" {
+		statusFilter = "all"
+	}
+	filtered := make([]UserNodeAccount, 0, len(rows))
+	totalNotReady := 0
+	totalInitializing := 0
+	totalFailed := 0
+	for _, row := range rows {
+		status := classifyUserNodeAccountReadiness(row)
+		if status == "ready" {
+			continue
+		}
+		totalNotReady++
+		if status == "initializing" {
+			totalInitializing++
+		} else {
+			totalFailed++
+		}
+		if statusFilter == "all" || statusFilter == status {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered, totalNotReady, totalInitializing, totalFailed
+}
+
 func (s *Server) mergeMappedAccountsIntoNodeLocalUsers(ctx context.Context, nodeID string, localUsers []NodeLocalUser) ([]NodeLocalUser, error) {
 	nodeID = strings.TrimSpace(nodeID)
 	if nodeID == "" {
@@ -3456,7 +3611,42 @@ func (s *Server) handleAdminAccountsList(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	if err := s.annotateUserNodeAccountsIdentityState(c.Request.Context(), rows); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"accounts": rows})
+}
+
+func (s *Server) handleAdminAccountsNotReadyList(c *gin.Context) {
+	statusFilter := strings.TrimSpace(c.Query("status"))
+	if statusFilter == "" {
+		statusFilter = "all"
+	}
+	switch statusFilter {
+	case "all", "initializing", "failed":
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "status 仅支持 all/initializing/failed"})
+		return
+	}
+	limit := parseLimit(c.Query("limit"), 5000, 20000)
+	rows, err := s.store.ListUserNodeAccountsWithFilter(c.Request.Context(), "", "", "", limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := s.annotateUserNodeAccountsIdentityState(c.Request.Context(), rows); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	accounts, totalNotReady, totalInitializing, totalFailed := summarizeUserNodeAccountReadiness(rows, statusFilter)
+	c.JSON(http.StatusOK, gin.H{
+		"status":             statusFilter,
+		"total_not_ready":    totalNotReady,
+		"total_initializing": totalInitializing,
+		"total_failed":       totalFailed,
+		"accounts":           accounts,
+	})
 }
 
 func (s *Server) handleAdminAccountProvisionLogs(c *gin.Context) {
@@ -8595,6 +8785,26 @@ func (s *Server) handleAdminHAStatus(c *gin.Context) {
 
 func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS time.Time) ([]Action, error) {
 	now := time.Now()
+	skipMissingUserCleanup := false
+	if previousSessionID, changed, firstObserved := s.noteAgentSession(data.NodeID, data.AgentSessionID); changed {
+		skipMissingUserCleanup = true
+		s.clearNodeRuntimePolicyState(data.NodeID)
+		log.Printf(
+			"检测到节点 agent 会话变化：node=%s previous_session=%s current_session=%s；已清空 controller 运行态策略缓存，等待本轮 metrics 重新下发",
+			strings.TrimSpace(data.NodeID),
+			previousSessionID,
+			strings.TrimSpace(data.AgentSessionID),
+		)
+	} else if firstObserved && s.hasNodeRuntimePolicyState(data.NodeID) {
+		skipMissingUserCleanup = true
+		s.clearNodeRuntimePolicyState(data.NodeID)
+		log.Printf(
+			"首次观测到节点 agent 会话：node=%s current_session=%s；检测到该节点仍有旧运行态策略缓存，已清空并等待本轮 metrics 重新下发",
+			strings.TrimSpace(data.NodeID),
+			strings.TrimSpace(data.AgentSessionID),
+		)
+	}
+	forceRuntimeSync := skipMissingUserCleanup
 	var systemServicesCheckedAt *time.Time
 	if raw := strings.TrimSpace(data.SystemServicesCheckedAt); raw != "" {
 		if ts, err := time.Parse(time.RFC3339, raw); err == nil {
@@ -8974,20 +9184,26 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 				if nowOverdraftExceeded {
 					gpuReason = fmt.Sprintf("余额 %.2f 已超过欠费上限 %.2f（欠费阈值 %.2f），加入欠费 GPU 限制组并隐藏 GPU", effectiveBalance, normalizeMonthlyMaxOverdraftLimit(monthlyCfg.MaxOverdraftLimit), killAllProcessBalanceThreshold(monthlyCfg.MaxOverdraftLimit))
 				}
-				if gpuAction, ok := s.nextGPUAccessAction(data.NodeID, localUsername, nowOverdraftExceeded, gpuReason, false); ok {
+				if gpuAction, ok := s.nextGPUAccessAction(data.NodeID, localUsername, nowOverdraftExceeded, gpuReason, forceRuntimeSync); ok {
 					actions = append(actions, gpuAction)
 				}
-				if !nowOverdraftExceeded {
-					if manualGPU, hasManualGPU := nodeManualGPUVisibility[localUsername]; hasManualGPU && len(manualGPU.GPUIndices) > 0 {
-						if gpuVisAction, ok := s.nextGPUVisibilityAction(
-							data.NodeID,
-							localUsername,
-							manualGPU.GPUIndices,
-							manualGPUVisibilityReason(manualGPU),
-							true,
-						); ok {
-							actions = append(actions, gpuVisAction)
-						}
+				if manualGPU, hasManualGPU := nodeManualGPUVisibility[localUsername]; hasManualGPU && len(manualGPU.GPUIndices) > 0 {
+					if gpuVisAction, ok := s.nextGPUVisibilityAction(
+						data.NodeID,
+						localUsername,
+						manualGPU.GPUIndices,
+						manualGPUVisibilityReason(manualGPU),
+						true,
+					); ok {
+						actions = append(actions, gpuVisAction)
+					}
+				} else if forceRuntimeSync {
+					reason := "agent 会话重建后清理旧 GPU 可见限制缓存"
+					if !nowOverdraftExceeded {
+						reason = "agent 会话重建后恢复 GPU 全可见"
+					}
+					if gpuVisAction, ok := s.nextGPUVisibilityAction(data.NodeID, localUsername, nil, reason, true); ok {
+						actions = append(actions, gpuVisAction)
 					}
 				}
 				targetMemoryGB := 0.0
@@ -9009,7 +9225,7 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 					targetMemoryGB = manual.MemoryLimitGB
 					memoryReason = manualMemoryLimitReason(manual)
 				}
-				forceMemorySync := nowOverdraftExceeded && targetMemoryGB > 0
+				forceMemorySync := forceRuntimeSync || (nowOverdraftExceeded && targetMemoryGB > 0)
 				if memoryAction, ok := s.nextMemoryLimitAction(data.NodeID, localUsername, targetMemoryGB, memoryReason, forceMemorySync); ok {
 					actions = append(actions, memoryAction)
 				}
@@ -9021,7 +9237,7 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 							localUsername,
 							manual.CPUQuotaPercent,
 							manualCPUQuotaReason(manual),
-							false,
+							forceRuntimeSync,
 						); ok {
 							actions = append(actions, quotaAction)
 						}
@@ -9033,7 +9249,7 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 								localUsername,
 								nodeBlockedCPUQuota,
 								fmt.Sprintf("余额 %.2f 已超过每月欠费上限 %.2f，按节点策略执行欠费强限速（%.2f%%）", effectiveBalance, normalizeMonthlyMaxOverdraftLimit(monthlyCfg.MaxOverdraftLimit), nodeBlockedCPUQuota),
-								false,
+								forceRuntimeSync,
 							); ok {
 								actions = append(actions, quotaAction)
 							}
@@ -9043,12 +9259,12 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 								localUsername,
 								nodeLimitedCPUQuota,
 								fmt.Sprintf("余额 %.2f<=阈值 %.2f，按节点策略执行限速（%.2f%%）", effectiveBalance, nodeThrottleThreshold, nodeLimitedCPUQuota),
-								false,
+								forceRuntimeSync,
 							); ok {
 								actions = append(actions, quotaAction)
 							}
 						default:
-							if quotaAction, ok := s.nextCPUQuotaAction(data.NodeID, localUsername, 0, "余额已恢复，解除 CPU 限制", false); ok {
+							if quotaAction, ok := s.nextCPUQuotaAction(data.NodeID, localUsername, 0, "余额已恢复，解除 CPU 限制", forceRuntimeSync); ok {
 								actions = append(actions, quotaAction)
 							}
 						}
@@ -9096,10 +9312,14 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 			balanceByBilling[billingUsername] = v
 			return v, nil
 		}
-		for _, sshUser := range data.SSHUsers {
-			localUsername := strings.TrimSpace(sshUser)
+		syncedRuntimeUsers := make(map[string]struct{}, len(billedLocalUsers)+len(data.SSHUsers)+len(data.LocalUsers))
+		for localUsername := range billedLocalUsers {
+			syncedRuntimeUsers[localUsername] = struct{}{}
+		}
+		syncRuntimeUserState := func(localUsername string, reasonPrefix string, allowUnmappedFallback bool) error {
+			localUsername = strings.TrimSpace(localUsername)
 			if localUsername == "" || strings.EqualFold(localUsername, "root") {
-				continue
+				return nil
 			}
 			exempted, err := isExemptLocal(localUsername)
 			if err != nil {
@@ -9107,27 +9327,35 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 			}
 			if exempted {
 				// 豁免账号不参与积分余额驱动的限速/欠费动作。
-				continue
+				return nil
 			}
-			if _, alreadyHandled := billedLocalUsers[localUsername]; alreadyHandled {
-				continue
+			if _, alreadyHandled := syncedRuntimeUsers[localUsername]; alreadyHandled {
+				return nil
 			}
+			syncedRuntimeUsers[localUsername] = struct{}{}
 
 			billingUsername, ok := resolveCache[localUsername]
 			if !ok {
+				_, hasManualCPU := nodeManualCPULimits[localUsername]
+				_, hasManualMemory := nodeManualMemoryLimits[localUsername]
+				manualGPU, hasManualGPU := nodeManualGPUVisibility[localUsername]
+				hasManualAny := hasManualCPU || hasManualMemory || (hasManualGPU && len(manualGPU.GPUIndices) > 0)
 				mapped, found, err := s.store.ResolveBillingUsernameTx(ctx, tx, data.NodeID, localUsername)
 				if err != nil {
 					return err
 				}
 				if found && strings.TrimSpace(mapped) != "" {
 					billingUsername = mapped
-				} else {
+				} else if allowUnmappedFallback || hasManualAny {
 					billingUsername = localUsername
+				} else {
+					resolveCache[localUsername] = ""
+					return nil
 				}
 				resolveCache[localUsername] = billingUsername
 			}
 			if billingUsername == "" {
-				continue
+				return nil
 			}
 
 			bal, err := loadBalance(billingUsername)
@@ -9136,14 +9364,14 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 			}
 			overdraftExceeded := isOverdraftExceeded(bal.effectiveBalance, monthlyCfg.MaxOverdraftLimit)
 			gpuBlocked := overdraftExceeded
-			gpuReason := fmt.Sprintf("SSH 在线账号余额同步：余额 %.2f 未超过欠费阈值 %.2f，恢复 GPU 可见性", bal.effectiveBalance, killAllProcessBalanceThreshold(monthlyCfg.MaxOverdraftLimit))
+			gpuReason := fmt.Sprintf("%s：余额 %.2f 未超过欠费阈值 %.2f，恢复 GPU 可见性", reasonPrefix, bal.effectiveBalance, killAllProcessBalanceThreshold(monthlyCfg.MaxOverdraftLimit))
 			if !nodePointsBillingEnabled {
 				gpuBlocked = false
-				gpuReason = "SSH 在线账号余额同步：节点积分拦截关闭，恢复 GPU 可见性"
+				gpuReason = reasonPrefix + "：节点积分拦截关闭，恢复 GPU 可见性"
 			} else if overdraftExceeded {
-				gpuReason = fmt.Sprintf("SSH 在线账号余额同步：余额 %.2f 已超过每月欠费上限 %.2f（阈值 %.2f），加入欠费 GPU 限制组并隐藏 GPU", bal.effectiveBalance, normalizeMonthlyMaxOverdraftLimit(monthlyCfg.MaxOverdraftLimit), killAllProcessBalanceThreshold(monthlyCfg.MaxOverdraftLimit))
+				gpuReason = fmt.Sprintf("%s：余额 %.2f 已超过每月欠费上限 %.2f（阈值 %.2f），加入欠费 GPU 限制组并隐藏 GPU", reasonPrefix, bal.effectiveBalance, normalizeMonthlyMaxOverdraftLimit(monthlyCfg.MaxOverdraftLimit), killAllProcessBalanceThreshold(monthlyCfg.MaxOverdraftLimit))
 			}
-			if action, ok := s.nextGPUAccessAction(data.NodeID, localUsername, gpuBlocked, gpuReason, false); ok {
+			if action, ok := s.nextGPUAccessAction(data.NodeID, localUsername, gpuBlocked, gpuReason, forceRuntimeSync); ok {
 				actions = append(actions, action)
 			}
 			if manualGPU, hasManualGPU := nodeManualGPUVisibility[localUsername]; hasManualGPU && len(manualGPU.GPUIndices) > 0 {
@@ -9156,26 +9384,36 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 				); ok {
 					actions = append(actions, gpuVisAction)
 				}
-			} else if !nodePointsBillingEnabled {
-				if action, ok := s.nextGPUVisibilityAction(data.NodeID, localUsername, nil, "SSH 在线账号余额同步：节点积分拦截关闭，恢复 GPU 全可见", false); ok {
+			} else if !nodePointsBillingEnabled || forceRuntimeSync {
+				reason := reasonPrefix + "：节点积分拦截关闭，恢复 GPU 全可见"
+				if nodePointsBillingEnabled {
+					if gpuBlocked {
+						reason = reasonPrefix + "：agent 会话重建后清理旧 GPU 可见限制缓存"
+					} else {
+						reason = reasonPrefix + "：agent 会话重建后恢复 GPU 全可见"
+					}
+				}
+				if action, ok := s.nextGPUVisibilityAction(data.NodeID, localUsername, nil, reason, forceRuntimeSync); ok {
 					actions = append(actions, action)
 				}
 			}
 			targetMemoryGB := 0.0
-			memoryReason := "SSH 在线账号余额同步：节点积分拦截关闭，解除内存限额"
+			memoryReason := reasonPrefix + "：节点积分拦截关闭，解除内存限额"
 			if !nodePointsBillingEnabled {
 				targetMemoryGB = 0
 			} else if overdraftExceeded && nodeOverdraftMemoryLimitGB > 0 {
 				targetMemoryGB = nodeOverdraftMemoryLimitGB
 				memoryReason = fmt.Sprintf(
-					"SSH 在线账号余额同步：余额 %.2f 已超过每月欠费上限 %.2f，内存上限设为 %.2f GB",
+					"%s：余额 %.2f 已超过每月欠费上限 %.2f，内存上限设为 %.2f GB",
+					reasonPrefix,
 					bal.effectiveBalance,
 					normalizeMonthlyMaxOverdraftLimit(monthlyCfg.MaxOverdraftLimit),
 					targetMemoryGB,
 				)
 			} else {
 				memoryReason = fmt.Sprintf(
-					"SSH 在线账号余额同步：余额 %.2f 未超过每月欠费上限 %.2f，解除内存限额",
+					"%s：余额 %.2f 未超过每月欠费上限 %.2f，解除内存限额",
+					reasonPrefix,
 					bal.effectiveBalance,
 					normalizeMonthlyMaxOverdraftLimit(monthlyCfg.MaxOverdraftLimit),
 				)
@@ -9184,7 +9422,7 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 				targetMemoryGB = manual.MemoryLimitGB
 				memoryReason = manualMemoryLimitReason(manual)
 			}
-			forceMemorySync := overdraftExceeded && targetMemoryGB > 0
+			forceMemorySync := forceRuntimeSync || (overdraftExceeded && targetMemoryGB > 0)
 			if memoryAction, ok := s.nextMemoryLimitAction(data.NodeID, localUsername, targetMemoryGB, memoryReason, forceMemorySync); ok {
 				actions = append(actions, memoryAction)
 			}
@@ -9196,28 +9434,48 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 						localUsername,
 						manual.CPUQuotaPercent,
 						manualCPUQuotaReason(manual),
-						false,
+						forceRuntimeSync,
 					); ok {
 						actions = append(actions, quotaAction)
 					}
 				} else {
 					targetQuota := 0.0
-					quotaReason := "SSH 在线账号余额同步：状态正常，解除 CPU 限制"
+					quotaReason := reasonPrefix + "：状态正常，解除 CPU 限制"
 					switch {
 					case !nodePointsBillingEnabled:
 						targetQuota = 0
-						quotaReason = "SSH 在线账号余额同步：节点积分拦截关闭，解除 CPU 限制"
+						quotaReason = reasonPrefix + "：节点积分拦截关闭，解除 CPU 限制"
 					case overdraftExceeded:
 						targetQuota = nodeBlockedCPUQuota
-						quotaReason = fmt.Sprintf("SSH 在线账号余额同步：余额 %.2f 已超过每月欠费上限 %.2f，执行欠费强限速（%.2f%%）", bal.effectiveBalance, normalizeMonthlyMaxOverdraftLimit(monthlyCfg.MaxOverdraftLimit), nodeBlockedCPUQuota)
+						quotaReason = fmt.Sprintf("%s：余额 %.2f 已超过每月欠费上限 %.2f，执行欠费强限速（%.2f%%）", reasonPrefix, bal.effectiveBalance, normalizeMonthlyMaxOverdraftLimit(monthlyCfg.MaxOverdraftLimit), nodeBlockedCPUQuota)
 					case bal.effectiveBalance <= nodeThrottleThreshold:
 						targetQuota = nodeLimitedCPUQuota
-						quotaReason = fmt.Sprintf("SSH 在线账号余额同步：余额 %.2f<=阈值 %.2f，执行限速（%.2f%%）", bal.effectiveBalance, nodeThrottleThreshold, nodeLimitedCPUQuota)
+						quotaReason = fmt.Sprintf("%s：余额 %.2f<=阈值 %.2f，执行限速（%.2f%%）", reasonPrefix, bal.effectiveBalance, nodeThrottleThreshold, nodeLimitedCPUQuota)
 					}
-					if quotaAction, ok := s.nextCPUQuotaAction(data.NodeID, localUsername, targetQuota, quotaReason, false); ok {
+					if quotaAction, ok := s.nextCPUQuotaAction(data.NodeID, localUsername, targetQuota, quotaReason, forceRuntimeSync); ok {
 						actions = append(actions, quotaAction)
 					}
 				}
+			}
+			return nil
+		}
+		for _, sshUser := range data.SSHUsers {
+			if err := syncRuntimeUserState(sshUser, "SSH 在线账号余额同步", true); err != nil {
+				return err
+			}
+		}
+		for _, localUser := range data.LocalUsers {
+			if err := syncRuntimeUserState(localUser.LocalUsername, "节点本地账号上报同步", false); err != nil {
+				return err
+			}
+		}
+		registeredLocals, err := s.store.ListRegisteredLocalUsersByNodeTx(ctx, tx, data.NodeID, 200000)
+		if err != nil {
+			return err
+		}
+		for _, localUsername := range registeredLocals {
+			if err := syncRuntimeUserState(localUsername, "节点绑定账号余额同步", false); err != nil {
+				return err
 			}
 		}
 
@@ -9285,15 +9543,17 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 		if err := s.store.ReplaceNodeUserDiskQuotasTx(ctx, tx, data.NodeID, data.UserDiskQuotas); err != nil {
 			return err
 		}
-		cleanupMappings, cleanupCPULimits, cleanupMemoryLimits, cleanupGPUVisibility, err = s.store.CleanupMissingNodeReportedUsersTx(
-			ctx,
-			tx,
-			data.NodeID,
-			previousLocalUsers,
-			data.LocalUsers,
-		)
-		if err != nil {
-			return err
+		if !skipMissingUserCleanup && len(data.LocalUsers) > 0 {
+			cleanupMappings, cleanupCPULimits, cleanupMemoryLimits, cleanupGPUVisibility, err = s.store.CleanupMissingNodeReportedUsersTx(
+				ctx,
+				tx,
+				data.NodeID,
+				previousLocalUsers,
+				data.LocalUsers,
+			)
+			if err != nil {
+				return err
+			}
 		}
 		return nil
 	})
@@ -9308,6 +9568,13 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 			cleanupCPULimits,
 			cleanupMemoryLimits,
 			cleanupGPUVisibility,
+		)
+	}
+	if skipMissingUserCleanup {
+		log.Printf(
+			"检测到节点 agent 重装/会话切换，已跳过本轮缺失本地用户清理：node=%s reported_local_users=%d",
+			data.NodeID,
+			len(data.LocalUsers),
 		)
 	}
 	if duplicate {
