@@ -91,18 +91,18 @@
             </el-row>
             <el-row :gutter="18">
               <el-col :span="24">
-                <el-form-item required :class="fieldClass('password')">
+                <el-form-item required :class="passwordFieldClass">
                   <template #label><span class="required">*</span> {{ t("密码", "Password") }}</template>
                   <el-input v-model="form.password" type="password" show-password :placeholder="t('请设置强密码', 'Choose a strong password')" @input="clearFieldError('password')" />
                   <div class="field-tip">{{ passwordRuleText }}</div>
-                  <div v-if="fieldErrors.password" class="field-error">{{ fieldErrors.password }}</div>
+                  <div v-if="passwordErrorText" class="field-error">{{ passwordErrorText }}</div>
                 </el-form-item>
               </el-col>
               <el-col :span="24">
-                <el-form-item required :class="fieldClass('confirm_password')">
+                <el-form-item required :class="confirmPasswordFieldClass">
                   <template #label><span class="required">*</span> {{ t("确认密码", "Confirm Password") }}</template>
                   <el-input v-model="confirmPassword" type="password" show-password @input="clearFieldError('confirm_password')" />
-                  <div v-if="fieldErrors.confirm_password" class="field-error">{{ fieldErrors.confirm_password }}</div>
+                  <div v-if="confirmPasswordErrorText" class="field-error">{{ confirmPasswordErrorText }}</div>
                 </el-form-item>
               </el-col>
             </el-row>
@@ -192,7 +192,7 @@
       <el-button
         :type="submitted ? 'info' : 'primary'"
         :loading="loading"
-        :disabled="submitted || registerLocked"
+        :disabled="submitted || registerLocked || submitBlockedByPassword"
         @click="submit"
         class="submit-btn"
       >
@@ -285,6 +285,22 @@ const usernameExample = computed(() => {
 const usernamePlaceholder = computed(() =>
   t(`例如：${usernameExample.value}（姓名缩写+学号）`, `Example: ${usernameExample.value} (initials + student ID)`),
 );
+const livePasswordError = computed(() => {
+  const password = String(form.password || "");
+  if (!password) return "";
+  return checkStrongPassword(password) || "";
+});
+const liveConfirmPasswordError = computed(() => {
+  const confirm = String(confirmPassword.value || "");
+  if (!confirm) return "";
+  if (!String(form.password || "")) return "";
+  return form.password === confirm ? "" : "两次密码输入不一致。";
+});
+const passwordErrorText = computed(() => String(fieldErrors.password || "").trim() || livePasswordError.value);
+const confirmPasswordErrorText = computed(() => String(fieldErrors.confirm_password || "").trim() || liveConfirmPasswordError.value);
+const passwordFieldClass = computed(() => (passwordErrorText.value ? "field-item-invalid" : ""));
+const confirmPasswordFieldClass = computed(() => (confirmPasswordErrorText.value ? "field-item-invalid" : ""));
+const submitBlockedByPassword = computed(() => Boolean(livePasswordError.value || liveConfirmPasswordError.value));
 const fieldErrors = reactive<Record<FieldKey, string>>({
   username: "",
   email: "",

@@ -88,13 +88,19 @@ func hasCommand(name string) bool {
 }
 
 func setCPUQuotaBySystemd(ctx context.Context, uid int, percent float64) error {
-	if err := writeCPUQuotaSystemdDropIn(uid, percent); err != nil {
+	changed, err := writeCPUQuotaSystemdDropIn(uid, percent)
+	if err != nil {
 		return err
 	}
-	if out, err := exec.CommandContext(ctx, "systemctl", "daemon-reload").CombinedOutput(); err != nil {
-		return fmt.Errorf("systemctl daemon-reload 失败：%w（out=%s）", err, strings.TrimSpace(string(out)))
+	if changed {
+		if err := daemonReloadSystemd(ctx); err != nil {
+			return err
+		}
 	}
+	return applyCPUQuotaSystemdRuntime(ctx, uid, percent)
+}
 
+func applyCPUQuotaSystemdRuntime(ctx context.Context, uid int, percent float64) error {
 	slice := fmt.Sprintf("user-%d.slice", uid)
 	args := []string{"set-property", "--runtime", slice, "CPUAccounting=yes"}
 	if percent <= 0 {
@@ -115,24 +121,26 @@ func setCPUQuotaBySystemd(ctx context.Context, uid int, percent float64) error {
 	return nil
 }
 
-func writeCPUQuotaSystemdDropIn(uid int, percent float64) error {
-	dropDir := filepath.Join("/etc/systemd/system", fmt.Sprintf("user-%d.slice.d", uid))
+func writeCPUQuotaSystemdDropIn(uid int, percent float64) (bool, error) {
+	dropDir := filepath.Join(systemdSystemDir, fmt.Sprintf("user-%d.slice.d", uid))
 	dropFile := filepath.Join(dropDir, cpuQuotaSystemdDropIn)
 	if percent <= 0 {
-		if err := os.Remove(dropFile); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("删除 CPU 限速 drop-in 失败：%w", err)
+		changed, err := removeFileIfExists(dropFile)
+		if err != nil {
+			return false, fmt.Errorf("删除 CPU 限速 drop-in 失败：%w", err)
 		}
 		_ = os.Remove(dropDir)
-		return nil
+		return changed, nil
 	}
 	if err := os.MkdirAll(dropDir, 0755); err != nil {
-		return fmt.Errorf("创建 CPU 限速 drop-in 目录失败：%w", err)
+		return false, fmt.Errorf("创建 CPU 限速 drop-in 目录失败：%w", err)
 	}
 	content := fmt.Sprintf("[Slice]\nCPUAccounting=true\nCPUQuota=%.2f%%\n", percent)
-	if err := os.WriteFile(dropFile, []byte(content), 0644); err != nil {
-		return fmt.Errorf("写入 CPU 限速 drop-in 失败：%w", err)
+	changed, err := writeFileIfChanged(dropFile, []byte(content), 0644)
+	if err != nil {
+		return false, fmt.Errorf("写入 CPU 限速 drop-in 失败：%w", err)
 	}
-	return nil
+	return changed, nil
 }
 
 func setCPUQuotaByCgroupV2(uid int, percent float64) error {
