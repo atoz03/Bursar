@@ -9950,6 +9950,22 @@ func parseLimit(v string, def int, max int) int {
 	return n
 }
 
+func parseOffset(v string, def int, max int) int {
+	n := def
+	if x := strings.TrimSpace(v); x != "" {
+		if y, err := strconv.Atoi(x); err == nil {
+			n = y
+		}
+	}
+	if n < 0 {
+		n = def
+	}
+	if n > max {
+		n = max
+	}
+	return n
+}
+
 func (s *Server) maybeServeWeb(r *gin.Engine) {
 	webDir := strings.TrimSpace(s.cfg.WebDir)
 	if webDir == "" {
