@@ -42,18 +42,18 @@ func TestFormatAgentVersionLabel(t *testing.T) {
 	}{
 		{
 			name: "base only",
-			info: agentBuildInfo{Version: "v2.6"},
-			want: "v2.6",
+			info: agentBuildInfo{Version: "v2.8"},
+			want: "v2.8",
 		},
 		{
 			name: "commit and build time",
-			info: agentBuildInfo{Version: "v2.6", Commit: "abcdef1234567890", BuildAt: "2026-03-10T09:08:07Z"},
-			want: "v2.6+abcdef123456.20260310T090807Z",
+			info: agentBuildInfo{Version: "v2.8", Commit: "abcdef1234567890", BuildAt: "2026-03-10T09:08:07Z"},
+			want: "v2.8+abcdef123456.20260310T090807Z",
 		},
 		{
 			name: "dirty flag",
-			info: agentBuildInfo{Version: "v2.6", Commit: "abcdef123456", VCSModified: "true"},
-			want: "v2.6+abcdef123456.dirty",
+			info: agentBuildInfo{Version: "v2.8", Commit: "abcdef123456", VCSModified: "true"},
+			want: "v2.8+abcdef123456.dirty",
 		},
 		{
 			name: "invalid version fallback",

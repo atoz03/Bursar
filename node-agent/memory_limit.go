@@ -85,13 +85,19 @@ func memoryLimitBytes(limitGB float64) int64 {
 }
 
 func setMemoryLimitBySystemd(ctx context.Context, uid int, limitGB float64) error {
-	if err := writeMemoryLimitSystemdDropIn(uid, limitGB); err != nil {
+	changed, err := writeMemoryLimitSystemdDropIn(uid, limitGB)
+	if err != nil {
 		return err
 	}
-	if out, err := exec.CommandContext(ctx, "systemctl", "daemon-reload").CombinedOutput(); err != nil {
-		return fmt.Errorf("systemctl daemon-reload 失败：%w（out=%s）", err, strings.TrimSpace(string(out)))
+	if changed {
+		if err := daemonReloadSystemd(ctx); err != nil {
+			return err
+		}
 	}
+	return applyMemoryLimitSystemdRuntime(ctx, uid, limitGB)
+}
 
+func applyMemoryLimitSystemdRuntime(ctx context.Context, uid int, limitGB float64) error {
 	props := []string{"MemoryAccounting=yes", "MemoryHigh=infinity", "MemoryMax=infinity"}
 	if limitGB > 0 {
 		props = []string{
@@ -139,24 +145,26 @@ func setMemoryLimitBySystemd(ctx context.Context, uid int, limitGB float64) erro
 	return nil
 }
 
-func writeMemoryLimitSystemdDropIn(uid int, limitGB float64) error {
-	dropDir := filepath.Join("/etc/systemd/system", fmt.Sprintf("user-%d.slice.d", uid))
+func writeMemoryLimitSystemdDropIn(uid int, limitGB float64) (bool, error) {
+	dropDir := filepath.Join(systemdSystemDir, fmt.Sprintf("user-%d.slice.d", uid))
 	dropFile := filepath.Join(dropDir, memoryLimitSystemdDropIn)
 	if limitGB <= 0 {
-		if err := os.Remove(dropFile); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("删除内存限额 drop-in 失败：%w", err)
+		changed, err := removeFileIfExists(dropFile)
+		if err != nil {
+			return false, fmt.Errorf("删除内存限额 drop-in 失败：%w", err)
 		}
 		_ = os.Remove(dropDir)
-		return nil
+		return changed, nil
 	}
 	if err := os.MkdirAll(dropDir, 0755); err != nil {
-		return fmt.Errorf("创建内存限额 drop-in 目录失败：%w", err)
+		return false, fmt.Errorf("创建内存限额 drop-in 目录失败：%w", err)
 	}
 	content := fmt.Sprintf("[Slice]\nMemoryAccounting=true\nMemoryMax=%d\n", memoryLimitBytes(limitGB))
-	if err := os.WriteFile(dropFile, []byte(content), 0644); err != nil {
-		return fmt.Errorf("写入内存限额 drop-in 失败：%w", err)
+	changed, err := writeFileIfChanged(dropFile, []byte(content), 0644)
+	if err != nil {
+		return false, fmt.Errorf("写入内存限额 drop-in 失败：%w", err)
 	}
-	return nil
+	return changed, nil
 }
 
 func isUnitNotLoadedError(execErr error, out []byte) bool {

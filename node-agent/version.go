@@ -9,8 +9,8 @@ import (
 )
 
 var (
-	// 每次发布新版本时，只需要手工修改这里一次（示例：v2.0 -> v2.6）。
-	agentVersion     = "v2.6"
+	// 每次发布新版本时，只需要手工修改这里一次（示例：v2.0 -> v2.8）。
+	agentVersion     = "v2.8"
 	agentCommit      = ""
 	agentBuildAt     = ""
 	agentVCSModified = ""

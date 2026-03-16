@@ -9225,7 +9225,7 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 					targetMemoryGB = manual.MemoryLimitGB
 					memoryReason = manualMemoryLimitReason(manual)
 				}
-				forceMemorySync := forceRuntimeSync || (nowOverdraftExceeded && targetMemoryGB > 0)
+				forceMemorySync := forceRuntimeSync
 				if memoryAction, ok := s.nextMemoryLimitAction(data.NodeID, localUsername, targetMemoryGB, memoryReason, forceMemorySync); ok {
 					actions = append(actions, memoryAction)
 				}
@@ -9422,7 +9422,7 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 				targetMemoryGB = manual.MemoryLimitGB
 				memoryReason = manualMemoryLimitReason(manual)
 			}
-			forceMemorySync := forceRuntimeSync || (overdraftExceeded && targetMemoryGB > 0)
+			forceMemorySync := forceRuntimeSync
 			if memoryAction, ok := s.nextMemoryLimitAction(data.NodeID, localUsername, targetMemoryGB, memoryReason, forceMemorySync); ok {
 				actions = append(actions, memoryAction)
 			}
