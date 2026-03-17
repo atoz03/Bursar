@@ -30,6 +30,7 @@ type NodeAgent struct {
 	cpuMinPercent float64
 	numCPU        int
 	lastCPUSample map[int32]cpuSample
+	tickMu        sync.Mutex
 
 	forceSyncMu sync.Mutex
 	forceSyncOn bool
@@ -213,6 +214,17 @@ func (a *NodeAgent) Run(ctx context.Context) {
 }
 
 func (a *NodeAgent) tick(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// tick 会读写 lastCPUSample，并串行执行采集/上报/动作回执。
+	// force_sync 可能与定时 tick 并发触发，这里统一串行化，避免 map 并发读写导致 panic。
+	a.tickMu.Lock()
+	defer a.tickMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	collectCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
