@@ -389,6 +389,13 @@ const filteredMonthlyRows = computed(() => {
   return full.filter((row) => String(row.username || "").toLowerCase().includes(kw));
 });
 
+const pagedMonthlyRows = computed(() => {
+  const page = Number(monthlyTablePage.value || 1);
+  const size = Number(monthlyTablePageSize.value || 50);
+  const start = (page - 1) * size;
+  return filteredMonthlyRows.value.slice(start, start + size);
+});
+
 const availableUsageDaySet = computed(() => {
   const s = new Set<string>();
   for (const row of availableUsageDays.value) {
@@ -410,13 +417,6 @@ function getBeijingTodayText(): string {
 function normalizeDateInput(v: unknown, fallback: string): string {
   return normalizeServerDateInput(v, fallback);
 }
-
-const pagedMonthlyRows = computed(() => {
-  const page = Number(monthlyTablePage.value || 1);
-  const size = Number(monthlyTablePageSize.value || 50);
-  const start = (page - 1) * size;
-  return filteredMonthlyRows.value.slice(start, start + size);
-});
 
 function fmt2(v: number): string {
   return Number(v ?? 0).toFixed(2);
@@ -479,12 +479,12 @@ function onMonthlyUserSelect(item: { value?: string }) {
 }
 
 async function loadMonthlyRows(client: ApiClient, from: string, to: string, reset: boolean) {
-  if (monthlyLoading.value) return;
+  if (monthlyLoading.value) return null;
   monthlyLoading.value = true;
   try {
     const offset = reset ? 0 : monthlyOffset.value;
-    const m = await client.adminStatsMonthly({ from, to, limit: MONTHLY_FETCH_BATCH_SIZE, offset });
-    const nextRows = m.rows ?? [];
+    const resp = await client.adminStatsMonthly({ from, to, limit: MONTHLY_FETCH_BATCH_SIZE, offset });
+    const nextRows = resp.rows ?? [];
     if (reset) {
       monthlyRows.value = nextRows;
       monthlyOffset.value = nextRows.length;
@@ -493,9 +493,10 @@ async function loadMonthlyRows(client: ApiClient, from: string, to: string, rese
       monthlyRows.value = [...monthlyRows.value, ...nextRows];
       monthlyOffset.value += nextRows.length;
     }
-    monthlyHasMore.value = !!m.has_more;
+    monthlyHasMore.value = !!resp.has_more;
     monthlyLoadedFrom.value = from;
     monthlyLoadedTo.value = to;
+    return resp;
   } finally {
     monthlyLoading.value = false;
   }
@@ -590,12 +591,12 @@ async function loadAll() {
       client.adminStatsPlatformUsers({ from, to, limit: 1000 }),
       client.adminStatsRecharges({ from, to, limit: 1000 }),
     ]);
+    const m = (await loadMonthlyRows(client, from, to, true)) ?? { from, to, rows: [], has_more: false };
     if (seq !== loadAllSeq) return;
-    appliedFromDate.value = datePrefix(u.from || r.from || from, from);
-    appliedToDate.value = datePrefix(u.to || r.to || to, to);
+    appliedFromDate.value = datePrefix(u.from || m.from || r.from || from, from);
+    appliedToDate.value = datePrefix(u.to || m.to || r.to || to, to);
     userRows.value = u.rows ?? [];
     rechargeRows.value = r.rows ?? [];
-    await loadMonthlyRows(client, from, to, true);
     if (authState.role === "admin") {
       const [usersResp, retentionResp] = await Promise.all([
         client.adminUsersDetails(5000),
