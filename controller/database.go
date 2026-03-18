@@ -12464,9 +12464,12 @@ LIMIT $3`
 	return out, rows.Err()
 }
 
-func (s *Store) ListUsageMonthlyByUser(ctx context.Context, from time.Time, to time.Time, limit int, visibleNodeIDs []string) ([]UsageMonthlySummary, error) {
+func (s *Store) ListUsageMonthlyByUser(ctx context.Context, from time.Time, to time.Time, limit int, offset int, visibleNodeIDs []string) ([]UsageMonthlySummary, bool, error) {
 	if limit <= 0 || limit > 200000 {
 		limit = 20000
+	}
+	if offset < 0 {
+		offset = 0
 	}
 	query := `
 WITH platform_users AS (
@@ -12492,11 +12495,11 @@ resolved AS (
   LEFT JOIN platform_users pu_map ON pu_map.username = una.billing_username
   WHERE ur.timestamp >= $1
     AND ur.timestamp <= $2`
-	args := []any{from, to, limit}
+	args := []any{from, to, limit + 1, offset}
 	cleaned := uniqTrim(visibleNodeIDs)
 	if len(cleaned) > 0 {
 		query += `
-    AND ur.node_id = ANY($4)`
+    AND ur.node_id = ANY($5)`
 		args = append(args, pq.Array(cleaned))
 	}
 	query += `
@@ -12513,21 +12516,30 @@ SELECT month,
 FROM resolved
 GROUP BY month, username
 ORDER BY month DESC, total_cost DESC
-LIMIT $3`
+LIMIT $3
+OFFSET $4`
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer rows.Close()
 	out := make([]UsageMonthlySummary, 0)
 	for rows.Next() {
 		var x UsageMonthlySummary
 		if err := rows.Scan(&x.Month, &x.Username, &x.UsageRecords, &x.GPUProcessRecords, &x.CPUProcessRecords, &x.TotalCPUPercent, &x.TotalMemoryMB, &x.TotalCost); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		out = append(out, x)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	hasMore := false
+	if len(out) > limit {
+		hasMore = true
+		out = out[:limit]
+	}
+	return out, hasMore, nil
 }
 
 func (s *Store) ListAnnouncements(ctx context.Context, limit int) ([]Announcement, error) {
