@@ -1,0 +1,2 @@
+ALTER TABLE power_users
+    ADD COLUMN IF NOT EXISTS can_manage_platform_users BOOLEAN NOT NULL DEFAULT FALSE;

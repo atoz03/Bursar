@@ -6,10 +6,13 @@
           <span class="section-icon"><el-icon><UserFilled /></el-icon></span>
           <div>
           <div class="title">平台用户管理</div>
-          <div class="sub">平台账号资料、状态控制、删除恢复与重复身份排查</div>
+          <div class="sub">平台账号资料、状态控制、删除恢复、重复身份排查与 CSV 备份恢复</div>
           </div>
         </div>
         <div class="row">
+          <input ref="importInputRef" type="file" accept=".csv,text/csv" style="display: none" @change="onImportCSVChange" />
+          <el-button :loading="exportLoading" @click="exportUsersCSV">导出 CSV</el-button>
+          <el-button :loading="importLoading" @click="triggerImportCSV">导入 CSV</el-button>
           <el-button :loading="loading" type="primary" @click="reload">刷新</el-button>
         </div>
       </div>
@@ -21,7 +24,10 @@
       <div class="section-title-wrap">
         <span class="section-icon tone-list"><el-icon><List /></el-icon></span>
         <div>
-          <div class="title">平台账号列表</div>
+          <div class="title">
+            平台账号列表
+            <el-tag size="small" type="info" style="margin-left: 8px">当前注册 {{ registeredCount }} 人</el-tag>
+          </div>
           <div class="sub">支持字段筛选、排序、改分、拉黑/解黑、删除和重复身份排查。</div>
         </div>
       </div>
@@ -406,10 +412,14 @@ import { formatServerDateTime } from "../../lib/time";
 import { Bell, Check, Connection, Delete, List, UserFilled, WarningFilled } from "@element-plus/icons-vue";
 
 const loading = ref(false);
+const exportLoading = ref(false);
+const importLoading = ref(false);
 const error = ref("");
 const success = ref("");
 const rows = ref<AdminUserDetail[]>([]);
+const registeredCount = ref(0);
 const deletedRows = ref<DeletedUserAccount[]>([]);
+const importInputRef = ref<HTMLInputElement | null>(null);
 const blacklistSet = ref<Set<string>>(new Set());
 const blacklistKeySet = ref<Set<string>>(new Set());
 const whitelistSet = ref<Set<string>>(new Set());
@@ -738,6 +748,10 @@ async function reload() {
   try {
     const r1 = await client().adminUsersDetails(2000);
     rows.value = r1.users ?? [];
+    registeredCount.value = Number(
+      r1.registered_count
+      ?? (r1.users ?? []).filter((row) => row.is_platform_user !== false).length,
+    );
     try {
       const r2 = await client().adminDeletedUsers(2000, false);
       deletedRows.value = r2.users ?? [];
@@ -769,6 +783,50 @@ async function reload() {
     error.value = e?.message ?? String(e);
   } finally {
     loading.value = false;
+  }
+}
+
+function triggerImportCSV() {
+  if (importLoading.value) return;
+  importInputRef.value?.click();
+}
+
+async function onImportCSVChange(event: Event) {
+  const input = event.target as HTMLInputElement | null;
+  const file = input?.files?.[0];
+  if (!file) return;
+  importLoading.value = true;
+  error.value = "";
+  success.value = "";
+  try {
+    const res = await client().adminImportPlatformUsersCSV(file);
+    await reload();
+    success.value = `CSV 导入完成：共 ${res.imported} 条，新增 ${res.created}，更新 ${res.updated}，提升高级 ${res.promoted}，取消高级 ${res.demoted}`;
+  } catch (e: any) {
+    error.value = e?.message ?? String(e);
+  } finally {
+    importLoading.value = false;
+    if (input) input.value = "";
+  }
+}
+
+async function exportUsersCSV() {
+  exportLoading.value = true;
+  error.value = "";
+  success.value = "";
+  try {
+    const blob = await client().adminExportPlatformUsersCSV();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "platform_users_backup.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+    success.value = "已开始下载 platform_users_backup.csv";
+  } catch (e: any) {
+    error.value = e?.message ?? String(e);
+  } finally {
+    exportLoading.value = false;
   }
 }
 

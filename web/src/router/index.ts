@@ -16,7 +16,6 @@ const UserAccounts = () => import("../views/pages/UserAccounts.vue");
 const AdminUsers = () => import("../views/pages/AdminUsers.vue");
 const AdminNodes = () => import("../views/pages/AdminNodes.vue");
 const AdminUsage = () => import("../views/pages/AdminUsage.vue");
-const AdminQueue = () => import("../views/pages/AdminQueue.vue");
 const AdminRequests = () => import("../views/pages/AdminRequests.vue");
 const AdminMailSettings = () => import("../views/pages/AdminMailSettings.vue");
 const AdminBoard = () => import("../views/pages/AdminBoard.vue");
@@ -100,6 +99,7 @@ router.beforeEach(async (to) => {
       if (authState.canViewBoard) return { path: "/admin/board" };
       if (authState.canViewNodes) return { path: "/admin/nodes" };
       if (authState.canManagePoints) return { path: "/admin/points" };
+      if (authState.canManagePlatformUsers) return { path: "/admin/users" };
       if (authState.canReviewRequests) return { path: "/admin/requests" };
       return { path: "/user/balance" };
     }
@@ -119,6 +119,7 @@ router.beforeEach(async (to) => {
       if (p.startsWith("/admin/board") && authState.canViewBoard) return true;
       if (p.startsWith("/admin/nodes") && authState.canViewNodes) return true;
       if (p.startsWith("/admin/points") && authState.canManagePoints) return true;
+      if (p.startsWith("/admin/users") && authState.canManagePlatformUsers) return true;
       if (p.startsWith("/admin/requests") && authState.canReviewRequests) return true;
       if (p.startsWith("/admin/profile")) return { path: "/user/profile" };
       if (p.startsWith("/admin/change-password")) return { path: "/user/change-password" };
@@ -133,6 +134,7 @@ router.beforeEach(async (to) => {
       if (authState.canViewBoard) return { path: "/admin/board" };
       if (authState.canViewNodes) return { path: "/admin/nodes" };
       if (authState.canManagePoints) return { path: "/admin/points" };
+      if (authState.canManagePlatformUsers) return { path: "/admin/users" };
       if (authState.canReviewRequests) return { path: "/admin/requests" };
       return { path: "/user/balance" };
     }

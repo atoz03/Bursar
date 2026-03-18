@@ -339,8 +339,19 @@ cd /home/gpuops/gpu-ops && bash scripts/install_controller_local.sh
 sudo systemctl restart gpu-controller
 # 分发最新版脚本给全部计算节点
 bash ./scripts/distribute_workspace.sh
-# 只对指定节点分发并重装（示例：60020、60002）
-cd /home/gpuops/gpu-ops && NODE_IDS="60020 60018 60017 60015 60014 60012 60010 60008 60007 60006 60005 60004 60003 60002 60000" CONTROLLER_URL=http://192.0.2.10:60039 AGENT_TOKEN=<replace-with-agent-token> SSH_GUARD_EXCLUDE_USERS="root gpuops" ENABLE_SYSTEM_CPU_RESERVE=1 SYSTEM_CPU_RESERVE_PERCENT=10 ENABLE_SYSTEM_MEMORY_RESERVE=1 SYSTEM_MEMORY_RESERVE_GB=8 PARALLEL=8 bash scripts/deploy_installed_nodes_only.sh
+# 只对指定节点分发并重装（示例：60000）
+# 注意：SYSTEM_MEMORY_RESERVE_GB 的含义是“给系统预留多少内存”，不是“把用户限制到多少内存”
+cd /home/gpuops/gpu-ops && \
+  NODE_IDS="60000" \
+  CONTROLLER_URL=http://192.0.2.10:60039 \
+  AGENT_TOKEN=<replace-with-agent-token> \
+  SSH_GUARD_EXCLUDE_USERS="root gpuops" \
+  ENABLE_SYSTEM_CPU_RESERVE=1 \
+  SYSTEM_CPU_RESERVE_PERCENT=10 \
+  ENABLE_SYSTEM_MEMORY_RESERVE=1 \
+  SYSTEM_MEMORY_RESERVE_GB=12 \
+  PARALLEL=8 \
+  bash scripts/deploy_installed_nodes_only.sh
 
 # 停止控制节点服务（需要时）
 sudo systemctl stop gpu-controller && sudo systemctl disable gpu-controller && sudo systemctl status gpu-controller --no-pager

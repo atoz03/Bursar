@@ -31,6 +31,7 @@
         <el-form-item><el-checkbox v-model="createForm.can_manage_nodes">可修改节点状态</el-checkbox></el-form-item>
         <el-form-item><el-checkbox v-model="createForm.can_manage_points">可管理积分（加减）</el-checkbox></el-form-item>
         <el-form-item><el-checkbox v-model="createForm.can_review_requests">可做注册审核</el-checkbox></el-form-item>
+        <el-form-item><el-checkbox v-model="createForm.can_manage_platform_users">可管理平台用户</el-checkbox></el-form-item>
         <el-form-item><el-button type="primary" @click="create">新增高级用户</el-button></el-form-item>
       </el-form>
       <div class="tips">密码要求：{{ passwordRuleText }}</div>
@@ -69,6 +70,7 @@
         <el-form-item><el-checkbox v-model="promoteForm.can_manage_nodes">可修改节点状态</el-checkbox></el-form-item>
         <el-form-item><el-checkbox v-model="promoteForm.can_manage_points">可管理积分（加减）</el-checkbox></el-form-item>
         <el-form-item><el-checkbox v-model="promoteForm.can_review_requests">可做注册审核</el-checkbox></el-form-item>
+        <el-form-item><el-checkbox v-model="promoteForm.can_manage_platform_users">可管理平台用户</el-checkbox></el-form-item>
         <el-form-item><el-button type="primary" @click="promote">提升为高级用户</el-button></el-form-item>
       </el-form>
       <div class="tips">提升后，用户仍是同一平台账号，只是权限升级；可随时“取消高级”恢复普通用户。</div>
@@ -93,6 +95,9 @@
       </el-table-column>
       <el-table-column label="注册审核" width="120">
         <template #default="{ row }"><el-switch v-model="row.can_review_requests" @change="savePerm(row)" /></template>
+      </el-table-column>
+      <el-table-column label="平台用户管理" width="140">
+        <template #default="{ row }"><el-switch v-model="row.can_manage_platform_users" @change="savePerm(row)" /></template>
       </el-table-column>
       <el-table-column prop="updated_by" label="最近变更人" width="150" />
       <el-table-column prop="updated_at" label="最近变更时间" min-width="180" :formatter="tableTimeFormatter" />
@@ -140,6 +145,7 @@ const createForm = reactive({
   can_manage_nodes: false,
   can_manage_points: false,
   can_review_requests: false,
+  can_manage_platform_users: false,
 });
 const promoteForm = reactive({
   username: "",
@@ -148,6 +154,7 @@ const promoteForm = reactive({
   can_manage_nodes: false,
   can_manage_points: false,
   can_review_requests: false,
+  can_manage_platform_users: false,
 });
 
 function tableTimeFormatter(_: unknown, __: unknown, cellValue: unknown): string {
@@ -209,6 +216,7 @@ async function create() {
       can_manage_nodes: createForm.can_manage_nodes,
       can_manage_points: createForm.can_manage_points,
       can_review_requests: createForm.can_review_requests,
+      can_manage_platform_users: createForm.can_manage_platform_users,
     });
     success.value = "高级用户创建成功";
     createForm.username = "";
@@ -218,6 +226,7 @@ async function create() {
     createForm.can_manage_nodes = false;
     createForm.can_manage_points = false;
     createForm.can_review_requests = false;
+    createForm.can_manage_platform_users = false;
     await reload();
   } catch (e: any) {
     error.value = e?.message ?? String(e);
@@ -240,6 +249,7 @@ async function promote() {
       can_manage_nodes: promoteForm.can_manage_nodes,
       can_manage_points: promoteForm.can_manage_points,
       can_review_requests: promoteForm.can_review_requests,
+      can_manage_platform_users: promoteForm.can_manage_platform_users,
     });
     success.value = `已提升为高级用户：${promoteForm.username.trim()}`;
     promoteForm.username = "";
@@ -260,6 +270,7 @@ async function savePerm(row: PowerUser) {
       can_manage_nodes: row.can_manage_nodes,
       can_manage_points: row.can_manage_points,
       can_review_requests: row.can_review_requests,
+      can_manage_platform_users: row.can_manage_platform_users,
     });
     success.value = `权限已更新：${row.username}`;
     await reload();

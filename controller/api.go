@@ -55,11 +55,12 @@ type securitySignalState struct {
 }
 
 const (
-	permViewBoard      = 1
-	permViewNodes      = 2
-	permReviewRequests = 4
-	permManageNodes    = 8
-	permManagePoints   = 16
+	permViewBoard           = 1
+	permViewNodes           = 2
+	permReviewRequests      = 4
+	permManageNodes         = 8
+	permManagePoints        = 16
+	permManagePlatformUsers = 32
 )
 
 func NewServer(cfg Config, store *Store) *Server {
@@ -1100,7 +1101,7 @@ func (s *Server) RouterWeb() *gin.Engine {
 
 	api.GET("/users/:username/balance", s.handleBalance)
 	api.GET("/users/:username/usage", s.handleUserUsage)
-	api.POST("/users/:username/recharge", s.authAdmin(), s.requireSuperAdmin(), s.handleRecharge)
+	api.POST("/users/:username/recharge", s.authAdmin(), s.requirePlatformUsersPermission(), s.handleRecharge)
 
 	user := api.Group("/user")
 	user.Use(s.authSession())
@@ -1123,23 +1124,25 @@ func (s *Server) RouterWeb() *gin.Engine {
 	admin := api.Group("/admin")
 	admin.Use(s.authAdmin())
 	admin.POST("/bootstrap", s.requireSuperAdmin(), s.handleAdminBootstrap)
-	admin.GET("/users", s.requireSuperAdmin(), s.handleAdminUsers)
-	admin.GET("/users/details", s.requireSuperAdmin(), s.handleAdminUserDetails)
-	admin.GET("/users/deleted", s.requireSuperAdmin(), s.handleAdminDeletedUsers)
-	admin.GET("/users/duplicates", s.requireSuperAdmin(), s.handleAdminUserDuplicates)
-	admin.GET("/users/:username/profile", s.handleAdminUserProfile)
+	admin.GET("/users", s.requirePlatformUsersPermission(), s.handleAdminUsers)
+	admin.GET("/users/details", s.requirePlatformUsersPermission(), s.handleAdminUserDetails)
+	admin.GET("/users/export.csv", s.requirePlatformUsersPermission(), s.handleAdminUsersExportCSV)
+	admin.POST("/users/import.csv", s.requirePlatformUsersPermission(), s.handleAdminUsersImportCSV)
+	admin.GET("/users/deleted", s.requirePlatformUsersPermission(), s.handleAdminDeletedUsers)
+	admin.GET("/users/duplicates", s.requirePlatformUsersPermission(), s.handleAdminUserDuplicates)
+	admin.GET("/users/:username/profile", s.requirePlatformUsersPermission(), s.handleAdminUserProfile)
 	admin.POST("/users/:username/2fa/enable", s.requireSuperAdmin(), s.handleAdminUserTwoFactorEnable)
 	admin.POST("/users/:username/2fa/disable", s.requireSuperAdmin(), s.handleAdminUserTwoFactorDisable)
-	admin.POST("/users/:username/block", s.requireSuperAdmin(), s.handleAdminUserBlock)
-	admin.POST("/users/:username/unblock", s.requireSuperAdmin(), s.handleAdminUserUnblock)
-	admin.POST("/users/:username/delete", s.requireSuperAdmin(), s.handleAdminUserDelete)
-	admin.POST("/users/:username/archive", s.requireSuperAdmin(), s.handleAdminUserDelete)
-	admin.POST("/users/:username/remove", s.requireSuperAdmin(), s.handleAdminUserDelete)
-	admin.POST("/users/deleted/:id/restore", s.requireSuperAdmin(), s.handleAdminDeletedUserRestore)
-	admin.GET("/users/graduation-due", s.requireSuperAdmin(), s.handleAdminGraduationDueUsers)
+	admin.POST("/users/:username/block", s.requirePlatformUsersPermission(), s.handleAdminUserBlock)
+	admin.POST("/users/:username/unblock", s.requirePlatformUsersPermission(), s.handleAdminUserUnblock)
+	admin.POST("/users/:username/delete", s.requirePlatformUsersPermission(), s.handleAdminUserDelete)
+	admin.POST("/users/:username/archive", s.requirePlatformUsersPermission(), s.handleAdminUserDelete)
+	admin.POST("/users/:username/remove", s.requirePlatformUsersPermission(), s.handleAdminUserDelete)
+	admin.POST("/users/deleted/:id/restore", s.requirePlatformUsersPermission(), s.handleAdminDeletedUserRestore)
+	admin.GET("/users/graduation-due", s.requirePlatformUsersPermission(), s.handleAdminGraduationDueUsers)
 	admin.GET("/me/profile", s.handleAdminMyProfileGet)
 	admin.PUT("/me/profile", s.handleAdminMyProfileSet)
-	admin.POST("/users/graduation-reminders/send", s.requireSuperAdmin(), s.handleAdminGraduationRemindersSend)
+	admin.POST("/users/graduation-reminders/send", s.requirePlatformUsersPermission(), s.handleAdminGraduationRemindersSend)
 	admin.GET("/prices", s.requireSuperAdmin(), s.handleAdminPrices)
 	admin.POST("/prices", s.requireSuperAdmin(), s.handleAdminSetPrice)
 	admin.GET("/requests", s.requireReviewPermission(), s.handleAdminRequestsList)
@@ -1223,23 +1226,23 @@ func (s *Server) RouterWeb() *gin.Engine {
 	admin.GET("/accounts/mapping-risks", s.requireSuperAdmin(), s.handleAdminAccountMappingRisks)
 	admin.POST("/accounts/mapping-risks/clear", s.requireSuperAdmin(), s.handleAdminAccountMappingRiskClear)
 	admin.GET("/accounts/provision-logs", s.requireSuperAdmin(), s.handleAdminAccountProvisionLogs)
-	admin.GET("/accounts/unbind-records", s.requireSuperAdmin(), s.handleAdminUnbindRecordsList)
-	admin.POST("/accounts/unbind-request", s.requireSuperAdmin(), s.handleAdminAccountUnbindRequestCreate)
+	admin.GET("/accounts/unbind-records", s.requirePlatformUsersPermission(), s.handleAdminUnbindRecordsList)
+	admin.POST("/accounts/unbind-request", s.requirePlatformUsersPermission(), s.handleAdminAccountUnbindRequestCreate)
 	admin.GET("/cpu-limits", s.requireSuperAdmin(), s.handleAdminCPULimits)
 	admin.GET("/memory-limits", s.requireSuperAdmin(), s.handleAdminMemoryLimits)
 	admin.POST("/accounts", s.requireSuperAdmin(), s.handleAdminAccountsUpsert)
 	admin.POST("/accounts/provision", s.requireSuperAdmin(), s.handleAdminAccountProvision)
-	admin.POST("/accounts/disable", s.requireSuperAdmin(), s.handleAdminAccountDisable)
-	admin.POST("/accounts/enable", s.requireSuperAdmin(), s.handleAdminAccountEnable)
+	admin.POST("/accounts/disable", s.requirePlatformUsersPermission(), s.handleAdminAccountDisable)
+	admin.POST("/accounts/enable", s.requirePlatformUsersPermission(), s.handleAdminAccountEnable)
 	admin.PUT("/accounts", s.requireSuperAdmin(), s.handleAdminAccountsUpdate)
 	admin.DELETE("/accounts", s.requireSuperAdmin(), s.handleAdminAccountsDelete)
-	admin.GET("/whitelist", s.requireSuperAdmin(), s.handleAdminWhitelistList)
+	admin.GET("/whitelist", s.requirePlatformUsersPermission(), s.handleAdminWhitelistList)
 	admin.POST("/whitelist", s.requireSuperAdmin(), s.handleAdminWhitelistUpsert)
 	admin.DELETE("/whitelist", s.requireSuperAdmin(), s.handleAdminWhitelistDelete)
-	admin.GET("/blacklist", s.requireSuperAdmin(), s.handleAdminBlacklistList)
-	admin.POST("/blacklist", s.requireSuperAdmin(), s.handleAdminBlacklistUpsert)
-	admin.DELETE("/blacklist", s.requireSuperAdmin(), s.handleAdminBlacklistDelete)
-	admin.GET("/exemptions", s.requireSuperAdmin(), s.handleAdminExemptionsList)
+	admin.GET("/blacklist", s.requirePlatformUsersPermission(), s.handleAdminBlacklistList)
+	admin.POST("/blacklist", s.requirePlatformUsersPermission(), s.handleAdminBlacklistUpsert)
+	admin.DELETE("/blacklist", s.requirePlatformUsersPermission(), s.handleAdminBlacklistDelete)
+	admin.GET("/exemptions", s.requirePlatformUsersPermission(), s.handleAdminExemptionsList)
 	admin.POST("/exemptions", s.requireSuperAdmin(), s.handleAdminExemptionsUpsert)
 	admin.DELETE("/exemptions", s.requireSuperAdmin(), s.handleAdminExemptionsDelete)
 	admin.GET("/power-users", s.requireSuperAdmin(), s.handleAdminPowerUsersList)
@@ -1369,7 +1372,7 @@ func (s *Server) authAdmin() gin.HandlerFunc {
 		if strings.HasPrefix(auth, prefix) && strings.TrimSpace(strings.TrimPrefix(auth, prefix)) == s.cfg.AdminToken {
 			c.Set("auth_method", "token")
 			c.Set("auth_role", "admin")
-			c.Set("auth_perms", uint32(permViewBoard|permViewNodes|permManageNodes|permReviewRequests|permManagePoints))
+			c.Set("auth_perms", uint32(permViewBoard|permViewNodes|permManageNodes|permReviewRequests|permManagePoints|permManagePlatformUsers))
 			c.Next()
 			return
 		}
@@ -1595,6 +1598,21 @@ func (s *Server) requirePointsPermission() gin.HandlerFunc {
 	}
 }
 
+func (s *Server) requirePlatformUsersPermission() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		role := getAuthRole(c)
+		if role == "admin" {
+			c.Next()
+			return
+		}
+		if role == "power_user" && (getAuthPerms(c)&permManagePlatformUsers) != 0 {
+			c.Next()
+			return
+		}
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+	}
+}
+
 func (s *Server) handleBalance(c *gin.Context) {
 	username := strings.TrimSpace(c.Param("username"))
 	if username == "" {
@@ -1682,6 +1700,9 @@ func (s *Server) handleRecharge(c *gin.Context) {
 	username := strings.TrimSpace(c.Param("username"))
 	if username == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "username 不能为空"})
+		return
+	}
+	if !s.ensurePowerUserCanManageRegularPlatformUser(c, username) {
 		return
 	}
 
@@ -1789,7 +1810,359 @@ func (s *Server) handleAdminUserDetails(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"users": rows})
+	c.JSON(http.StatusOK, gin.H{"users": rows, "registered_count": s.queryCount(c.Request.Context(), `SELECT COUNT(1) FROM user_accounts`)})
+}
+
+func platformUserCSVHeaders() []string {
+	return []string{
+		"username",
+		"email",
+		"password_hash",
+		"real_name",
+		"student_id",
+		"advisor",
+		"expected_graduation_year",
+		"expected_graduation_month",
+		"phone",
+		"platform_uid",
+		"role",
+		"last_login_at",
+		"two_factor_enabled",
+		"two_factor_secret",
+		"two_factor_pending_secret",
+		"reset_token_hash",
+		"reset_token_expire_at",
+		"account_created_at",
+		"account_updated_at",
+		"general_balance",
+		"carryover_balance",
+		"status",
+		"blocked_at",
+		"user_created_at",
+		"user_last_charge_time",
+		"can_view_board",
+		"can_view_nodes",
+		"can_manage_nodes",
+		"can_manage_points",
+		"can_review_requests",
+		"can_manage_platform_users",
+	}
+}
+
+func formatPlatformUserCSVTimePtr(v *time.Time) string {
+	if v == nil || v.IsZero() {
+		return ""
+	}
+	return v.Format(time.RFC3339)
+}
+
+func formatPlatformUserCSVTime(v time.Time) string {
+	if v.IsZero() {
+		return ""
+	}
+	return v.Format(time.RFC3339)
+}
+
+func csvHeaderIndexMap(header []string) map[string]int {
+	out := make(map[string]int, len(header))
+	for i, name := range header {
+		key := strings.TrimSpace(strings.TrimPrefix(name, "\ufeff"))
+		if key != "" {
+			out[key] = i
+		}
+	}
+	return out
+}
+
+func csvFieldValue(record []string, index map[string]int, key string) string {
+	i, ok := index[key]
+	if !ok || i < 0 || i >= len(record) {
+		return ""
+	}
+	return strings.TrimSpace(record[i])
+}
+
+func parseCSVBool(v string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "0", "false", "f", "no", "n":
+		return false, nil
+	case "1", "true", "t", "yes", "y":
+		return true, nil
+	default:
+		return false, fmt.Errorf("布尔值不合法：%s", v)
+	}
+}
+
+func parseCSVInt(v string) (int, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+func parseCSVFloat(v string) (float64, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0, nil
+	}
+	return strconv.ParseFloat(v, 64)
+}
+
+func parseCSVTimePtr(v string) (*time.Time, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return nil, nil
+	}
+	t, err := parseTimeFlexible(v)
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+func parsePlatformUserBackupCSVRow(header map[string]int, record []string) (PlatformUserBackupRow, error) {
+	required := []string{
+		"username", "email", "password_hash", "real_name", "student_id", "advisor", "expected_graduation_year",
+		"expected_graduation_month", "phone", "role", "account_created_at", "account_updated_at",
+		"general_balance", "carryover_balance", "status", "user_created_at", "user_last_charge_time",
+	}
+	for _, key := range required {
+		if _, ok := header[key]; !ok {
+			return PlatformUserBackupRow{}, fmt.Errorf("缺少 CSV 列：%s", key)
+		}
+	}
+	var out PlatformUserBackupRow
+	out.Username = csvFieldValue(record, header, "username")
+	out.Email = csvFieldValue(record, header, "email")
+	out.PasswordHash = csvFieldValue(record, header, "password_hash")
+	out.RealName = csvFieldValue(record, header, "real_name")
+	out.StudentID = csvFieldValue(record, header, "student_id")
+	out.Advisor = csvFieldValue(record, header, "advisor")
+	out.Phone = csvFieldValue(record, header, "phone")
+	out.Role = csvFieldValue(record, header, "role")
+	out.TwoFactorSecret = csvFieldValue(record, header, "two_factor_secret")
+	out.TwoFactorPendingSecret = csvFieldValue(record, header, "two_factor_pending_secret")
+	out.ResetTokenHash = csvFieldValue(record, header, "reset_token_hash")
+	var err error
+	if out.ExpectedGraduationYear, err = parseCSVInt(csvFieldValue(record, header, "expected_graduation_year")); err != nil {
+		return PlatformUserBackupRow{}, fmt.Errorf("expected_graduation_year 解析失败：%w", err)
+	}
+	if out.ExpectedGraduationMonth, err = parseCSVInt(csvFieldValue(record, header, "expected_graduation_month")); err != nil {
+		return PlatformUserBackupRow{}, fmt.Errorf("expected_graduation_month 解析失败：%w", err)
+	}
+	uid, err := parseCSVInt(csvFieldValue(record, header, "platform_uid"))
+	if err != nil {
+		return PlatformUserBackupRow{}, fmt.Errorf("platform_uid 解析失败：%w", err)
+	}
+	if uid > 0 {
+		out.PlatformUID = &uid
+	}
+	if out.LastLoginAt, err = parseCSVTimePtr(csvFieldValue(record, header, "last_login_at")); err != nil {
+		return PlatformUserBackupRow{}, fmt.Errorf("last_login_at 解析失败：%w", err)
+	}
+	if out.TwoFactorEnabled, err = parseCSVBool(csvFieldValue(record, header, "two_factor_enabled")); err != nil {
+		return PlatformUserBackupRow{}, fmt.Errorf("two_factor_enabled 解析失败：%w", err)
+	}
+	if out.ResetTokenExpireAt, err = parseCSVTimePtr(csvFieldValue(record, header, "reset_token_expire_at")); err != nil {
+		return PlatformUserBackupRow{}, fmt.Errorf("reset_token_expire_at 解析失败：%w", err)
+	}
+	accountCreatedAt, err := parseCSVTimePtr(csvFieldValue(record, header, "account_created_at"))
+	if err != nil || accountCreatedAt == nil {
+		return PlatformUserBackupRow{}, fmt.Errorf("account_created_at 解析失败：%w", err)
+	}
+	out.AccountCreatedAt = *accountCreatedAt
+	accountUpdatedAt, err := parseCSVTimePtr(csvFieldValue(record, header, "account_updated_at"))
+	if err != nil || accountUpdatedAt == nil {
+		return PlatformUserBackupRow{}, fmt.Errorf("account_updated_at 解析失败：%w", err)
+	}
+	out.AccountUpdatedAt = *accountUpdatedAt
+	if out.GeneralBalance, err = parseCSVFloat(csvFieldValue(record, header, "general_balance")); err != nil {
+		return PlatformUserBackupRow{}, fmt.Errorf("general_balance 解析失败：%w", err)
+	}
+	if out.CarryoverBalance, err = parseCSVFloat(csvFieldValue(record, header, "carryover_balance")); err != nil {
+		return PlatformUserBackupRow{}, fmt.Errorf("carryover_balance 解析失败：%w", err)
+	}
+	out.Status = csvFieldValue(record, header, "status")
+	if out.BlockedAt, err = parseCSVTimePtr(csvFieldValue(record, header, "blocked_at")); err != nil {
+		return PlatformUserBackupRow{}, fmt.Errorf("blocked_at 解析失败：%w", err)
+	}
+	userCreatedAt, err := parseCSVTimePtr(csvFieldValue(record, header, "user_created_at"))
+	if err != nil || userCreatedAt == nil {
+		return PlatformUserBackupRow{}, fmt.Errorf("user_created_at 解析失败：%w", err)
+	}
+	out.UserCreatedAt = *userCreatedAt
+	userLastChargeTime, err := parseCSVTimePtr(csvFieldValue(record, header, "user_last_charge_time"))
+	if err != nil || userLastChargeTime == nil {
+		return PlatformUserBackupRow{}, fmt.Errorf("user_last_charge_time 解析失败：%w", err)
+	}
+	out.UserLastChargeTime = *userLastChargeTime
+	if out.CanViewBoard, err = parseCSVBool(csvFieldValue(record, header, "can_view_board")); err != nil {
+		return PlatformUserBackupRow{}, fmt.Errorf("can_view_board 解析失败：%w", err)
+	}
+	if out.CanViewNodes, err = parseCSVBool(csvFieldValue(record, header, "can_view_nodes")); err != nil {
+		return PlatformUserBackupRow{}, fmt.Errorf("can_view_nodes 解析失败：%w", err)
+	}
+	if out.CanManageNodes, err = parseCSVBool(csvFieldValue(record, header, "can_manage_nodes")); err != nil {
+		return PlatformUserBackupRow{}, fmt.Errorf("can_manage_nodes 解析失败：%w", err)
+	}
+	if out.CanManagePoints, err = parseCSVBool(csvFieldValue(record, header, "can_manage_points")); err != nil {
+		return PlatformUserBackupRow{}, fmt.Errorf("can_manage_points 解析失败：%w", err)
+	}
+	if out.CanReviewRequests, err = parseCSVBool(csvFieldValue(record, header, "can_review_requests")); err != nil {
+		return PlatformUserBackupRow{}, fmt.Errorf("can_review_requests 解析失败：%w", err)
+	}
+	if _, ok := header["can_manage_platform_users"]; ok {
+		if out.CanManagePlatformUsers, err = parseCSVBool(csvFieldValue(record, header, "can_manage_platform_users")); err != nil {
+			return PlatformUserBackupRow{}, fmt.Errorf("can_manage_platform_users 解析失败：%w", err)
+		}
+	}
+	return out, nil
+}
+
+func (s *Server) handleAdminUsersExportCSV(c *gin.Context) {
+	rows, err := s.store.ListPlatformUserBackupRows(c.Request.Context(), 50000)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	filename := "platform_users_backup.csv"
+	c.Header("Content-Type", "text/csv; charset=utf-8")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	c.Header("Cache-Control", "no-store")
+	_, _ = c.Writer.Write([]byte{0xEF, 0xBB, 0xBF})
+	w := csv.NewWriter(c.Writer)
+	if err := w.Write(platformUserCSVHeaders()); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	for _, row := range rows {
+		uidText := ""
+		if row.PlatformUID != nil && *row.PlatformUID > 0 {
+			uidText = strconv.Itoa(*row.PlatformUID)
+		}
+		record := []string{
+			row.Username,
+			row.Email,
+			row.PasswordHash,
+			row.RealName,
+			row.StudentID,
+			row.Advisor,
+			strconv.Itoa(row.ExpectedGraduationYear),
+			strconv.Itoa(row.ExpectedGraduationMonth),
+			row.Phone,
+			uidText,
+			row.Role,
+			formatPlatformUserCSVTimePtr(row.LastLoginAt),
+			strconv.FormatBool(row.TwoFactorEnabled),
+			row.TwoFactorSecret,
+			row.TwoFactorPendingSecret,
+			row.ResetTokenHash,
+			formatPlatformUserCSVTimePtr(row.ResetTokenExpireAt),
+			formatPlatformUserCSVTime(row.AccountCreatedAt),
+			formatPlatformUserCSVTime(row.AccountUpdatedAt),
+			strconv.FormatFloat(row.GeneralBalance, 'f', -1, 64),
+			strconv.FormatFloat(row.CarryoverBalance, 'f', -1, 64),
+			row.Status,
+			formatPlatformUserCSVTimePtr(row.BlockedAt),
+			formatPlatformUserCSVTime(row.UserCreatedAt),
+			formatPlatformUserCSVTime(row.UserLastChargeTime),
+			strconv.FormatBool(row.CanViewBoard),
+			strconv.FormatBool(row.CanViewNodes),
+			strconv.FormatBool(row.CanManageNodes),
+			strconv.FormatBool(row.CanManagePoints),
+			strconv.FormatBool(row.CanReviewRequests),
+			strconv.FormatBool(row.CanManagePlatformUsers),
+		}
+		if err := w.Write(record); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	w.Flush()
+	if err := w.Error(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+}
+
+func (s *Server) handleAdminUsersImportCSV(c *gin.Context) {
+	file, _, err := c.Request.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请上传 file 字段对应的 CSV 文件"})
+		return
+	}
+	defer file.Close()
+	reader := csv.NewReader(file)
+	reader.FieldsPerRecord = -1
+	records, err := reader.ReadAll()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("CSV 解析失败：%v", err)})
+		return
+	}
+	if len(records) <= 1 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "CSV 内容为空"})
+		return
+	}
+	header := csvHeaderIndexMap(records[0])
+	rows := make([]PlatformUserBackupRow, 0, len(records)-1)
+	seenUsername := make(map[string]int, len(records)-1)
+	for i, record := range records[1:] {
+		lineNo := i + 2
+		row, err := parsePlatformUserBackupCSVRow(header, record)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("第 %d 行：%v", lineNo, err)})
+			return
+		}
+		if prev, ok := seenUsername[row.Username]; ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("第 %d 行：username 与第 %d 行重复", lineNo, prev)})
+			return
+		}
+		seenUsername[row.Username] = lineNo
+		rows = append(rows, row)
+	}
+
+	operator := s.currentOperator(c)
+	createdCount := 0
+	updatedCount := 0
+	promotedCount := 0
+	demotedCount := 0
+	if err := s.store.WithTx(c.Request.Context(), func(tx *sql.Tx) error {
+		for i, row := range rows {
+			created, promoted, demoted, err := s.store.UpsertPlatformUserBackupTx(c.Request.Context(), tx, row, operator)
+			if err != nil {
+				return fmt.Errorf("第 %d 行：%w", i+2, err)
+			}
+			if created {
+				createdCount++
+			} else {
+				updatedCount++
+			}
+			if promoted {
+				promotedCount++
+			}
+			if demoted {
+				demotedCount++
+			}
+		}
+		return nil
+	}); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"ok":             true,
+		"imported":       len(rows),
+		"created":        createdCount,
+		"updated":        updatedCount,
+		"promoted":       promotedCount,
+		"demoted":        demotedCount,
+		"registered_cnt": s.queryCount(c.Request.Context(), `SELECT COUNT(1) FROM user_accounts`),
+	})
 }
 
 func (s *Server) handleAdminUserProfile(c *gin.Context) {
@@ -2021,6 +2394,9 @@ func (s *Server) handleAdminUserBlock(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "username 不能为空"})
 		return
 	}
+	if !s.ensurePowerUserCanManageRegularPlatformUser(c, username) {
+		return
+	}
 	var req adminUserBlockReq
 	_ = c.ShouldBindJSON(&req)
 	reason := strings.TrimSpace(req.Reason)
@@ -2129,6 +2505,9 @@ func (s *Server) handleAdminUserUnblock(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "username 不能为空"})
 		return
 	}
+	if !s.ensurePowerUserCanManageRegularPlatformUser(c, username) {
+		return
+	}
 	if err := s.store.WithTx(c.Request.Context(), func(tx *sql.Tx) error {
 		_, err := s.store.SetUserManualStatusTx(c.Request.Context(), tx, username, "normal")
 		return err
@@ -2214,6 +2593,9 @@ func (s *Server) handleAdminUserDelete(c *gin.Context) {
 	username := strings.TrimSpace(c.Param("username"))
 	if username == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "username 不能为空"})
+		return
+	}
+	if !s.ensurePowerUserCanManageRegularPlatformUser(c, username) {
 		return
 	}
 	var req adminUserDeleteReq
@@ -4570,6 +4952,26 @@ func (s *Server) currentOperator(c *gin.Context) string {
 	return operator
 }
 
+func (s *Server) ensurePowerUserCanManageRegularPlatformUser(c *gin.Context, username string) bool {
+	if getAuthRole(c) != "power_user" {
+		return true
+	}
+	acc, err := s.store.GetUserAccountByUsername(c.Request.Context(), username)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "平台账号不存在"})
+			return false
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return false
+	}
+	if strings.TrimSpace(acc.Role) != "user" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "高级用户仅可管理普通平台用户"})
+		return false
+	}
+	return true
+}
+
 func (s *Server) isAdminAccountCached(ctx context.Context, username string, cache map[string]bool) (bool, error) {
 	username = strings.TrimSpace(username)
 	if username == "" {
@@ -5228,30 +5630,33 @@ func (s *Server) handleAdminExemptionsDelete(c *gin.Context) {
 }
 
 type powerUserCreateReq struct {
-	Username          string `json:"username"`
-	Password          string `json:"password"`
-	CanViewBoard      bool   `json:"can_view_board"`
-	CanViewNodes      bool   `json:"can_view_nodes"`
-	CanManageNodes    bool   `json:"can_manage_nodes"`
-	CanManagePoints   bool   `json:"can_manage_points"`
-	CanReviewRequests bool   `json:"can_review_requests"`
+	Username               string `json:"username"`
+	Password               string `json:"password"`
+	CanViewBoard           bool   `json:"can_view_board"`
+	CanViewNodes           bool   `json:"can_view_nodes"`
+	CanManageNodes         bool   `json:"can_manage_nodes"`
+	CanManagePoints        bool   `json:"can_manage_points"`
+	CanReviewRequests      bool   `json:"can_review_requests"`
+	CanManagePlatformUsers bool   `json:"can_manage_platform_users"`
 }
 
 type powerUserPromoteReq struct {
-	Username          string `json:"username"`
-	CanViewBoard      bool   `json:"can_view_board"`
-	CanViewNodes      bool   `json:"can_view_nodes"`
-	CanManageNodes    bool   `json:"can_manage_nodes"`
-	CanManagePoints   bool   `json:"can_manage_points"`
-	CanReviewRequests bool   `json:"can_review_requests"`
+	Username               string `json:"username"`
+	CanViewBoard           bool   `json:"can_view_board"`
+	CanViewNodes           bool   `json:"can_view_nodes"`
+	CanManageNodes         bool   `json:"can_manage_nodes"`
+	CanManagePoints        bool   `json:"can_manage_points"`
+	CanReviewRequests      bool   `json:"can_review_requests"`
+	CanManagePlatformUsers bool   `json:"can_manage_platform_users"`
 }
 
 type powerUserPermReq struct {
-	CanViewBoard      bool `json:"can_view_board"`
-	CanViewNodes      bool `json:"can_view_nodes"`
-	CanManageNodes    bool `json:"can_manage_nodes"`
-	CanManagePoints   bool `json:"can_manage_points"`
-	CanReviewRequests bool `json:"can_review_requests"`
+	CanViewBoard           bool `json:"can_view_board"`
+	CanViewNodes           bool `json:"can_view_nodes"`
+	CanManageNodes         bool `json:"can_manage_nodes"`
+	CanManagePoints        bool `json:"can_manage_points"`
+	CanReviewRequests      bool `json:"can_review_requests"`
+	CanManagePlatformUsers bool `json:"can_manage_platform_users"`
 }
 
 func (s *Server) handleAdminPowerUsersList(c *gin.Context) {
@@ -5275,7 +5680,7 @@ func (s *Server) handleAdminPowerUsersCreate(c *gin.Context) {
 	if createdBy == "" {
 		createdBy = "admin"
 	}
-	if err := s.store.CreatePowerUser(c.Request.Context(), req.Username, req.Password, req.CanViewBoard, req.CanViewNodes, req.CanManageNodes, req.CanManagePoints, req.CanReviewRequests, createdBy); err != nil {
+	if err := s.store.CreatePowerUser(c.Request.Context(), req.Username, req.Password, req.CanViewBoard, req.CanViewNodes, req.CanManageNodes, req.CanManagePoints, req.CanReviewRequests, req.CanManagePlatformUsers, createdBy); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -5301,6 +5706,7 @@ func (s *Server) handleAdminPowerUsersPromote(c *gin.Context) {
 		req.CanManageNodes,
 		req.CanManagePoints,
 		req.CanReviewRequests,
+		req.CanManagePlatformUsers,
 		operator,
 	); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -5324,7 +5730,7 @@ func (s *Server) handleAdminPowerUsersUpdatePermissions(c *gin.Context) {
 	if updatedBy == "" {
 		updatedBy = "admin"
 	}
-	if err := s.store.UpdatePowerUserPermissions(c.Request.Context(), username, req.CanViewBoard, req.CanViewNodes, req.CanManageNodes, req.CanManagePoints, req.CanReviewRequests, updatedBy); err != nil {
+	if err := s.store.UpdatePowerUserPermissions(c.Request.Context(), username, req.CanViewBoard, req.CanViewNodes, req.CanManageNodes, req.CanManagePoints, req.CanReviewRequests, req.CanManagePlatformUsers, updatedBy); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "记录不存在"})
 			return

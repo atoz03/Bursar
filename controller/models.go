@@ -678,19 +678,20 @@ type MailSettings struct {
 }
 
 type PowerUser struct {
-	Username          string     `json:"username"`
-	PlatformUID       *int       `json:"platform_uid,omitempty"`
-	IsPlatformUser    bool       `json:"is_platform_user"`
-	CanViewBoard      bool       `json:"can_view_board"`
-	CanViewNodes      bool       `json:"can_view_nodes"`
-	CanManageNodes    bool       `json:"can_manage_nodes"`
-	CanManagePoints   bool       `json:"can_manage_points"`
-	CanReviewRequests bool       `json:"can_review_requests"`
-	CreatedBy         string     `json:"created_by"`
-	UpdatedBy         string     `json:"updated_by"`
-	LastLoginAt       *time.Time `json:"last_login_at,omitempty"`
-	CreatedAt         time.Time  `json:"created_at"`
-	UpdatedAt         time.Time  `json:"updated_at"`
+	Username               string     `json:"username"`
+	PlatformUID            *int       `json:"platform_uid,omitempty"`
+	IsPlatformUser         bool       `json:"is_platform_user"`
+	CanViewBoard           bool       `json:"can_view_board"`
+	CanViewNodes           bool       `json:"can_view_nodes"`
+	CanManageNodes         bool       `json:"can_manage_nodes"`
+	CanManagePoints        bool       `json:"can_manage_points"`
+	CanReviewRequests      bool       `json:"can_review_requests"`
+	CanManagePlatformUsers bool       `json:"can_manage_platform_users"`
+	CreatedBy              string     `json:"created_by"`
+	UpdatedBy              string     `json:"updated_by"`
+	LastLoginAt            *time.Time `json:"last_login_at,omitempty"`
+	CreatedAt              time.Time  `json:"created_at"`
+	UpdatedAt              time.Time  `json:"updated_at"`
 }
 
 type UsageUserSummary struct {
@@ -754,29 +755,65 @@ type AdminNote struct {
 }
 
 type AdminUserDetail struct {
-	Username          string            `json:"username"`
-	PlatformUID       *int              `json:"platform_uid,omitempty"`
-	Role              string            `json:"role"`
-	CanViewBoard      bool              `json:"can_view_board"`
-	CanViewNodes      bool              `json:"can_view_nodes"`
-	CanReviewRequest  bool              `json:"can_review_requests"`
-	TwoFactorEnabled  bool              `json:"two_factor_enabled"`
-	Email             string            `json:"email"`
-	StudentID         string            `json:"student_id"`
-	RealName          string            `json:"real_name"`
-	Advisor           string            `json:"advisor"`
-	ExpectedGradYear  int               `json:"expected_graduation_year"`
-	ExpectedGradMonth int               `json:"expected_graduation_month"`
-	Phone             string            `json:"phone"`
-	Balance           float64           `json:"balance"`
-	CarryoverBalance  float64           `json:"carryover_balance"`
-	ExclusiveBalance  float64           `json:"exclusive_balance"`
-	TotalBalance      float64           `json:"total_balance"`
-	Status            string            `json:"status"`
-	UsageRecords      int               `json:"usage_records"`
-	TotalCost         float64           `json:"total_cost"`
-	LastUsageAt       time.Time         `json:"last_usage_at"`
-	NodeAccounts      []UserNodeAccount `json:"node_accounts"`
+	Username               string            `json:"username"`
+	PlatformUID            *int              `json:"platform_uid,omitempty"`
+	IsPlatformUser         bool              `json:"is_platform_user"`
+	Role                   string            `json:"role"`
+	CanViewBoard           bool              `json:"can_view_board"`
+	CanViewNodes           bool              `json:"can_view_nodes"`
+	CanReviewRequest       bool              `json:"can_review_requests"`
+	CanManagePlatformUsers bool              `json:"can_manage_platform_users"`
+	TwoFactorEnabled       bool              `json:"two_factor_enabled"`
+	Email                  string            `json:"email"`
+	StudentID              string            `json:"student_id"`
+	RealName               string            `json:"real_name"`
+	Advisor                string            `json:"advisor"`
+	ExpectedGradYear       int               `json:"expected_graduation_year"`
+	ExpectedGradMonth      int               `json:"expected_graduation_month"`
+	Phone                  string            `json:"phone"`
+	Balance                float64           `json:"balance"`
+	CarryoverBalance       float64           `json:"carryover_balance"`
+	ExclusiveBalance       float64           `json:"exclusive_balance"`
+	TotalBalance           float64           `json:"total_balance"`
+	Status                 string            `json:"status"`
+	UsageRecords           int               `json:"usage_records"`
+	TotalCost              float64           `json:"total_cost"`
+	LastUsageAt            time.Time         `json:"last_usage_at"`
+	NodeAccounts           []UserNodeAccount `json:"node_accounts"`
+}
+
+type PlatformUserBackupRow struct {
+	Username                string     `json:"username"`
+	Email                   string     `json:"email"`
+	PasswordHash            string     `json:"password_hash"`
+	RealName                string     `json:"real_name"`
+	StudentID               string     `json:"student_id"`
+	Advisor                 string     `json:"advisor"`
+	ExpectedGraduationYear  int        `json:"expected_graduation_year"`
+	ExpectedGraduationMonth int        `json:"expected_graduation_month"`
+	Phone                   string     `json:"phone"`
+	PlatformUID             *int       `json:"platform_uid,omitempty"`
+	Role                    string     `json:"role"`
+	LastLoginAt             *time.Time `json:"last_login_at,omitempty"`
+	TwoFactorEnabled        bool       `json:"two_factor_enabled"`
+	TwoFactorSecret         string     `json:"two_factor_secret"`
+	TwoFactorPendingSecret  string     `json:"two_factor_pending_secret"`
+	ResetTokenHash          string     `json:"reset_token_hash"`
+	ResetTokenExpireAt      *time.Time `json:"reset_token_expire_at,omitempty"`
+	AccountCreatedAt        time.Time  `json:"account_created_at"`
+	AccountUpdatedAt        time.Time  `json:"account_updated_at"`
+	GeneralBalance          float64    `json:"general_balance"`
+	CarryoverBalance        float64    `json:"carryover_balance"`
+	Status                  string     `json:"status"`
+	BlockedAt               *time.Time `json:"blocked_at,omitempty"`
+	UserCreatedAt           time.Time  `json:"user_created_at"`
+	UserLastChargeTime      time.Time  `json:"user_last_charge_time"`
+	CanViewBoard            bool       `json:"can_view_board"`
+	CanViewNodes            bool       `json:"can_view_nodes"`
+	CanManageNodes          bool       `json:"can_manage_nodes"`
+	CanManagePoints         bool       `json:"can_manage_points"`
+	CanReviewRequests       bool       `json:"can_review_requests"`
+	CanManagePlatformUsers  bool       `json:"can_manage_platform_users"`
 }
 
 type GraduationReminderUser struct {

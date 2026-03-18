@@ -764,6 +764,15 @@ async function removeDisposableDomain(domain: string) {
 }
 
 async function approveRegistration(id: number) {
+  try {
+    await ElMessageBox.confirm(
+      "确认通过这条平台账号注册申请吗？通过后会立即创建平台账号。",
+      "二次确认",
+      { type: "warning", confirmButtonText: "确认通过", cancelButtonText: "取消" },
+    );
+  } catch {
+    return;
+  }
   registrationActionId.value = id;
   error.value = "";
   try {

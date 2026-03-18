@@ -196,7 +196,7 @@ run_install_agent() {
   local esc_mem_reserve_gb
   esc_mem_reserve_gb="$(printf "%s" "${SYSTEM_MEMORY_RESERVE_GB}" | sed "s/'/'\"'\"'/g")"
   ssh -n -i "${key_use_path}" -p "${port}" -o StrictHostKeyChecking=no -o ConnectTimeout="${SSH_TIMEOUT}" "${user}@${ip}" \
-    "cd '${target_dir}' && SSH_GUARD_EXCLUDE_USERS='${esc_exclude}' SKIP_CONTROLLER_HEALTHCHECK='${esc_skip_health}' ENABLE_SYSTEM_CPU_RESERVE='${esc_enable_cpu_reserve}' SYSTEM_CPU_RESERVE_PERCENT='${esc_cpu_reserve_pct}' ENABLE_SYSTEM_MEMORY_RESERVE='${esc_enable_mem_reserve}' SYSTEM_MEMORY_RESERVE_GB='${esc_mem_reserve_gb}' sudo -n /bin/bash '${target_dir}/scripts/install_agent_local.sh'"
+    "cd '${target_dir}' && sudo -n /bin/bash '${target_dir}/scripts/install_agent_local.sh' 'SSH_GUARD_EXCLUDE_USERS=${esc_exclude}' 'SKIP_CONTROLLER_HEALTHCHECK=${esc_skip_health}' 'ENABLE_SYSTEM_CPU_RESERVE=${esc_enable_cpu_reserve}' 'SYSTEM_CPU_RESERVE_PERCENT=${esc_cpu_reserve_pct}' 'ENABLE_SYSTEM_MEMORY_RESERVE=${esc_enable_mem_reserve}' 'SYSTEM_MEMORY_RESERVE_GB=${esc_mem_reserve_gb}'"
 }
 
 agent_service_ready() {

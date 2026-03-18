@@ -267,6 +267,7 @@ CREATE TABLE IF NOT EXISTS power_users (
     can_manage_nodes BOOLEAN NOT NULL DEFAULT FALSE,
     can_manage_points BOOLEAN NOT NULL DEFAULT FALSE,
     can_review_requests BOOLEAN NOT NULL DEFAULT FALSE,
+    can_manage_platform_users BOOLEAN NOT NULL DEFAULT FALSE,
     created_by VARCHAR(50) NOT NULL DEFAULT 'admin',
     updated_by VARCHAR(50) NOT NULL DEFAULT 'admin',
     last_login_at TIMESTAMP NULL,
