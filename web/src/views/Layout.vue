@@ -465,9 +465,11 @@ async function loadUserPointsState() {
 
 function resetUserPointsPolling() {
   clearUserPointsTimer();
+  if (!isDocumentVisible()) return;
   loadUserPointsState();
   if (!canLoadUserPoints()) return;
   userPointsTimer = setInterval(() => {
+    if (!isDocumentVisible()) return;
     loadUserPointsState();
   }, 30000);
 }

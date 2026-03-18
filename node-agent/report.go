@@ -15,6 +15,8 @@ import (
 	"time"
 )
 
+const maxPendingMetricsRetained = 500
+
 func (a *NodeAgent) ReportToController(ctx context.Context, metrics *MetricsData) (*ControllerResponse, error) {
 	if err := a.flushPending(ctx); err != nil {
 		// 不阻塞本次上报：历史补报失败只做记录
@@ -118,24 +120,34 @@ func (a *NodeAgent) flushPending(ctx context.Context) error {
 	}
 	defer f.Close()
 
-	var remaining [][]byte
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := bytes.TrimSpace(sc.Bytes())
+	reader := bufio.NewReaderSize(f, 64*1024)
+	remaining := make([][]byte, 0, maxPendingMetricsRetained)
+	for {
+		line, readErr := reader.ReadBytes('\n')
+		if readErr != nil && readErr != io.EOF {
+			return readErr
+		}
+		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
+			if readErr == io.EOF {
+				break
+			}
 			continue
 		}
 		var m MetricsData
 		if err := json.Unmarshal(line, &m); err != nil {
 			// 坏行丢弃，避免卡死队列
+			if readErr == io.EOF {
+				break
+			}
 			continue
 		}
 		if _, err := a.postMetrics(ctx, &m); err != nil {
-			remaining = append(remaining, append([]byte(nil), line...))
+			remaining = appendPendingLineLimited(remaining, line, maxPendingMetricsRetained)
 		}
-	}
-	if err := sc.Err(); err != nil {
-		return err
+		if readErr == io.EOF {
+			break
+		}
 	}
 
 	if len(remaining) == 0 {
@@ -143,10 +155,6 @@ func (a *NodeAgent) flushPending(ctx context.Context) error {
 		return nil
 	}
 
-	// 保留失败的行（最多 500 条），避免磁盘无限增长
-	if len(remaining) > 500 {
-		remaining = remaining[len(remaining)-500:]
-	}
 	var buf bytes.Buffer
 	for _, line := range remaining {
 		buf.Write(line)
@@ -157,6 +165,19 @@ func (a *NodeAgent) flushPending(ctx context.Context) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+func appendPendingLineLimited(lines [][]byte, line []byte, limit int) [][]byte {
+	if limit <= 0 {
+		return lines[:0]
+	}
+	lineCopy := append([]byte(nil), line...)
+	if len(lines) < limit {
+		return append(lines, lineCopy)
+	}
+	copy(lines, lines[1:])
+	lines[len(lines)-1] = lineCopy
+	return lines
 }
 
 func (a *NodeAgent) defaultClient() *http.Client {
