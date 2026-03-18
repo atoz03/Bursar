@@ -417,7 +417,6 @@ const pagedMonthlyRows = computed(() => {
   const start = (page - 1) * size;
   return filteredMonthlyRows.value.slice(start, start + size);
 });
-}
 
 function fmt2(v: number): string {
   return Number(v ?? 0).toFixed(2);
@@ -592,8 +591,8 @@ async function loadAll() {
       client.adminStatsRecharges({ from, to, limit: 1000 }),
     ]);
     if (seq !== loadAllSeq) return;
-    appliedFromDate.value = datePrefix(u.from || m.from || r.from || from, from);
-    appliedToDate.value = datePrefix(u.to || m.to || r.to || to, to);
+    appliedFromDate.value = datePrefix(u.from || r.from || from, from);
+    appliedToDate.value = datePrefix(u.to || r.to || to, to);
     userRows.value = u.rows ?? [];
     rechargeRows.value = r.rows ?? [];
     await loadMonthlyRows(client, from, to, true);

@@ -63,6 +63,7 @@
             <el-menu-item v-if="authState.canViewBoard" index="/admin/board">{{ t("运营看板", "Dashboard") }}</el-menu-item>
             <el-menu-item v-if="authState.canViewNodes" index="/admin/nodes">{{ t("节点状态", "Node Status") }}</el-menu-item>
             <el-menu-item v-if="authState.canManagePoints" index="/admin/points">{{ t("积分管理", "Points") }}</el-menu-item>
+            <el-menu-item v-if="authState.canManagePlatformUsers" index="/admin/users">{{ t("平台用户管理", "Platform Users") }}</el-menu-item>
             <el-menu-item v-if="authState.canReviewRequests" index="/admin/requests">
               <el-badge :is-dot="reviewTodoCount > 0" type="danger">
                 <span>{{ t("平台账号注册审核", "Registration Review") }}</span>

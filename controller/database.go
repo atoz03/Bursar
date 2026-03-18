@@ -8667,7 +8667,7 @@ func (s *Store) VerifyAdminPassword(ctx context.Context, username string, passwo
 	return true, nil
 }
 
-func (s *Store) CreatePowerUser(ctx context.Context, username string, password string, canViewBoard bool, canViewNodes bool, canManageNodes bool, canManagePoints bool, canReview bool, createdBy string) error {
+func (s *Store) CreatePowerUser(ctx context.Context, username string, password string, canViewBoard bool, canViewNodes bool, canManageNodes bool, canManagePoints bool, canReview bool, canManagePlatformUsers bool, createdBy string) error {
 	username = strings.TrimSpace(username)
 	createdBy = strings.TrimSpace(createdBy)
 	if username == "" {
@@ -8727,8 +8727,8 @@ SELECT EXISTS(
 			return err
 		}
 		_, err = tx.ExecContext(ctx, `
-INSERT INTO power_users(username, password_hash, platform_uid, can_view_board, can_view_nodes, can_manage_nodes, can_manage_points, can_review_requests, created_by, updated_by)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)`, username, string(hash), uid, canViewBoard, canViewNodes, canManageNodes, canManagePoints, canReview, createdBy)
+INSERT INTO power_users(username, password_hash, platform_uid, can_view_board, can_view_nodes, can_manage_nodes, can_manage_points, can_review_requests, can_manage_platform_users, created_by, updated_by)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10)`, username, string(hash), uid, canViewBoard, canViewNodes, canManageNodes, canManagePoints, canReview, canManagePlatformUsers, createdBy)
 		if err != nil {
 			return err
 		}
@@ -8754,6 +8754,7 @@ SELECT pu.password_hash,
        pu.can_manage_nodes,
        COALESCE(pu.can_manage_points,false),
        pu.can_review_requests,
+       COALESCE(pu.can_manage_platform_users,false),
        pu.created_by,
        pu.updated_by,
        pu.last_login_at,
@@ -8762,7 +8763,7 @@ SELECT pu.password_hash,
 FROM power_users pu
 LEFT JOIN user_accounts ua ON ua.username=pu.username
 WHERE pu.username=$1`, username).Scan(
-		&hash, &out.Username, &uidRaw, &out.CanViewBoard, &out.CanViewNodes, &out.CanManageNodes, &out.CanManagePoints, &out.CanReviewRequests, &out.CreatedBy, &out.UpdatedBy, &out.LastLoginAt, &out.CreatedAt, &out.UpdatedAt,
+		&hash, &out.Username, &uidRaw, &out.CanViewBoard, &out.CanViewNodes, &out.CanManageNodes, &out.CanManagePoints, &out.CanReviewRequests, &out.CanManagePlatformUsers, &out.CreatedBy, &out.UpdatedBy, &out.LastLoginAt, &out.CreatedAt, &out.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -8793,6 +8794,7 @@ SELECT pu.username,
        pu.can_manage_nodes,
        COALESCE(pu.can_manage_points,false) AS can_manage_points,
        pu.can_review_requests,
+       COALESCE(pu.can_manage_platform_users,false) AS can_manage_platform_users,
        pu.created_by,
        pu.updated_by,
        pu.last_login_at,
@@ -8810,7 +8812,7 @@ LIMIT $1`, limit)
 	for rows.Next() {
 		var p PowerUser
 		var uidRaw sql.NullInt64
-		if err := rows.Scan(&p.Username, &uidRaw, &p.IsPlatformUser, &p.CanViewBoard, &p.CanViewNodes, &p.CanManageNodes, &p.CanManagePoints, &p.CanReviewRequests, &p.CreatedBy, &p.UpdatedBy, &p.LastLoginAt, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.Username, &uidRaw, &p.IsPlatformUser, &p.CanViewBoard, &p.CanViewNodes, &p.CanManageNodes, &p.CanManagePoints, &p.CanReviewRequests, &p.CanManagePlatformUsers, &p.CreatedBy, &p.UpdatedBy, &p.LastLoginAt, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, err
 		}
 		if uidRaw.Valid && uidRaw.Int64 > 0 {
@@ -8822,7 +8824,7 @@ LIMIT $1`, limit)
 	return out, rows.Err()
 }
 
-func (s *Store) PromotePlatformUserToPowerUser(ctx context.Context, username string, canViewBoard bool, canViewNodes bool, canManageNodes bool, canManagePoints bool, canReview bool, updatedBy string) error {
+func (s *Store) PromotePlatformUserToPowerUser(ctx context.Context, username string, canViewBoard bool, canViewNodes bool, canManageNodes bool, canManagePoints bool, canReview bool, canManagePlatformUsers bool, updatedBy string) error {
 	username = strings.TrimSpace(username)
 	updatedBy = strings.TrimSpace(updatedBy)
 	if username == "" {
@@ -8854,8 +8856,8 @@ func (s *Store) PromotePlatformUserToPowerUser(ctx context.Context, username str
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `
-INSERT INTO power_users(username, password_hash, platform_uid, can_view_board, can_view_nodes, can_manage_nodes, can_manage_points, can_review_requests, created_by, updated_by)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)
+INSERT INTO power_users(username, password_hash, platform_uid, can_view_board, can_view_nodes, can_manage_nodes, can_manage_points, can_review_requests, can_manage_platform_users, created_by, updated_by)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10)
 ON CONFLICT (username) DO UPDATE SET
   password_hash=EXCLUDED.password_hash,
   platform_uid=EXCLUDED.platform_uid,
@@ -8864,8 +8866,9 @@ ON CONFLICT (username) DO UPDATE SET
   can_manage_nodes=EXCLUDED.can_manage_nodes,
   can_manage_points=EXCLUDED.can_manage_points,
   can_review_requests=EXCLUDED.can_review_requests,
+  can_manage_platform_users=EXCLUDED.can_manage_platform_users,
   updated_by=EXCLUDED.updated_by,
-  updated_at=NOW()`, username, pwdHash, platformUID, canViewBoard, canViewNodes, canManageNodes, canManagePoints, canReview, updatedBy); err != nil {
+  updated_at=NOW()`, username, pwdHash, platformUID, canViewBoard, canViewNodes, canManageNodes, canManagePoints, canReview, canManagePlatformUsers, updatedBy); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `
@@ -8905,7 +8908,7 @@ WHERE username=$1`, username); err != nil {
 	})
 }
 
-func (s *Store) UpdatePowerUserPermissions(ctx context.Context, username string, canViewBoard bool, canViewNodes bool, canManageNodes bool, canManagePoints bool, canReview bool, updatedBy string) error {
+func (s *Store) UpdatePowerUserPermissions(ctx context.Context, username string, canViewBoard bool, canViewNodes bool, canManageNodes bool, canManagePoints bool, canReview bool, canManagePlatformUsers bool, updatedBy string) error {
 	username = strings.TrimSpace(username)
 	updatedBy = strings.TrimSpace(updatedBy)
 	if username == "" {
@@ -8919,8 +8922,8 @@ func (s *Store) UpdatePowerUserPermissions(ctx context.Context, username string,
 	}
 	res, err := s.db.ExecContext(ctx, `
 UPDATE power_users
-SET can_view_board=$2, can_view_nodes=$3, can_manage_nodes=$4, can_manage_points=$5, can_review_requests=$6, updated_by=$7, updated_at=NOW()
-WHERE username=$1`, username, canViewBoard, canViewNodes, canManageNodes, canManagePoints, canReview, updatedBy)
+SET can_view_board=$2, can_view_nodes=$3, can_manage_nodes=$4, can_manage_points=$5, can_review_requests=$6, can_manage_platform_users=$7, updated_by=$8, updated_at=NOW()
+WHERE username=$1`, username, canViewBoard, canViewNodes, canManageNodes, canManagePoints, canReview, canManagePlatformUsers, updatedBy)
 	if err != nil {
 		return err
 	}
@@ -8944,17 +8947,18 @@ func (s *Store) ResolveSessionRolePerms(ctx context.Context, username string) (s
 		return "", 0, false, err
 	}
 	if exists {
-		return "admin", uint32(permViewBoard | permViewNodes | permManageNodes | permReviewRequests | permManagePoints), true, nil
+		return "admin", uint32(permViewBoard | permViewNodes | permManageNodes | permReviewRequests | permManagePoints | permManagePlatformUsers), true, nil
 	}
 	var canViewBoard bool
 	var canViewNodes bool
 	var canManageNodes bool
 	var canManagePoints bool
 	var canReview bool
+	var canManagePlatformUsers bool
 	err := s.db.QueryRowContext(ctx, `
-SELECT can_view_board, can_view_nodes, COALESCE(can_manage_nodes,false), COALESCE(can_manage_points,false), can_review_requests
+SELECT can_view_board, can_view_nodes, COALESCE(can_manage_nodes,false), COALESCE(can_manage_points,false), can_review_requests, COALESCE(can_manage_platform_users,false)
 FROM power_users
-WHERE username=$1`, username).Scan(&canViewBoard, &canViewNodes, &canManageNodes, &canManagePoints, &canReview)
+WHERE username=$1`, username).Scan(&canViewBoard, &canViewNodes, &canManageNodes, &canManagePoints, &canReview, &canManagePlatformUsers)
 	if err == nil {
 		perms := uint32(0)
 		if canViewBoard {
@@ -8971,6 +8975,9 @@ WHERE username=$1`, username).Scan(&canViewBoard, &canViewNodes, &canManageNodes
 		}
 		if canReview {
 			perms |= permReviewRequests
+		}
+		if canManagePlatformUsers {
+			perms |= permManagePlatformUsers
 		}
 		return "power_user", perms, true, nil
 	}
@@ -12726,10 +12733,12 @@ union_users AS (
   SELECT
     ua.username,
     ua.platform_uid,
+    TRUE AS is_platform_user,
     COALESCE(NULLIF(ua.role, ''), 'user') AS role,
     FALSE AS can_view_board,
     FALSE AS can_view_nodes,
     FALSE AS can_review_requests,
+    FALSE AS can_manage_platform_users,
     COALESCE(ua.two_factor_enabled, FALSE) AS two_factor_enabled,
     ua.email,
     ua.student_id,
@@ -12745,10 +12754,12 @@ union_users AS (
   SELECT
     aa.username,
     COALESCE(ua.platform_uid, aa.platform_uid) AS platform_uid,
+    FALSE AS is_platform_user,
     'admin' AS role,
     TRUE AS can_view_board,
     TRUE AS can_view_nodes,
     TRUE AS can_review_requests,
+    FALSE AS can_manage_platform_users,
     COALESCE(aa.two_factor_enabled, FALSE) AS two_factor_enabled,
     '' AS email,
     '' AS student_id,
@@ -12763,10 +12774,12 @@ union_users AS (
   SELECT
     pu.username,
     COALESCE(ua.platform_uid, pu.platform_uid) AS platform_uid,
+    (ua.username IS NOT NULL) AS is_platform_user,
     'power_user' AS role,
     pu.can_view_board,
     pu.can_view_nodes,
     pu.can_review_requests,
+    COALESCE(pu.can_manage_platform_users, FALSE) AS can_manage_platform_users,
     COALESCE(pu.two_factor_enabled, FALSE) AS two_factor_enabled,
     COALESCE(ua.email, '') AS email,
     COALESCE(ua.student_id, '') AS student_id,
@@ -12778,7 +12791,7 @@ union_users AS (
   FROM power_users pu
   LEFT JOIN user_accounts ua ON ua.username = pu.username
 )
-SELECT uu.username, uu.platform_uid, uu.role, uu.can_view_board, uu.can_view_nodes, uu.can_review_requests, uu.two_factor_enabled,
+SELECT uu.username, uu.platform_uid, uu.is_platform_user, uu.role, uu.can_view_board, uu.can_view_nodes, uu.can_review_requests, uu.can_manage_platform_users, uu.two_factor_enabled,
        uu.email, uu.student_id, uu.real_name, uu.advisor, uu.expected_graduation_year, uu.expected_graduation_month, uu.phone,
        COALESCE(u.balance, 0) AS general_balance,
        COALESCE(u.carryover_balance, 0) AS carryover_balance,
@@ -12801,7 +12814,7 @@ LIMIT $1`, limit)
 		var d AdminUserDetail
 		var uidRaw sql.NullInt64
 		if err := rows.Scan(
-			&d.Username, &uidRaw, &d.Role, &d.CanViewBoard, &d.CanViewNodes, &d.CanReviewRequest, &d.TwoFactorEnabled,
+			&d.Username, &uidRaw, &d.IsPlatformUser, &d.Role, &d.CanViewBoard, &d.CanViewNodes, &d.CanReviewRequest, &d.CanManagePlatformUsers, &d.TwoFactorEnabled,
 			&d.Email, &d.StudentID, &d.RealName, &d.Advisor, &d.ExpectedGradYear, &d.ExpectedGradMonth, &d.Phone,
 			&d.Balance, &d.CarryoverBalance, &d.ExclusiveBalance, &d.TotalBalance, &d.Status, &d.UsageRecords, &d.TotalCost, &d.LastUsageAt,
 		); err != nil {
@@ -12819,6 +12832,325 @@ LIMIT $1`, limit)
 		out = append(out, d)
 	}
 	return out, rows.Err()
+}
+
+func normalizePlatformUserBackupRole(role string) string {
+	if strings.TrimSpace(role) == "power_user" {
+		return "power_user"
+	}
+	return "user"
+}
+
+func normalizePlatformUserBackupStatus(status string) string {
+	switch strings.TrimSpace(status) {
+	case "warning", "limited", "blocked":
+		return strings.TrimSpace(status)
+	default:
+		return "normal"
+	}
+}
+
+func (s *Store) ListPlatformUserBackupRows(ctx context.Context, limit int) ([]PlatformUserBackupRow, error) {
+	if limit <= 0 || limit > 50000 {
+		limit = 20000
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT
+  ua.username,
+  ua.email,
+  ua.password_hash,
+  ua.real_name,
+  ua.student_id,
+  ua.advisor,
+  ua.expected_graduation_year,
+  ua.expected_graduation_month,
+  ua.phone,
+  ua.platform_uid,
+  COALESCE(NULLIF(ua.role, ''), 'user') AS role,
+  ua.last_login_at,
+  COALESCE(ua.two_factor_enabled, FALSE) AS two_factor_enabled,
+  COALESCE(ua.two_factor_secret, '') AS two_factor_secret,
+  COALESCE(ua.two_factor_pending_secret, '') AS two_factor_pending_secret,
+  COALESCE(ua.reset_token_hash, '') AS reset_token_hash,
+  ua.reset_token_expire_at,
+  ua.created_at,
+  ua.updated_at,
+  COALESCE(u.balance, 0) AS general_balance,
+  COALESCE(u.carryover_balance, 0) AS carryover_balance,
+  COALESCE(u.status, 'normal') AS status,
+  u.blocked_at,
+  COALESCE(u.created_at, ua.created_at) AS user_created_at,
+  COALESCE(u.last_charge_time, ua.created_at) AS user_last_charge_time,
+  COALESCE(pu.can_view_board, FALSE) AS can_view_board,
+  COALESCE(pu.can_view_nodes, FALSE) AS can_view_nodes,
+  COALESCE(pu.can_manage_nodes, FALSE) AS can_manage_nodes,
+  COALESCE(pu.can_manage_points, FALSE) AS can_manage_points,
+  COALESCE(pu.can_review_requests, FALSE) AS can_review_requests,
+  COALESCE(pu.can_manage_platform_users, FALSE) AS can_manage_platform_users
+FROM user_accounts ua
+LEFT JOIN users u ON u.username = ua.username
+LEFT JOIN power_users pu ON pu.username = ua.username
+ORDER BY ua.username
+LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]PlatformUserBackupRow, 0)
+	for rows.Next() {
+		var row PlatformUserBackupRow
+		var uidRaw sql.NullInt64
+		var resetTokenHash sql.NullString
+		if err := rows.Scan(
+			&row.Username,
+			&row.Email,
+			&row.PasswordHash,
+			&row.RealName,
+			&row.StudentID,
+			&row.Advisor,
+			&row.ExpectedGraduationYear,
+			&row.ExpectedGraduationMonth,
+			&row.Phone,
+			&uidRaw,
+			&row.Role,
+			&row.LastLoginAt,
+			&row.TwoFactorEnabled,
+			&row.TwoFactorSecret,
+			&row.TwoFactorPendingSecret,
+			&resetTokenHash,
+			&row.ResetTokenExpireAt,
+			&row.AccountCreatedAt,
+			&row.AccountUpdatedAt,
+			&row.GeneralBalance,
+			&row.CarryoverBalance,
+			&row.Status,
+			&row.BlockedAt,
+			&row.UserCreatedAt,
+			&row.UserLastChargeTime,
+			&row.CanViewBoard,
+			&row.CanViewNodes,
+			&row.CanManageNodes,
+			&row.CanManagePoints,
+			&row.CanReviewRequests,
+			&row.CanManagePlatformUsers,
+		); err != nil {
+			return nil, err
+		}
+		if uidRaw.Valid && uidRaw.Int64 > 0 {
+			v := int(uidRaw.Int64)
+			row.PlatformUID = &v
+		}
+		if resetTokenHash.Valid {
+			row.ResetTokenHash = resetTokenHash.String
+		}
+		row.Role = normalizePlatformUserBackupRole(row.Role)
+		row.Status = normalizePlatformUserBackupStatus(row.Status)
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) UpsertPlatformUserBackupTx(ctx context.Context, tx *sql.Tx, in PlatformUserBackupRow, operator string) (bool, bool, bool, error) {
+	in.Username = strings.TrimSpace(in.Username)
+	in.Email = strings.TrimSpace(strings.ToLower(in.Email))
+	in.PasswordHash = strings.TrimSpace(in.PasswordHash)
+	in.RealName = strings.TrimSpace(in.RealName)
+	in.StudentID = strings.TrimSpace(in.StudentID)
+	in.Advisor = strings.TrimSpace(in.Advisor)
+	in.Phone = strings.TrimSpace(in.Phone)
+	in.TwoFactorSecret = strings.TrimSpace(in.TwoFactorSecret)
+	in.TwoFactorPendingSecret = strings.TrimSpace(in.TwoFactorPendingSecret)
+	in.ResetTokenHash = strings.TrimSpace(in.ResetTokenHash)
+	in.Role = normalizePlatformUserBackupRole(in.Role)
+	in.Status = normalizePlatformUserBackupStatus(in.Status)
+	operator = strings.TrimSpace(operator)
+	if operator == "" {
+		operator = "admin"
+	}
+	if in.Username == "" || in.Email == "" || in.PasswordHash == "" || in.RealName == "" || in.StudentID == "" || in.Advisor == "" || in.Phone == "" {
+		return false, false, false, errors.New("用户名、邮箱、密码哈希、姓名、学号、导师、电话不能为空")
+	}
+	if in.ExpectedGraduationYear < 2000 || in.ExpectedGraduationYear > 2200 {
+		return false, false, false, errors.New("expected_graduation_year 不合法")
+	}
+	if in.ExpectedGraduationMonth < 1 || in.ExpectedGraduationMonth > 12 {
+		return false, false, false, errors.New("expected_graduation_month 不合法")
+	}
+	if in.TwoFactorEnabled && in.TwoFactorSecret == "" && in.TwoFactorPendingSecret == "" {
+		return false, false, false, errors.New("开启 2FA 时必须同时提供 two_factor_secret 或 two_factor_pending_secret")
+	}
+
+	if err := s.lockPlatformUIDTablesTx(ctx, tx); err != nil {
+		return false, false, false, err
+	}
+
+	var existingRole string
+	var existingUID sql.NullInt64
+	existing := false
+	if err := tx.QueryRowContext(ctx, `
+SELECT role, platform_uid
+FROM user_accounts
+WHERE username=$1
+FOR UPDATE`, in.Username).Scan(&existingRole, &existingUID); err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			return false, false, false, err
+		}
+	} else {
+		existing = true
+	}
+
+	var occupied bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM admin_accounts WHERE username=$1)`, in.Username).Scan(&occupied); err != nil {
+		return false, false, false, err
+	}
+	if occupied {
+		return false, false, false, errors.New("该用户名已被管理员账号占用")
+	}
+	if !existing {
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM power_users WHERE username=$1)`, in.Username).Scan(&occupied); err != nil {
+			return false, false, false, err
+		}
+		if occupied {
+			return false, false, false, errors.New("该用户名已被独立高级用户账号占用，不能直接导入为平台用户")
+		}
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM user_accounts WHERE email=$1 AND username<>$2)`, in.Email, in.Username).Scan(&occupied); err != nil {
+		return false, false, false, err
+	}
+	if occupied {
+		return false, false, false, errors.New("邮箱已存在于其他平台账号")
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM user_accounts WHERE student_id=$1 AND username<>$2)`, in.StudentID, in.Username).Scan(&occupied); err != nil {
+		return false, false, false, err
+	}
+	if occupied {
+		return false, false, false, errors.New("学号已存在于其他平台账号")
+	}
+
+	finalUID := 0
+	if in.PlatformUID != nil && *in.PlatformUID > 0 {
+		finalUID = *in.PlatformUID
+		occupied, err := s.isPlatformUIDOccupiedByOtherTx(ctx, tx, finalUID, in.Username)
+		if err != nil {
+			return false, false, false, err
+		}
+		if occupied {
+			return false, false, false, fmt.Errorf("platform_uid=%d 已被其他账号占用", finalUID)
+		}
+	} else if existingUID.Valid && existingUID.Int64 > 0 {
+		finalUID = int(existingUID.Int64)
+	} else {
+		uid, _, err := s.allocatePlatformUIDTx(ctx, tx, time.Now(), nil)
+		if err != nil {
+			return false, false, false, err
+		}
+		finalUID = uid
+	}
+
+	resetTokenHash := any(nil)
+	if in.ResetTokenHash != "" {
+		resetTokenHash = in.ResetTokenHash
+	}
+	resetTokenExpireAt := any(nil)
+	if in.ResetTokenExpireAt != nil && !in.ResetTokenExpireAt.IsZero() {
+		resetTokenExpireAt = *in.ResetTokenExpireAt
+	}
+	blockedAt := any(nil)
+	if in.BlockedAt != nil && !in.BlockedAt.IsZero() {
+		blockedAt = *in.BlockedAt
+	} else if in.Status == "blocked" {
+		blockedAt = time.Now()
+	}
+	if in.CanManageNodes {
+		in.CanViewNodes = true
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO user_accounts(
+  username, email, password_hash, real_name, student_id, advisor, expected_graduation_year, expected_graduation_month,
+  phone, platform_uid, role, last_login_at, two_factor_enabled, two_factor_secret, two_factor_pending_secret,
+  reset_token_hash, reset_token_expire_at, created_at, updated_at
+)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+ON CONFLICT (username) DO UPDATE SET
+  email=EXCLUDED.email,
+  password_hash=EXCLUDED.password_hash,
+  real_name=EXCLUDED.real_name,
+  student_id=EXCLUDED.student_id,
+  advisor=EXCLUDED.advisor,
+  expected_graduation_year=EXCLUDED.expected_graduation_year,
+  expected_graduation_month=EXCLUDED.expected_graduation_month,
+  phone=EXCLUDED.phone,
+  platform_uid=EXCLUDED.platform_uid,
+  role=EXCLUDED.role,
+  last_login_at=EXCLUDED.last_login_at,
+  two_factor_enabled=EXCLUDED.two_factor_enabled,
+  two_factor_secret=EXCLUDED.two_factor_secret,
+  two_factor_pending_secret=EXCLUDED.two_factor_pending_secret,
+  reset_token_hash=EXCLUDED.reset_token_hash,
+  reset_token_expire_at=EXCLUDED.reset_token_expire_at,
+  created_at=EXCLUDED.created_at,
+  updated_at=EXCLUDED.updated_at`,
+		in.Username, in.Email, in.PasswordHash, in.RealName, in.StudentID, in.Advisor, in.ExpectedGraduationYear, in.ExpectedGraduationMonth,
+		in.Phone, finalUID, in.Role, in.LastLoginAt, in.TwoFactorEnabled, in.TwoFactorSecret, in.TwoFactorPendingSecret,
+		resetTokenHash, resetTokenExpireAt, in.AccountCreatedAt, in.AccountUpdatedAt,
+	); err != nil {
+		return false, false, false, err
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO users(username, balance, carryover_balance, status, blocked_at, last_charge_time, created_at)
+VALUES($1,$2,$3,$4,$5,$6,$7)
+ON CONFLICT (username) DO UPDATE SET
+  balance=EXCLUDED.balance,
+  carryover_balance=EXCLUDED.carryover_balance,
+  status=EXCLUDED.status,
+  blocked_at=EXCLUDED.blocked_at,
+  last_charge_time=EXCLUDED.last_charge_time,
+  created_at=EXCLUDED.created_at`,
+		in.Username, in.GeneralBalance, in.CarryoverBalance, in.Status, blockedAt, in.UserLastChargeTime, in.UserCreatedAt,
+	); err != nil {
+		return false, false, false, err
+	}
+
+	promoted := !existing || normalizePlatformUserBackupRole(existingRole) != "power_user"
+	demoted := existing && normalizePlatformUserBackupRole(existingRole) == "power_user" && in.Role != "power_user"
+	if in.Role == "power_user" {
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO power_users(
+  username, password_hash, platform_uid, can_view_board, can_view_nodes, can_manage_nodes, can_manage_points, can_review_requests,
+  can_manage_platform_users, created_by, updated_by, last_login_at, two_factor_enabled, two_factor_secret, two_factor_pending_secret,
+  created_at, updated_at
+)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,$11,$12,$13,$14,$15,$16)
+ON CONFLICT (username) DO UPDATE SET
+  password_hash=EXCLUDED.password_hash,
+  platform_uid=EXCLUDED.platform_uid,
+  can_view_board=EXCLUDED.can_view_board,
+  can_view_nodes=EXCLUDED.can_view_nodes,
+  can_manage_nodes=EXCLUDED.can_manage_nodes,
+  can_manage_points=EXCLUDED.can_manage_points,
+  can_review_requests=EXCLUDED.can_review_requests,
+  can_manage_platform_users=EXCLUDED.can_manage_platform_users,
+  updated_by=EXCLUDED.updated_by,
+  last_login_at=EXCLUDED.last_login_at,
+  two_factor_enabled=EXCLUDED.two_factor_enabled,
+  two_factor_secret=EXCLUDED.two_factor_secret,
+  two_factor_pending_secret=EXCLUDED.two_factor_pending_secret,
+  created_at=EXCLUDED.created_at,
+  updated_at=EXCLUDED.updated_at`,
+			in.Username, in.PasswordHash, finalUID, in.CanViewBoard, in.CanViewNodes, in.CanManageNodes, in.CanManagePoints, in.CanReviewRequests,
+			in.CanManagePlatformUsers, operator, in.LastLoginAt, in.TwoFactorEnabled, in.TwoFactorSecret, in.TwoFactorPendingSecret, in.AccountCreatedAt, in.AccountUpdatedAt,
+		); err != nil {
+			return false, false, false, err
+		}
+	} else {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM power_users WHERE username=$1`, in.Username); err != nil {
+			return false, false, false, err
+		}
+	}
+
+	return !existing, promoted && in.Role == "power_user", demoted, nil
 }
 
 func (s *Store) ListPointsUsers(ctx context.Context, keyword string, keywordField string, limit int) ([]PointsUser, error) {

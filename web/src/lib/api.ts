@@ -46,6 +46,7 @@ export type AuthMeResp = {
   can_manage_nodes?: boolean;
   can_manage_points?: boolean;
   can_review_requests?: boolean;
+  can_manage_platform_users?: boolean;
   expires_at?: string;
   csrf_token?: string;
   server_now?: string;
@@ -814,10 +815,12 @@ export type AdminNote = {
 export type AdminUserDetail = {
   username: string;
   platform_uid?: number;
+  is_platform_user?: boolean;
   role: string;
   can_view_board: boolean;
   can_view_nodes: boolean;
   can_review_requests: boolean;
+  can_manage_platform_users?: boolean;
   two_factor_enabled?: boolean;
   email: string;
   student_id: string;
@@ -955,6 +958,7 @@ export type PowerUser = {
   can_manage_nodes: boolean;
   can_manage_points: boolean;
   can_review_requests: boolean;
+  can_manage_platform_users: boolean;
   created_by: string;
   updated_by: string;
   last_login_at?: string;
@@ -1450,8 +1454,52 @@ export class ApiClient {
     return (await res.json()) as { ok: boolean; profile: AdminProfile };
   }
 
-  async adminUsersDetails(limit = 1000): Promise<{ users: AdminUserDetail[] }> {
+  async adminUsersDetails(limit = 1000): Promise<{ users: AdminUserDetail[]; registered_count?: number }> {
     return await this.getJson(`/api/admin/users/details?limit=${limit}`, this.adminHeaders());
+  }
+
+  async adminExportPlatformUsersCSV(): Promise<Blob> {
+    const res = await fetch(this.url("/api/admin/users/export.csv"), {
+      headers: { ...this.adminHeaders() },
+      credentials: "include",
+    });
+    if (!res.ok) {
+      const text = await this.readText(res);
+      throw normalizeServerError(res.status, text);
+    }
+    return await res.blob();
+  }
+
+  async adminImportPlatformUsersCSV(file: File): Promise<{
+    ok: boolean;
+    imported: number;
+    created: number;
+    updated: number;
+    promoted: number;
+    demoted: number;
+    registered_cnt: number;
+  }> {
+    const form = new FormData();
+    form.append("file", file);
+    const res = await fetch(this.url("/api/admin/users/import.csv"), {
+      method: "POST",
+      headers: { ...this.adminHeaders(), ...this.csrfHeaders() },
+      credentials: "include",
+      body: form,
+    });
+    if (!res.ok) {
+      const text = await this.readText(res);
+      throw normalizeServerError(res.status, text);
+    }
+    return (await res.json()) as {
+      ok: boolean;
+      imported: number;
+      created: number;
+      updated: number;
+      promoted: number;
+      demoted: number;
+      registered_cnt: number;
+    };
   }
 
   async adminDeletedUsers(limit = 1000, includeRestored = false): Promise<{ users: DeletedUserAccount[] }> {
@@ -2885,6 +2933,7 @@ export class ApiClient {
     can_manage_nodes: boolean;
     can_manage_points: boolean;
     can_review_requests: boolean;
+    can_manage_platform_users: boolean;
   }): Promise<{ ok: boolean }> {
     return await this.postJson("/api/admin/power-users", payload, this.adminHeaders());
   }
@@ -2896,13 +2945,21 @@ export class ApiClient {
     can_manage_nodes: boolean;
     can_manage_points: boolean;
     can_review_requests: boolean;
+    can_manage_platform_users: boolean;
   }): Promise<{ ok: boolean }> {
     return await this.postJson("/api/admin/power-users/promote", payload, this.adminHeaders());
   }
 
   async adminUpdatePowerUserPermissions(
     username: string,
-    payload: { can_view_board: boolean; can_view_nodes: boolean; can_manage_nodes: boolean; can_manage_points: boolean; can_review_requests: boolean },
+    payload: {
+      can_view_board: boolean;
+      can_view_nodes: boolean;
+      can_manage_nodes: boolean;
+      can_manage_points: boolean;
+      can_review_requests: boolean;
+      can_manage_platform_users: boolean;
+    },
   ): Promise<{ ok: boolean }> {
     const res = await fetch(this.url(`/api/admin/power-users/${encodeURIComponent(username)}/permissions`), {
       method: "PUT",

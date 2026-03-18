@@ -67,6 +67,15 @@ copy_one() {
   local ip="$3"
   local node_id="$4"
   local user="$5"
+  local key_use_path=""
+  local key_path=""
+
+  cleanup_key() {
+    if [[ -n "${key_use_path}" && -n "${key_path}" && "${key_use_path}" != "${key_path}" ]]; then
+      rm -f "${key_use_path}" || true
+    fi
+  }
+  trap cleanup_key RETURN
 
   user="$(echo "${user}" | xargs)"
   if [[ -z "${user}" || "${user}" == "TODO" ]]; then
@@ -74,7 +83,7 @@ copy_one() {
     return 0
   fi
 
-  local key_path="${KEY_DIR}/${txt_file}"
+  key_path="${KEY_DIR}/${txt_file}"
   if [[ ! -f "${key_path}" ]]; then
     echo "[SKIP][${node_id}] 私钥文件不存在：${key_path}"
     return 0
@@ -87,7 +96,7 @@ copy_one() {
 
   chmod 600 "${key_path}" || true
 
-  local key_use_path="${key_path}"
+  key_use_path="${key_path}"
   if ! head -n 1 "${key_path}" | grep -q "BEGIN OPENSSH PRIVATE KEY"; then
     key_use_path="$(mktemp)"
     awk '
@@ -110,28 +119,27 @@ copy_one() {
   echo "[COPY][${node_id}] ${user}@${ip}:${target_dir}"
 
   if [[ "${DRY_RUN}" == "1" ]]; then
-    if [[ "${key_use_path}" != "${key_path}" ]]; then
-      rm -f "${key_use_path}" || true
-    fi
     return 0
   fi
 
-  "${ssh_cmd_no_stdin[@]}" "mkdir -p '${target_dir}'"
+  if ! "${ssh_cmd_no_stdin[@]}" "mkdir -p '${target_dir}'"; then
+    echo "[FAIL][${node_id}] 远端目录创建失败：${user}@${ip}:${target_dir}" >&2
+    return 1
+  fi
 
-  tar -C "${SOURCE_DIR}" \
+  if ! tar -C "${SOURCE_DIR}" \
     --exclude='.git' \
     --exclude='my_ssh_keys/*.txt' \
     --exclude='web/node_modules' \
     --exclude='web/dist' \
     --exclude='controller/tmp' \
     -cf - . \
-    | "${ssh_cmd[@]}" "tar -C '${target_dir}' -xf -"
+    | "${ssh_cmd[@]}" "tar -C '${target_dir}' -xf -"; then
+    echo "[FAIL][${node_id}] 工作区分发失败：${user}@${ip}:${target_dir}" >&2
+    return 1
+  fi
 
   echo "[DONE][${node_id}]"
-
-  if [[ "${key_use_path}" != "${key_path}" ]]; then
-    rm -f "${key_use_path}" || true
-  fi
 }
 
 wait_for_slot() {
@@ -152,6 +160,8 @@ wait_for_slot() {
 # 读取 CSV（跳过表头）
 # 列：txt文件名,端口号,内部ip,节点id,txt对应的用户名
 job_pids=()
+declare -A pid_to_node=()
+declare -A pid_to_target=()
 while IFS=',' read -r txt_file port ip node_id user <&3; do
   if [[ "${txt_file}" == "txt文件名" ]]; then
     continue
@@ -175,17 +185,23 @@ while IFS=',' read -r txt_file port ip node_id user <&3; do
     copy_one "${txt_file}" "${port}" "${ip}" "${node_id}" "${user}"
   ) &
   job_pids+=("$!")
+  pid_to_node["$!"]="${node_id}"
+  pid_to_target["$!"]="$(echo "${user}" | xargs)@${ip}:${TARGET_BASE}/$(echo "${user}" | xargs)/${PROJECT_DIR_NAME}"
 done 3< "${MAP_FILE}"
 
 fail_count=0
+failed_nodes=()
 for pid in "${job_pids[@]}"; do
   if ! wait "${pid}"; then
     fail_count=$((fail_count + 1))
+    failed_nodes+=("${pid_to_node[${pid}]} (${pid_to_target[${pid}]})")
   fi
 done
 
 if (( fail_count > 0 )); then
   echo "全部处理完成，但有 ${fail_count} 个任务失败。" >&2
+  printf '失败节点列表：\n' >&2
+  printf '  - %s\n' "${failed_nodes[@]}" >&2
   exit 1
 fi
 echo "全部处理完成。"

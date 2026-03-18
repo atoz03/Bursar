@@ -9,6 +9,31 @@
 
 set -euo pipefail
 
+SHOW_USAGE=0
+CLI_INVALID_ARG=""
+while (($# > 0)); do
+  case "$1" in
+    -h|--help)
+      SHOW_USAGE=1
+      ;;
+    *=*)
+      cli_name="${1%%=*}"
+      cli_value="${1#*=}"
+      if [[ ! "${cli_name}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+        CLI_INVALID_ARG="$1"
+        break
+      fi
+      printf -v "${cli_name}" '%s' "${cli_value}"
+      export "${cli_name}"
+      ;;
+    *)
+      CLI_INVALID_ARG="$1"
+      break
+      ;;
+  esac
+  shift
+done
+
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 NODE_AGENT_DIR="${NODE_AGENT_DIR:-${PROJECT_ROOT}/node-agent}"
 INSTALL_DEPS="${INSTALL_DEPS:-1}"
@@ -280,6 +305,10 @@ usage() {
   AGENT_TOKEN=<agent_token> \\
   bash scripts/install_agent_local.sh
 
+  # 也支持把 KEY=VALUE 作为脚本参数传入（用于 sudo env_reset 场景）
+  sudo -n /bin/bash /home/<user>/gpu-ops/scripts/install_agent_local.sh \\
+    ENABLE_SYSTEM_MEMORY_RESERVE=1 SYSTEM_MEMORY_RESERVE_GB=70
+
   # 自动识别 NODE_ID（按本机 IP 匹配 my_ssh_keys/server_ssh_map.csv）
   CONTROLLER_URL=http://192.0.2.10:60039 \\
   AGENT_TOKEN=<agent_token> \\
@@ -326,6 +355,17 @@ usage() {
   RESET_USER_CPU_QUOTA_ON_INSTALL=1 安装时清理历史用户 CPU/内存运行态残留（默认 1）
 USAGE
 }
+
+if [[ -n "${CLI_INVALID_ARG}" ]]; then
+  echo "未知参数：${CLI_INVALID_ARG}" >&2
+  usage
+  exit 2
+fi
+
+if [[ "${SHOW_USAGE}" == "1" ]]; then
+  usage
+  exit 0
+fi
 
 if [[ -z "${CONTROLLER_URL}" || -z "${AGENT_TOKEN}" ]]; then
   echo "缺少必需参数：CONTROLLER_URL/AGENT_TOKEN" >&2

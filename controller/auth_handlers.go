@@ -105,17 +105,18 @@ func (s *Server) handleAuthMe(c *gin.Context) {
 		return
 	}
 	writeWithServerTime(http.StatusOK, gin.H{
-		"authenticated":       true,
-		"username":            p.Username,
-		"role":                role,
-		"two_factor_enabled":  twoFactorState.Enabled,
-		"can_view_board":      (perms & permViewBoard) != 0,
-		"can_view_nodes":      (perms & permViewNodes) != 0,
-		"can_manage_nodes":    (perms & permManageNodes) != 0,
-		"can_manage_points":   (perms & permManagePoints) != 0,
-		"can_review_requests": (perms & permReviewRequests) != 0,
-		"expires_at":          formatRFC3339InBeijing(time.Unix(p.ExpUnix, 0)),
-		"csrf_token":          p.Nonce,
+		"authenticated":             true,
+		"username":                  p.Username,
+		"role":                      role,
+		"two_factor_enabled":        twoFactorState.Enabled,
+		"can_view_board":            (perms & permViewBoard) != 0,
+		"can_view_nodes":            (perms & permViewNodes) != 0,
+		"can_manage_nodes":          (perms & permManageNodes) != 0,
+		"can_manage_points":         (perms & permManagePoints) != 0,
+		"can_review_requests":       (perms & permReviewRequests) != 0,
+		"can_manage_platform_users": (perms & permManagePlatformUsers) != 0,
+		"expires_at":                formatRFC3339InBeijing(time.Unix(p.ExpUnix, 0)),
+		"csrf_token":                p.Nonce,
 	})
 }
 
@@ -185,7 +186,7 @@ func (s *Server) handleAuthLogin(c *gin.Context) {
 		return
 	}
 	role := "admin"
-	perms := uint32(permViewBoard | permViewNodes | permManageNodes | permReviewRequests | permManagePoints)
+	perms := uint32(permViewBoard | permViewNodes | permManageNodes | permReviewRequests | permManagePoints | permManagePlatformUsers)
 	var twoFactorState authAccountTwoFactorState
 	if !ok {
 		power, okPower, err := s.store.VerifyPowerUserPassword(c.Request.Context(), req.Username, req.Password)
@@ -210,6 +211,9 @@ func (s *Server) handleAuthLogin(c *gin.Context) {
 			}
 			if power.CanReviewRequests {
 				perms |= permReviewRequests
+			}
+			if power.CanManagePlatformUsers {
+				perms |= permManagePlatformUsers
 			}
 			twoFactorState, err = s.store.getAuthAccountTwoFactorState(c.Request.Context(), req.Username, role)
 			if err != nil {
