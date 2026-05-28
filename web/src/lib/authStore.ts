@@ -12,6 +12,12 @@ export type AuthState = {
   canViewNodes: boolean;
   canManageNodes: boolean;
   canManagePoints: boolean;
+  canPointsUsers: boolean;
+  canPointsBatchFiltered: boolean;
+  canPointsBatchAll: boolean;
+  canPointsRecords: boolean;
+  canPointsMonthly: boolean;
+  canPointsSpecialRules: boolean;
   canReviewRequests: boolean;
   canManagePlatformUsers: boolean;
   csrfToken: string;
@@ -31,6 +37,12 @@ export const authState = reactive<AuthState>({
   canViewNodes: false,
   canManageNodes: false,
   canManagePoints: false,
+  canPointsUsers: false,
+  canPointsBatchFiltered: false,
+  canPointsBatchAll: false,
+  canPointsRecords: false,
+  canPointsMonthly: false,
+  canPointsSpecialRules: false,
   canReviewRequests: false,
   canManagePlatformUsers: false,
   csrfToken: "",
@@ -52,6 +64,12 @@ export async function refreshAuth(): Promise<void> {
   authState.canViewNodes = !!me.can_view_nodes;
   authState.canManageNodes = !!me.can_manage_nodes;
   authState.canManagePoints = !!me.can_manage_points;
+  authState.canPointsUsers = !!me.can_points_users;
+  authState.canPointsBatchFiltered = !!me.can_points_batch_filtered;
+  authState.canPointsBatchAll = !!me.can_points_batch_all;
+  authState.canPointsRecords = !!me.can_points_records;
+  authState.canPointsMonthly = !!me.can_points_monthly;
+  authState.canPointsSpecialRules = !!me.can_points_special_rules;
   authState.canReviewRequests = !!me.can_review_requests;
   authState.canManagePlatformUsers = !!me.can_manage_platform_users;
   authState.csrfToken = me.csrf_token ?? "";

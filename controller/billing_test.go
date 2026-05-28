@@ -93,3 +93,44 @@ func TestCalculateProcessCostWithPolicy_GlobalAndDefaultFallback(t *testing.T) {
 		t.Fatalf("cost=%v want=%v", got, want)
 	}
 }
+
+func TestChargeableGPUUsageForBilling_DedupSameCardAcrossProcesses(t *testing.T) {
+	global := NewPriceIndex([]PriceRow{
+		{Model: "A100", Price: 0.5},
+	})
+	seen := map[string]struct{}{}
+	sameCard := GPUUsage{GPUID: 0, GPUModel: "NVIDIA A100-SXM4-80GB", GPUBusID: "00000000:81:00.0"}
+
+	total := 0.0
+	for i := 0; i < 4; i++ {
+		chargeable := ChargeableGPUUsageForBilling([]GPUUsage{sameCard}, seen)
+		total += CalculateGPUUsageCostWithPolicy(chargeable, NewPriceIndex(nil), nil, global, 0.1)
+	}
+
+	if total != 0.5 {
+		t.Fatalf("same GPU charged total=%v want=0.5", total)
+	}
+}
+
+func TestChargeableGPUUsageForBilling_ChargeDistinctCards(t *testing.T) {
+	global := NewPriceIndex([]PriceRow{
+		{Model: "A100", Price: 0.5},
+	})
+	seen := map[string]struct{}{}
+	processes := [][]GPUUsage{
+		{{GPUID: 0, GPUModel: "NVIDIA A100-SXM4-80GB", GPUBusID: "00000000:81:00.0"}},
+		{{GPUID: 1, GPUModel: "NVIDIA A100-SXM4-80GB", GPUBusID: "00000000:82:00.0"}},
+		{{GPUID: 0, GPUModel: "NVIDIA A100-SXM4-80GB", GPUBusID: "00000000:81:00.0"}},
+		{{GPUID: 1, GPUModel: "NVIDIA A100-SXM4-80GB", GPUBusID: "00000000:82:00.0"}},
+	}
+
+	total := 0.0
+	for _, gpuUsage := range processes {
+		chargeable := ChargeableGPUUsageForBilling(gpuUsage, seen)
+		total += CalculateGPUUsageCostWithPolicy(chargeable, NewPriceIndex(nil), nil, global, 0.1)
+	}
+
+	if total != 1.0 {
+		t.Fatalf("distinct GPUs charged total=%v want=1.0", total)
+	}
+}

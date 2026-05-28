@@ -19,7 +19,8 @@ const (
 	registerIPLimit              = 25
 	registerEmailWindow          = 30 * time.Minute
 	registerEmailLimit           = 3
-	registerIPCooldown           = 8 * time.Second
+	registerIPCooldown           = 300 * time.Second
+	registerIPCooldownFailures   = 2
 	registerEmailCooldown        = 90 * time.Second
 	registerSecurityDefaultLimit = 500
 	registerUsernamePrefixMinLen = 2
@@ -41,58 +42,52 @@ func normalizeStudentID(raw string) string {
 	return strings.ToUpper(strings.TrimSpace(raw))
 }
 
-func normalizeRegisterEmail(rawEmail string, studentIDUpper string) (string, string, error) {
+func normalizeRegisterEmail(rawEmail string) (string, string, string, error) {
 	email := strings.TrimSpace(rawEmail)
 	if email == "" {
-		return "", "", errors.New("邮箱不能为空")
+		return "", "", "", errors.New("邮箱不能为空")
 	}
 	if strings.ContainsAny(email, " \t\r\n") || strings.Count(email, "@") != 1 {
-		return "", "", errors.New("邮箱格式不合法")
+		return "", "", "", errors.New("邮箱格式不合法")
 	}
 	parts := strings.SplitN(email, "@", 2)
 	local := strings.ToUpper(strings.TrimSpace(parts[0]))
 	domain := strings.ToLower(strings.TrimSpace(parts[1]))
 	if local == "" || domain == "" {
-		return "", "", errors.New("邮箱格式不合法")
+		return "", "", "", errors.New("邮箱格式不合法")
 	}
 	if _, ok := allowedRegisterEmailDomains[domain]; !ok {
-		return "", "", fmt.Errorf("注册邮箱后缀仅支持 %s", allowedRegisterEmailSuffixHint())
-	}
-	if studentIDUpper == "" {
-		return "", "", errors.New("学号不能为空")
-	}
-	if local != studentIDUpper {
-		return "", "", errors.New("邮箱前缀必须与学号一致（邮箱前缀=学号）")
+		return "", "", "", fmt.Errorf("注册邮箱后缀仅支持 %s", allowedRegisterEmailSuffixHint())
 	}
 	normalized := local + "@" + domain
 	if _, err := mail.ParseAddress(normalized); err != nil {
-		return "", "", errors.New("邮箱格式不合法")
+		return "", "", "", errors.New("邮箱格式不合法")
 	}
-	return normalized, domain, nil
+	return normalized, local, domain, nil
 }
 
-func validateRegisterUsername(username string, studentIDUpper string) error {
+func validateRegisterUsername(username string, emailLocal string) error {
 	username = strings.TrimSpace(username)
-	studentIDUpper = normalizeStudentID(studentIDUpper)
+	emailLocal = strings.ToUpper(strings.TrimSpace(emailLocal))
 	if username == "" {
 		return errors.New("用户名不能为空")
 	}
-	if studentIDUpper == "" {
-		return errors.New("请先填写学号，再按“姓名缩写+学号”格式填写用户名")
+	if emailLocal == "" {
+		return errors.New("请先填写合法邮箱，再按“姓名缩写+邮箱前缀”格式填写用户名")
 	}
 	if utf8.RuneCountInString(username) > 18 {
 		return errors.New("用户名不得超过 18 个字符")
 	}
-	if !strings.HasSuffix(username, studentIDUpper) {
-		return fmt.Errorf("用户名必须以学号 %s 结尾，例如 zs%s", studentIDUpper, studentIDUpper)
+	if !strings.HasSuffix(username, emailLocal) {
+		return fmt.Errorf("用户名必须以邮箱前缀 %s 结尾，例如 zs%s", emailLocal, emailLocal)
 	}
-	prefix := strings.TrimSuffix(username, studentIDUpper)
+	prefix := strings.TrimSuffix(username, emailLocal)
 	if len(prefix) < registerUsernamePrefixMinLen || len(prefix) > registerUsernamePrefixMaxLen {
-		return fmt.Errorf("用户名必须写成“姓名缩写+学号”，前缀需为 %d-%d 个小写字母，例如 zs%s", registerUsernamePrefixMinLen, registerUsernamePrefixMaxLen, studentIDUpper)
+		return fmt.Errorf("用户名必须写成“姓名缩写+邮箱前缀”，前缀需为 %d-%d 个小写字母，例如 zs%s", registerUsernamePrefixMinLen, registerUsernamePrefixMaxLen, emailLocal)
 	}
 	for _, r := range prefix {
 		if r < 'a' || r > 'z' {
-			return fmt.Errorf("用户名必须写成“姓名缩写+学号”，前缀只能使用小写英文字母，例如 zs%s", studentIDUpper)
+			return fmt.Errorf("用户名必须写成“姓名缩写+邮箱前缀”，前缀只能使用小写英文字母，例如 zs%s", emailLocal)
 		}
 	}
 	return nil
@@ -115,6 +110,16 @@ func trimmedUserAgent(ua string) string {
 		return ua[:512]
 	}
 	return ua
+}
+
+func shouldTriggerRegisterIPCooldown(stats RegistrationRateStats, now time.Time) bool {
+	if stats.RecentIPFailureCount < registerIPCooldownFailures {
+		return false
+	}
+	if stats.LastIPFailureAt == nil {
+		return false
+	}
+	return now.Sub(*stats.LastIPFailureAt) < registerIPCooldown
 }
 
 func randomInt(min, max int) (int, error) {

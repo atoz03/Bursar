@@ -96,6 +96,9 @@
             <div style="font-size:12px; color:#64748b">发布时间：{{ fmtTime(a.created_at) }}</div>
           </div>
           <div class="md-body" v-html="renderMarkdown(a.content)" />
+          <el-link v-if="a.attachment_filename" type="primary" :href="announcementAttachmentUrl(a)" target="_blank">
+            下载附件：{{ a.attachment_filename }}
+          </el-link>
         </div>
       </el-card>
 
@@ -294,6 +297,10 @@ const statusReason = computed(() => {
 });
 
 const exclusiveRows = computed(() => resp.value?.exclusive_balances ?? []);
+
+function announcementAttachmentUrl(row: Announcement): string {
+  return new ApiClient(settingsState.baseUrl).announcementAttachmentUrl(row.announcement_id);
+}
 
 async function query() {
   loading.value = true;

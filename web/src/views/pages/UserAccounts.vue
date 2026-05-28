@@ -31,25 +31,10 @@
           <span>首次登录请先看这里</span>
         </div>
         <div class="first-guide-body">
-          第一次使用请按顺序完成：① 发起 challenge，② 在挑战窗口执行命令，③ 确认映射生效；备注: 如果你是新生还没有任何节点账号，再做 ④ 新生开通申请。
+          已经有节点账号时，用“绑定已有账号”；从未分配过节点账号时，直接用“申请新账号”，不需要 challenge。
         </div>
         <el-button size="small" type="success" plain class="first-guide-dismiss" @click="dismissFirstGuide">✓ 已了解</el-button>
       </div>
-      <el-alert
-        title="示例：如果你在 66666 端口上有一个叫 zhangsan 的账号，请填写“节点编号 66666 + 节点账号 zhangsan”，系统会给出 gpuops-claim 命令。"
-        type="info"
-        :closable="false"
-        show-icon
-        class="mb"
-      />
-      <el-alert
-        v-if="rows.length === 0"
-        title="你还没有填写任何节点账号映射。请尽快补充，否则系统可能无法正确识别你的节点使用。"
-        type="warning"
-        :closable="false"
-        show-icon
-        class="mb strong-tip"
-      />
       <el-card v-if="hasProvisionMessages" class="mb provision-msg-card">
         <template #header>
           <div class="head">
@@ -110,138 +95,98 @@
           </el-table-column>
         </el-table>
       </el-card>
-      <div class="section-inline-title">
-        <span class="title">① 发起绑定 challenge</span>
-        <span v-if="showFirstGuideRedDots" class="menu-red-dot inline-dot" />
-      </div>
-      <div class="section-block mb">
-        <el-alert
-          title="严禁冒充绑定。冲突映射不会展示对方平台账号；同一节点账号先到先得，若该账号正在绑定中或已被绑定，后续申请会直接失败。"
-          type="error"
-          :closable="false"
-          show-icon
-          class="mb"
-        />
-        <div class="section-surface">
-          <el-alert
-            title="发起前请先确认：你现在就能用这个节点账号 SSH 登录目标节点。challenge 只有 5 分钟，只有能立即登录时再继续。"
-            type="warning"
-            :closable="false"
-            show-icon
-            class="mb"
-          />
-          <el-form inline class="editor">
-            <el-form-item label="节点编号">
-              <el-input v-model="nodeId" style="width: 220px" placeholder="例如 66666" />
-            </el-form-item>
-            <el-form-item label="节点账号">
-              <el-input v-model="localUsername" style="width: 260px" placeholder="例如 zhangsan" />
-            </el-form-item>
-            <el-form-item><el-button type="primary" @click="add">发起 challenge</el-button></el-form-item>
-          </el-form>
-        </div>
-        <el-alert
-          v-if="bindCooldownUntil"
-          :title="`当前账号在绑定冷却中，冷却结束时间：${bindCooldownUntil}`"
-          type="warning"
-          :closable="false"
-          show-icon
-          class="mb"
-        />
-      </div>
-      <div class="section-inline-title">
-        <span class="title">② 在挑战窗口执行命令完成校验</span>
-        <span v-if="showFirstGuideRedDots" class="menu-red-dot inline-dot" />
-      </div>
-      <div class="section-block mb">
-        <el-card v-if="activeChallenge" class="mb provision-msg-card">
-          <template #header>
-            <div class="head">
-              <div>
-                <strong>当前 challenge 窗口</strong>
-                <div class="mini">系统已临时开放该账号的 SSH，请在当前 challenge 时限内登录节点并执行以下命令。</div>
+      <el-tabs v-model="accountMode" class="account-tabs">
+        <el-tab-pane label="绑定已有节点账号" name="existing">
+          <div class="path-grid mb">
+            <div class="path-panel">
+              <div class="panel-head">
+                <strong>发起 challenge</strong>
+                <span class="mini">仅用于你已经拥有、且当前能 SSH 登录的节点账号。</span>
               </div>
-            </div>
-          </template>
-          <el-alert
-            title="点击确认后，该账号只会短暂开放 SSH。请在当前 challenge 时限内完成 gpuops-claim；命令执行后 SSH 会再次关闭，待账号初始化完成后即可正常使用。"
-            type="info"
-            :closable="false"
-            show-icon
-            class="mb challenge-blue-tip"
-          />
-          <el-descriptions :column="2" border size="small">
-            <el-descriptions-item label="节点编号">{{ activeChallenge.node_id }}</el-descriptions-item>
-            <el-descriptions-item label="节点账号">{{ activeChallenge.local_username }}</el-descriptions-item>
-            <el-descriptions-item label="到期时间">{{ formatServerDateTime(activeChallenge.expires_at) }}</el-descriptions-item>
-            <el-descriptions-item label="剩余时间">
-              <span :class="['challenge-countdown-value', `is-${activeChallengeCountdownLevel}`]">{{ activeChallengeCountdownText }}</span>
-            </el-descriptions-item>
-            <el-descriptions-item label="状态">{{ activeChallenge.status }}</el-descriptions-item>
-            <el-descriptions-item label="challenge token" :span="2">
-              <code>{{ activeChallenge.challenge_token }}</code>
-            </el-descriptions-item>
-            <el-descriptions-item label="执行命令" :span="2">
-              <code>{{ activeChallenge.claim_command }}</code>
-            </el-descriptions-item>
-          </el-descriptions>
-          <div class="payload-actions">
-            <el-button size="small" type="primary" @click="copyText(activeChallenge.claim_command)">复制命令</el-button>
-            <el-button size="small" @click="copyText(activeChallenge.challenge_token)">复制 token</el-button>
-          </div>
-        </el-card>
-        <el-alert
-          v-else
-          title="当前没有进行中的 challenge。请先完成步骤 ① 发起挑战。"
-          type="info"
-          :closable="false"
-          show-icon
-          class="mb challenge-blue-tip"
-        />
-      </div>
-      <div class="section-inline-title">
-        <span class="title">③ 查看已生效映射并管理解绑</span>
-        <span v-if="showFirstGuideRedDots" class="menu-red-dot inline-dot" />
-      </div>
-      <div class="section-block mb">
-        <el-alert
-          v-if="hasPendingAccounts"
-          title="检测到账号仍在等待节点确认 UID/GID：只有状态变为“已就绪”后，才表示节点侧身份已经对齐并可正常 SSH 登录。"
-          type="warning"
-          :closable="false"
-          show-icon
-          class="mb"
-        />
-        <div class="section-surface mb">
-          <el-table :data="rows" stripe class="table">
-            <el-table-column prop="node_id" label="节点编号" width="160" />
-            <el-table-column prop="local_username" label="节点账号" width="200" />
-            <el-table-column prop="billing_username" label="平台账号" width="180" />
-            <el-table-column label="状态" width="220">
-              <template #default="{ row }">
-                <div class="mapping-state-cell">
-                  <el-tag v-if="row.identity_aligned" type="success" effect="light">已就绪</el-tag>
-                  <el-tag v-else-if="row.identity_initializing" type="warning" effect="light">初始化中</el-tag>
-                  <el-tag v-else type="info" effect="light">待同步</el-tag>
-                  <div v-if="row.identity_initializing" class="mini mapping-state-tip">
-                    正在同步 UID/GID，完成前无法 SSH 登录
-                  </div>
-                  <div v-else-if="!row.identity_aligned" class="mini mapping-state-tip">
-                    节点尚未回传最新 UID/GID 快照，请稍后自动刷新
-                  </div>
+              <el-alert
+                v-if="bindCooldownUntil"
+                :title="`当前账号在绑定冷却中，冷却结束时间：${bindCooldownUntil}`"
+                type="warning"
+                :closable="false"
+                show-icon
+                class="mb"
+              />
+              <el-form label-position="top" class="compact-form">
+                <div class="form-row">
+                  <el-form-item label="节点编号">
+                    <el-input v-model="nodeId" placeholder="例如 66666" />
+                  </el-form-item>
+                  <el-form-item label="节点账号">
+                    <el-input v-model="localUsername" placeholder="例如 zhangsan" />
+                  </el-form-item>
                 </div>
-              </template>
-            </el-table-column>
-            <el-table-column prop="created_at" label="生效时间" min-width="190" :formatter="tableTimeFormatter" />
-            <el-table-column label="操作" min-width="320">
-              <template #default="{ row }">
-                <el-button size="small" type="danger" :disabled="isUnbindSubmitBlocked(row)" @click="remove(row)">申请解绑</el-button>
-                <div v-if="isUnbindSubmitBlocked(row)" class="mini unbind-block-tip">{{ unbindSubmitBlockedMessage(row) }}</div>
-              </template>
-            </el-table-column>
-          </el-table>
-        </div>
-        <el-card v-if="mappedNodeInfos.length > 0" class="mb provision-msg-card">
+                <el-button type="primary" @click="add">发起 challenge</el-button>
+              </el-form>
+            </div>
+
+            <div class="path-panel challenge-panel">
+              <div class="panel-head">
+                <strong>当前 challenge</strong>
+                <span class="mini">创建后 5 分钟内登录节点执行命令。</span>
+              </div>
+              <div v-if="activeChallenge" class="challenge-command-box">
+                <div class="challenge-meta">
+                  <el-tag type="primary" effect="plain">{{ activeChallenge.node_id }} / {{ activeChallenge.local_username }}</el-tag>
+                  <span :class="['challenge-countdown-value', `is-${activeChallengeCountdownLevel}`]">
+                    {{ activeChallengeCountdownText }}
+                  </span>
+                </div>
+                <div class="command-line">
+                  <code>{{ activeChallenge.claim_command }}</code>
+                </div>
+                <div class="payload-actions">
+                  <el-button size="small" type="primary" @click="copyText(activeChallenge.claim_command)">复制命令</el-button>
+                  <el-button size="small" @click="copyText(activeChallenge.challenge_token)">复制 token</el-button>
+                </div>
+              </div>
+              <div v-else class="empty-tip">暂无进行中的 challenge。</div>
+            </div>
+          </div>
+
+          <div class="path-panel mb">
+            <div class="panel-head">
+              <strong>已生效映射</strong>
+              <span class="mini">状态为“已就绪”后表示节点侧身份已经对齐。</span>
+            </div>
+            <el-alert
+              v-if="hasPendingAccounts"
+              title="检测到账号仍在等待节点确认 UID/GID，系统会自动刷新状态。"
+              type="warning"
+              :closable="false"
+              show-icon
+              class="mb"
+            />
+            <el-table :data="rows" stripe class="table" empty-text="暂无已绑定节点账号">
+              <el-table-column prop="node_id" label="节点编号" width="160" />
+              <el-table-column prop="local_username" label="节点账号" width="200" />
+              <el-table-column prop="billing_username" label="平台账号" width="180" />
+              <el-table-column label="状态" width="220">
+                <template #default="{ row }">
+                  <div class="mapping-state-cell">
+                    <el-tag v-if="row.identity_aligned" type="success" effect="light">已就绪</el-tag>
+                    <el-tag v-else-if="row.identity_initializing" type="warning" effect="light">初始化中</el-tag>
+                    <el-tag v-else type="info" effect="light">待同步</el-tag>
+                    <div v-if="row.identity_initializing" class="mini mapping-state-tip">正在同步 UID/GID，完成前无法 SSH 登录</div>
+                    <div v-else-if="!row.identity_aligned" class="mini mapping-state-tip">节点尚未回传最新 UID/GID 快照，请稍后自动刷新</div>
+                  </div>
+                </template>
+              </el-table-column>
+              <el-table-column prop="created_at" label="生效时间" min-width="190" :formatter="tableTimeFormatter" />
+              <el-table-column label="操作" min-width="260">
+                <template #default="{ row }">
+                  <el-button size="small" type="danger" :disabled="isUnbindSubmitBlocked(row)" @click="remove(row)">申请解绑</el-button>
+                  <div v-if="isUnbindSubmitBlocked(row)" class="mini unbind-block-tip">{{ unbindSubmitBlockedMessage(row) }}</div>
+                </template>
+              </el-table-column>
+            </el-table>
+          </div>
+
+          <el-card v-if="mappedNodeInfos.length > 0" class="mb provision-msg-card">
           <template #header>
             <div class="head">
               <div>
@@ -313,39 +258,30 @@
             </el-table-column>
           </el-table>
         </el-card>
-      </div>
+        </el-tab-pane>
 
-      <div class="section-inline-title">
-        <span class="title">④ 新生节点账号开通申请（仅无现有节点账号时）</span>
-        <span v-if="showFirstGuideRedDots" class="menu-red-dot inline-dot" />
-      </div>
-      <div class="section-block mb">
-        <el-divider class="section-divider" />
-        <el-card v-if="rows.length === 0 && !activeChallenge" class="mb open-request-card">
-          <template #header>
-            <div class="head">
-              <div>
-                <strong>④ 新生节点账号申请（无已有节点账号时使用）</strong>
-                <div class="mini">此申请用于“还没有任何节点账号”的新生；同一时刻最多 1 条待审核申请。</div>
-              </div>
+        <el-tab-pane label="申请新节点账号" name="open">
+          <div class="path-panel mb">
+            <div class="panel-head">
+              <strong>新生节点账号申请</strong>
+              <span class="mini">从未分配过节点账号时使用；此流程不需要 challenge。</span>
             </div>
-          </template>
-          <el-alert
-            title="本申请不需要你填写节点编号和节点账号，管理员会按你的说明分配。开通理由必须原文包含“研究方向”四个字，并写清课题内容和资源用途。"
-            type="warning"
-            :closable="false"
-            show-icon
-            class="mb"
-          />
-          <el-alert
-            v-if="pendingOpenRequest"
-            :title="`你已有待审核申请（ID ${pendingOpenRequest.request_id}，提交时间 ${formatServerDateTime(pendingOpenRequest.created_at)}），请勿重复提交。`"
-            type="info"
-            :closable="false"
-            show-icon
-            class="mb"
-          />
-          <div class="section-surface">
+            <el-alert
+              v-if="rows.length > 0 || activeChallenge"
+              title="你已有映射或正在进行 challenge，当前通常不需要提交新账号开通申请。"
+              type="info"
+              :closable="false"
+              show-icon
+              class="mb"
+            />
+            <el-alert
+              v-if="pendingOpenRequest"
+              :title="`你已有待审核申请（ID ${pendingOpenRequest.request_id}，提交时间 ${formatServerDateTime(pendingOpenRequest.created_at)}），请勿重复提交。`"
+              type="info"
+              :closable="false"
+              show-icon
+              class="mb"
+            />
             <el-form label-position="top">
               <el-form-item label="开通理由（必填，至少 20 字，且必须包含“研究方向”这四个字）">
                 <el-input
@@ -357,14 +293,18 @@
                   :placeholder="openReasonPlaceholder"
                 />
               </el-form-item>
-              <el-button type="primary" :loading="openRequesting" :disabled="!!pendingOpenRequest" @click="submitOpenRequest">
+              <el-button type="primary" :loading="openRequesting" :disabled="!!pendingOpenRequest || rows.length > 0 || !!activeChallenge" @click="submitOpenRequest">
                 提交节点开通申请
               </el-button>
             </el-form>
           </div>
-          <el-divider />
-          <div class="mini mb">我的节点开通申请记录</div>
-          <el-table :data="userOpenRequests" stripe size="small" max-height="220">
+
+          <div class="path-panel">
+            <div class="panel-head">
+              <strong>我的开通申请记录</strong>
+              <span class="mini">管理员处理结果会显示在这里。</span>
+            </div>
+            <el-table :data="userOpenRequests" stripe size="small" max-height="260" empty-text="暂无开通申请">
             <el-table-column prop="request_id" label="ID" width="80" />
             <el-table-column label="分配节点" width="120">
               <template #default="{ row }">{{ (row.node_id || "").trim() || "-" }}</template>
@@ -379,16 +319,9 @@
             </el-table-column>
             <el-table-column prop="created_at" label="提交时间" min-width="170" :formatter="tableTimeFormatter" />
           </el-table>
-        </el-card>
-        <el-alert
-          v-else
-          title="你已有映射或正在进行 challenge，当前无需提交“新生节点开通申请”。"
-          type="success"
-          :closable="false"
-          show-icon
-          class="mb"
-        />
-      </div>
+          </div>
+        </el-tab-pane>
+      </el-tabs>
     </el-card>
     <el-dialog v-model="decryptVisible" title="节点密钥解密" width="880px" @close="closeDecryptor">
       <p class="decrypt-note">输入邮件中的“加密密钥串”和“提取码”，解密后可下载 `ssh -i` 直接使用的私钥文件。</p>
@@ -438,6 +371,7 @@ const selectedCode = ref("");
 const openRequesting = ref(false);
 const openReason = ref("");
 const firstGuideRead = ref(false);
+const accountMode = ref<"existing" | "open">("open");
 let challengeCountdownTimer: ReturnType<typeof setInterval> | null = null;
 let autoRefreshTimer: ReturnType<typeof setInterval> | null = null;
 const USER_ACCOUNTS_GUIDE_KEY_PREFIX = "gpuops.user_accounts.guide_seen";
@@ -774,6 +708,9 @@ async function reload(silent = false) {
     mappedNodeInfos.value = r.mapped_node_infos ?? [];
     activeChallenge.value = (r.active_challenge as UserNodeBindChallengeInfo) || null;
     bindCooldown.value = (r.bind_cooldown as UserNodeBindCooldown) || null;
+    if (activeChallenge.value || (rows.value || []).length > 0) {
+      accountMode.value = "existing";
+    }
     const m = await client().userProvisionMessages(120);
     provisionMessages.value = m.messages ?? [];
     const reqs = await client().userRequests(200);
@@ -797,28 +734,23 @@ async function submitOpenRequest() {
   const billing = String(authState.username || "").trim();
   if (!billing) {
     error.value = "当前登录状态异常，请重新登录后再提交申请";
-    await ElMessageBox.alert(error.value, "提交失败", { type: "error", confirmButtonText: "我知道了" });
     return;
   }
   if (rows.value.length > 0) {
     error.value = "你已有节点账号映射，不能提交节点开通申请";
-    await ElMessageBox.alert(error.value, "提交失败", { type: "error", confirmButtonText: "我知道了" });
     return;
   }
   if (pendingOpenRequest.value) {
     error.value = "你已有待审核的节点开通申请，请勿重复提交";
-    await ElMessageBox.alert(error.value, "提交失败", { type: "error", confirmButtonText: "我知道了" });
     return;
   }
   const reason = openReason.value.trim();
   if (reason.length < 20) {
     error.value = "请详细填写开通理由（至少 20 个字，且必须包含“研究方向”四个字）";
-    await ElMessageBox.alert(error.value, "提交失败", { type: "error", confirmButtonText: "我知道了" });
     return;
   }
   if (!reason.includes("研究方向")) {
     error.value = "开通理由必须原文包含“研究方向”这四个字";
-    await ElMessageBox.alert(error.value, "提交失败", { type: "error", confirmButtonText: "我知道了" });
     return;
   }
   openRequesting.value = true;
@@ -827,10 +759,8 @@ async function submitOpenRequest() {
     success.value = "节点开通申请已提交，等待管理员审核";
     openReason.value = "";
     await reload();
-    await ElMessageBox.alert(success.value, "提交成功", { type: "success", confirmButtonText: "我知道了" });
   } catch (e: any) {
     error.value = e?.message ?? String(e);
-    await ElMessageBox.alert(error.value, "提交失败", { type: "error", confirmButtonText: "我知道了" });
   } finally {
     openRequesting.value = false;
   }
@@ -881,22 +811,10 @@ async function add() {
       error.value = "请先填写节点编号和节点账号，再发起 challenge";
       return;
     }
-    try {
-      await ElMessageBox.confirm(
-        `请确认是否绑定节点 ${node} 的账号 ${local}。\n\n点击确认后：\n1. 系统会临时短暂开放这个节点账号的 SSH 登录；\n2. 你需要在当前 challenge 时限内登录节点并执行 gpuops-claim；\n3. 命令执行后，该账号的 SSH 会再次关闭；\n4. 等待账号初始化完成后，才可以正常使用该节点账号。\n\n确认无误后再继续。`,
-        "发起 challenge 前确认",
-        {
-          type: "warning",
-          confirmButtonText: "确认发起 challenge",
-          cancelButtonText: "我再检查一下 SSH",
-        },
-      );
-    } catch {
-      return;
-    }
     const r = await client().userUpsertAccount(node, local, "用户页面发起 challenge 绑定");
     activeChallenge.value = r.challenge || null;
-    success.value = `challenge 已创建：系统已临时开放节点 ${node} 的账号 ${local} 的 SSH，请在当前 challenge 时限内登录并执行 gpuops-claim；完成后 SSH 会再次关闭，待账号初始化完成后即可正常使用`;
+    accountMode.value = "existing";
+    success.value = `challenge 已创建：请在 5 分钟内登录节点 ${node} 的账号 ${local} 并执行页面中的 gpuops-claim 命令`;
     nodeId.value = "";
     localUsername.value = "";
     await reload();
@@ -904,11 +822,7 @@ async function add() {
     const activeConflict = parseActiveChallengeConflict(e);
     if (activeConflict.matched) {
       error.value = "当前已有进行中的 challenge，同一时间只能存在一个绑定挑战";
-      await ElMessageBox.alert(
-        `你当前已有进行中的绑定挑战：\n${activeConflict.node || "-"} / ${activeConflict.local || "-"}\n到期时间：${formatServerDateTime(activeConflict.expiresAt || "")}\n\n同一时间只能存在一个 challenge，请先完成当前 challenge 或等待其过期后再申请。`,
-        "绑定失败",
-        { type: "warning", confirmButtonText: "我知道了" },
-      );
+      success.value = `进行中的 challenge：${activeConflict.node || "-"} / ${activeConflict.local || "-"}，到期时间 ${formatServerDateTime(activeConflict.expiresAt || "")}`;
       return;
     }
     const conflict = parseMappingOwnershipConflict(e);
@@ -916,11 +830,6 @@ async function add() {
       const node = conflict.node || nodeId.value.trim();
       const local = conflict.local || localUsername.value.trim();
       error.value = `节点 ${node} 的账号 ${local} 已被其他平台账号绑定，禁止换绑`;
-      await ElMessageBox.alert(
-        `节点 ${node} 的账号 ${local} 已被绑定。\n\n不允许换绑：请先提交解绑申请并等待管理员审批。`,
-        "绑定失败",
-        { type: "error", confirmButtonText: "我知道了" },
-      );
       return;
     }
     error.value = e?.message ?? String(e);
@@ -1072,6 +981,61 @@ reload();
   border-radius: 12px;
   background: linear-gradient(180deg, rgba(248, 250, 252, 0.96), rgba(239, 246, 255, 0.96));
 }
+.account-tabs {
+  margin-top: 8px;
+}
+.path-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.9fr) minmax(320px, 1.1fr);
+  gap: 12px;
+}
+.path-panel {
+  padding: 14px;
+  border: 1px solid #dbeafe;
+  border-radius: 10px;
+  background: #ffffff;
+}
+.panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.compact-form :deep(.el-form-item) {
+  margin-bottom: 12px;
+}
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.challenge-command-box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.challenge-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.command-line {
+  padding: 10px;
+  border-radius: 8px;
+  background: #0f172a;
+  color: #e2e8f0;
+  overflow-x: auto;
+}
+.command-line code {
+  color: inherit;
+  white-space: nowrap;
+}
+.empty-tip {
+  color: #64748b;
+  font-size: 13px;
+}
 .section-divider {
   margin: 0 0 12px;
 }
@@ -1172,6 +1136,15 @@ reload();
   }
   .section-surface {
     padding: 10px;
+  }
+  .path-grid,
+  .form-row {
+    grid-template-columns: 1fr;
+  }
+  .panel-head,
+  .challenge-meta {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }
 </style>

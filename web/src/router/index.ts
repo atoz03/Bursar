@@ -30,6 +30,18 @@ const AdminHA = () => import("../views/pages/AdminHA.vue");
 const AdminPoints = () => import("../views/pages/AdminPoints.vue");
 const AdminProfile = () => import("../views/pages/AdminProfile.vue");
 
+function hasPointsAccess(): boolean {
+  return !!(
+    authState.canManagePoints ||
+    authState.canPointsUsers ||
+    authState.canPointsBatchFiltered ||
+    authState.canPointsBatchAll ||
+    authState.canPointsRecords ||
+    authState.canPointsMonthly ||
+    authState.canPointsSpecialRules
+  );
+}
+
 export const router = createRouter({
   history: createWebHistory(),
   routes: [
@@ -98,7 +110,7 @@ router.beforeEach(async (to) => {
     if (authState.role === "power_user") {
       if (authState.canViewBoard) return { path: "/admin/board" };
       if (authState.canViewNodes) return { path: "/admin/nodes" };
-      if (authState.canManagePoints) return { path: "/admin/points" };
+      if (hasPointsAccess()) return { path: "/admin/points" };
       if (authState.canManagePlatformUsers) return { path: "/admin/users" };
       if (authState.canReviewRequests) return { path: "/admin/requests" };
       return { path: "/user/balance" };
@@ -118,7 +130,7 @@ router.beforeEach(async (to) => {
       const p = to.path;
       if (p.startsWith("/admin/board") && authState.canViewBoard) return true;
       if (p.startsWith("/admin/nodes") && authState.canViewNodes) return true;
-      if (p.startsWith("/admin/points") && authState.canManagePoints) return true;
+      if (p.startsWith("/admin/points") && hasPointsAccess()) return true;
       if (p.startsWith("/admin/users") && authState.canManagePlatformUsers) return true;
       if (p.startsWith("/admin/requests") && authState.canReviewRequests) return true;
       if (p.startsWith("/admin/profile")) return { path: "/user/profile" };
@@ -133,7 +145,7 @@ router.beforeEach(async (to) => {
     if (authState.role === "power_user") {
       if (authState.canViewBoard) return { path: "/admin/board" };
       if (authState.canViewNodes) return { path: "/admin/nodes" };
-      if (authState.canManagePoints) return { path: "/admin/points" };
+      if (hasPointsAccess()) return { path: "/admin/points" };
       if (authState.canManagePlatformUsers) return { path: "/admin/users" };
       if (authState.canReviewRequests) return { path: "/admin/requests" };
       return { path: "/user/balance" };

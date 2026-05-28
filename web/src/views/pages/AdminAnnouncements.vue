@@ -23,6 +23,21 @@
       <el-form-item label="标题"><el-input v-model="title" /></el-form-item>
       <el-form-item label="内容"><el-input v-model="content" type="textarea" :rows="4" /></el-form-item>
       <el-form-item><el-checkbox v-model="pinned">置顶</el-checkbox></el-form-item>
+      <el-form-item label="附件">
+        <el-upload
+          v-model:file-list="attachmentFiles"
+          drag
+          :auto-upload="false"
+          :limit="1"
+          :on-exceed="handleAttachmentExceed"
+        >
+          <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
+          <div class="el-upload__text">拖入文件或点击选择</div>
+          <template #tip>
+            <div class="upload-tip">支持 PDF 等文件，单个附件不超过 30MB。</div>
+          </template>
+        </el-upload>
+      </el-form-item>
       <el-form-item><el-button type="primary" :loading="publishing" @click="publish">发布公告</el-button></el-form-item>
     </el-form>
     <el-card v-if="content.trim()" class="preview-card">
@@ -43,6 +58,15 @@
       </el-table-column>
       <el-table-column prop="created_by" label="发布人" width="120" />
       <el-table-column prop="created_at" label="发布时间" width="180" :formatter="tableTimeFormatter" />
+      <el-table-column label="附件" min-width="180">
+        <template #default="{ row }">
+          <el-link v-if="row.attachment_filename" type="primary" :href="announcementAttachmentUrl(row)" target="_blank">
+            <el-icon><Download /></el-icon>
+            <span>{{ row.attachment_filename }}</span>
+          </el-link>
+          <span v-else class="muted">无</span>
+        </template>
+      </el-table-column>
       <el-table-column label="内容" min-width="260">
         <template #default="{ row }">
           <div class="md-body" v-html="renderMarkdown(row.content)" />
@@ -59,11 +83,12 @@
 
 <script setup lang="ts">
 import { ref } from "vue";
+import { genFileId, type UploadProps, type UploadRawFile, type UploadUserFile } from "element-plus";
 import { ApiClient, type Announcement } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
 import { renderMarkdown } from "../../lib/markdown";
-import { Bell, Document } from "@element-plus/icons-vue";
+import { Bell, Document, Download, UploadFilled } from "@element-plus/icons-vue";
 import { formatServerDateTime } from "../../lib/time";
 
 const loading = ref(false);
@@ -73,17 +98,38 @@ const rows = ref<Announcement[]>([]);
 const title = ref("");
 const content = ref("");
 const pinned = ref(false);
+const attachmentFiles = ref<UploadUserFile[]>([]);
 
 function tableTimeFormatter(_: unknown, __: unknown, cellValue: unknown): string {
   return formatServerDateTime(String(cellValue ?? ""));
 }
 
+function client() {
+  return new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+}
+
+function announcementAttachmentUrl(row: Announcement): string {
+  return client().announcementAttachmentUrl(row.announcement_id);
+}
+
+const handleAttachmentExceed: UploadProps["onExceed"] = (files) => {
+  const rawFile = files[0] as UploadRawFile | undefined;
+  if (!rawFile) return;
+  rawFile.uid = genFileId();
+  attachmentFiles.value = [
+    {
+      name: rawFile.name || "attachment",
+      raw: rawFile,
+      uid: rawFile.uid,
+    },
+  ];
+};
+
 async function reload() {
   loading.value = true;
   error.value = "";
   try {
-    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
-    const r = await client.announcements(50);
+    const r = await client().announcements(50);
     rows.value = r.announcements ?? [];
   } catch (e: any) {
     error.value = e?.body ? `${e.message}\n${e.body}` : (e?.message ?? String(e));
@@ -96,11 +142,16 @@ async function publish() {
   publishing.value = true;
   error.value = "";
   try {
-    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
-    await client.adminCreateAnnouncement({ title: title.value.trim(), content: content.value.trim(), pinned: pinned.value });
+    const attachment = (attachmentFiles.value[0]?.raw as File | undefined) || null;
+    if (attachment && attachment.size > 30 * 1024 * 1024) {
+      error.value = "附件不能超过 30MB";
+      return;
+    }
+    await client().adminCreateAnnouncement({ title: title.value.trim(), content: content.value.trim(), pinned: pinned.value, attachment });
     title.value = "";
     content.value = "";
     pinned.value = false;
+    attachmentFiles.value = [];
     await reload();
   } catch (e: any) {
     error.value = e?.body ? `${e.message}\n${e.body}` : (e?.message ?? String(e));
@@ -112,8 +163,7 @@ async function publish() {
 async function remove(id: number) {
   error.value = "";
   try {
-    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
-    await client.adminDeleteAnnouncement(id);
+    await client().adminDeleteAnnouncement(id);
     await reload();
   } catch (e: any) {
     error.value = e?.body ? `${e.message}\n${e.body}` : (e?.message ?? String(e));
@@ -141,6 +191,8 @@ reload();
 .sub { color:#64748b; font-size:12px; }
 .mb { margin-bottom: 12px; }
 .preview-card { margin-bottom: 12px; }
+.upload-tip, .muted { color: #64748b; font-size: 12px; }
+.el-link { gap: 4px; }
 .md-body :deep(p) { margin: 6px 0; }
 .md-body :deep(h1), .md-body :deep(h2), .md-body :deep(h3), .md-body :deep(h4) { margin: 8px 0; }
 .md-body :deep(ul) { padding-left: 18px; margin: 6px 0; }

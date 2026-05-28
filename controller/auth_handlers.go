@@ -112,7 +112,13 @@ func (s *Server) handleAuthMe(c *gin.Context) {
 		"can_view_board":            (perms & permViewBoard) != 0,
 		"can_view_nodes":            (perms & permViewNodes) != 0,
 		"can_manage_nodes":          (perms & permManageNodes) != 0,
-		"can_manage_points":         (perms & permManagePoints) != 0,
+		"can_manage_points":         (perms & permAnyPoints) != 0,
+		"can_points_users":          (perms & permPointsUsers) != 0,
+		"can_points_batch_filtered": (perms & permPointsBatchFiltered) != 0,
+		"can_points_batch_all":      (perms & permPointsBatchAll) != 0,
+		"can_points_records":        (perms & permPointsRecords) != 0,
+		"can_points_monthly":        (perms & permPointsMonthly) != 0,
+		"can_points_special_rules":  (perms & permPointsSpecialRules) != 0,
 		"can_review_requests":       (perms & permReviewRequests) != 0,
 		"can_manage_platform_users": (perms & permManagePlatformUsers) != 0,
 		"expires_at":                formatRFC3339InBeijing(time.Unix(p.ExpUnix, 0)),
@@ -186,7 +192,7 @@ func (s *Server) handleAuthLogin(c *gin.Context) {
 		return
 	}
 	role := "admin"
-	perms := uint32(permViewBoard | permViewNodes | permManageNodes | permReviewRequests | permManagePoints | permManagePlatformUsers)
+	perms := uint32(permViewBoard | permViewNodes | permManageNodes | permReviewRequests | permManagePoints | permManagePlatformUsers | permPointsUsers | permPointsBatchFiltered | permPointsBatchAll | permPointsRecords | permPointsMonthly | permPointsSpecialRules)
 	var twoFactorState authAccountTwoFactorState
 	if !ok {
 		power, okPower, err := s.store.VerifyPowerUserPassword(c.Request.Context(), req.Username, req.Password)
@@ -206,8 +212,26 @@ func (s *Server) handleAuthLogin(c *gin.Context) {
 			if power.CanManageNodes {
 				perms |= permManageNodes
 			}
-			if power.CanManagePoints {
+			if power.CanManagePoints || power.CanPointsUsers || power.CanPointsBatchFiltered || power.CanPointsBatchAll || power.CanPointsRecords || power.CanPointsMonthly || power.CanPointsSpecialRules {
 				perms |= permManagePoints
+			}
+			if power.CanPointsUsers {
+				perms |= permPointsUsers
+			}
+			if power.CanPointsBatchFiltered {
+				perms |= permPointsBatchFiltered
+			}
+			if power.CanPointsBatchAll {
+				perms |= permPointsBatchAll
+			}
+			if power.CanPointsRecords {
+				perms |= permPointsRecords
+			}
+			if power.CanPointsMonthly {
+				perms |= permPointsMonthly
+			}
+			if power.CanPointsSpecialRules {
+				perms |= permPointsSpecialRules
 			}
 			if power.CanReviewRequests {
 				perms |= permReviewRequests
@@ -350,14 +374,14 @@ func (s *Server) handleAuthRegister(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "请先阅读并勾选同意《用户准则》后再提交"})
 		return
 	}
-	normalizedEmail, emailDomain, err := normalizeRegisterEmail(req.Email, req.StudentID)
+	normalizedEmail, emailLocal, emailDomain, err := normalizeRegisterEmail(req.Email)
 	if err != nil {
 		recordEvent("deny", "invalid_register_email_or_student")
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	req.Email = normalizedEmail
-	if err := validateRegisterUsername(req.Username, req.StudentID); err != nil {
+	if err := validateRegisterUsername(req.Username, emailLocal); err != nil {
 		recordEvent("deny", "invalid_username_rule")
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -374,6 +398,7 @@ func (s *Server) handleAuthRegister(c *gin.Context) {
 		req.Email,
 		now.Add(-registerIPWindow),
 		now.Add(-registerEmailWindow),
+		now.Add(-registerIPCooldown),
 	)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -397,9 +422,9 @@ func (s *Server) handleAuthRegister(c *gin.Context) {
 		writeRegisterRateLimited(c, "该邮箱请求过于频繁，请稍后再试", retryAt, now)
 		return
 	}
-	if stats.LastIPAt != nil && now.Sub(*stats.LastIPAt) < registerIPCooldown {
+	if shouldTriggerRegisterIPCooldown(stats, now) {
 		recordEvent("deny", "cooldown_by_ip")
-		retryAt := stats.LastIPAt.Add(registerIPCooldown)
+		retryAt := stats.LastIPFailureAt.Add(registerIPCooldown)
 		if !retryAt.After(now) {
 			retryAt = now.Add(time.Second)
 		}
@@ -500,30 +525,27 @@ func (s *Server) handleAuthRegisterCheck(c *gin.Context) {
 	email := strings.TrimSpace(c.Query("email"))
 	studentID := normalizeStudentID(c.Query("student_id"))
 	localErrs := map[string]string{}
-	if username != "" {
-		if err := validateRegisterUsername(username, studentID); err != nil {
-			localErrs["username"] = err.Error()
+	emailLocal := ""
+	if email != "" {
+		normalizedEmail, local, domain, err := normalizeRegisterEmail(email)
+		if err != nil {
+			localErrs["email"] = err.Error()
+		} else {
+			email = normalizedEmail
+			emailLocal = local
+			blocked, blockErr := s.store.IsDisposableEmailDomainBlocked(c.Request.Context(), domain)
+			if blockErr != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": blockErr.Error()})
+				return
+			}
+			if blocked {
+				localErrs["email"] = "该邮箱域名不允许注册，请使用学校正式邮箱"
+			}
 		}
 	}
-	if email != "" {
-		if studentID == "" {
-			localErrs["student_id"] = "请先填写学号"
-		}
-		if studentID != "" {
-			normalizedEmail, domain, err := normalizeRegisterEmail(email, studentID)
-			if err != nil {
-				localErrs["email"] = err.Error()
-			} else {
-				email = normalizedEmail
-				blocked, blockErr := s.store.IsDisposableEmailDomainBlocked(c.Request.Context(), domain)
-				if blockErr != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"error": blockErr.Error()})
-					return
-				}
-				if blocked {
-					localErrs["email"] = "该邮箱域名不允许注册，请使用学校正式邮箱"
-				}
-			}
+	if username != "" {
+		if err := validateRegisterUsername(username, emailLocal); err != nil {
+			localErrs["username"] = err.Error()
 		}
 	}
 	errs, err := s.store.RegistrationAvailability(c.Request.Context(), username, email, studentID)

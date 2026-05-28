@@ -8667,7 +8667,48 @@ func (s *Store) VerifyAdminPassword(ctx context.Context, username string, passwo
 	return true, nil
 }
 
-func (s *Store) CreatePowerUser(ctx context.Context, username string, password string, canViewBoard bool, canViewNodes bool, canManageNodes bool, canManagePoints bool, canReview bool, canManagePlatformUsers bool, createdBy string) error {
+func normalizePowerUserPointsPerms(
+	canManagePoints bool,
+	canPointsUsers bool,
+	canPointsBatchFiltered bool,
+	canPointsBatchAll bool,
+	canPointsRecords bool,
+	canPointsMonthly bool,
+	canPointsSpecialRules bool,
+) (bool, bool, bool, bool, bool, bool, bool) {
+	if canManagePoints {
+		canPointsUsers = true
+		canPointsBatchFiltered = true
+		canPointsBatchAll = true
+		canPointsRecords = true
+		canPointsMonthly = true
+		canPointsSpecialRules = true
+	}
+	if canPointsBatchFiltered {
+		canPointsUsers = true
+	}
+	canManagePoints = canPointsUsers || canPointsBatchFiltered || canPointsBatchAll || canPointsRecords || canPointsMonthly || canPointsSpecialRules
+	return canManagePoints, canPointsUsers, canPointsBatchFiltered, canPointsBatchAll, canPointsRecords, canPointsMonthly, canPointsSpecialRules
+}
+
+func (s *Store) CreatePowerUser(
+	ctx context.Context,
+	username string,
+	password string,
+	canViewBoard bool,
+	canViewNodes bool,
+	canManageNodes bool,
+	canManagePoints bool,
+	canPointsUsers bool,
+	canPointsBatchFiltered bool,
+	canPointsBatchAll bool,
+	canPointsRecords bool,
+	canPointsMonthly bool,
+	canPointsSpecialRules bool,
+	canReview bool,
+	canManagePlatformUsers bool,
+	createdBy string,
+) error {
 	username = strings.TrimSpace(username)
 	createdBy = strings.TrimSpace(createdBy)
 	if username == "" {
@@ -8679,6 +8720,16 @@ func (s *Store) CreatePowerUser(ctx context.Context, username string, password s
 	if canManageNodes {
 		canViewNodes = true
 	}
+	canManagePoints, canPointsUsers, canPointsBatchFiltered, canPointsBatchAll, canPointsRecords, canPointsMonthly, canPointsSpecialRules =
+		normalizePowerUserPointsPerms(
+			canManagePoints,
+			canPointsUsers,
+			canPointsBatchFiltered,
+			canPointsBatchAll,
+			canPointsRecords,
+			canPointsMonthly,
+			canPointsSpecialRules,
+		)
 	if createdBy == "" {
 		createdBy = "admin"
 	}
@@ -8727,8 +8778,16 @@ SELECT EXISTS(
 			return err
 		}
 		_, err = tx.ExecContext(ctx, `
-INSERT INTO power_users(username, password_hash, platform_uid, can_view_board, can_view_nodes, can_manage_nodes, can_manage_points, can_review_requests, can_manage_platform_users, created_by, updated_by)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10)`, username, string(hash), uid, canViewBoard, canViewNodes, canManageNodes, canManagePoints, canReview, canManagePlatformUsers, createdBy)
+INSERT INTO power_users(
+  username, password_hash, platform_uid, can_view_board, can_view_nodes, can_manage_nodes, can_manage_points,
+  can_points_users, can_points_batch_filtered, can_points_batch_all, can_points_records, can_points_monthly,
+  can_points_special_rules, can_review_requests, can_manage_platform_users, created_by, updated_by
+)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$16)`,
+			username, string(hash), uid, canViewBoard, canViewNodes, canManageNodes, canManagePoints,
+			canPointsUsers, canPointsBatchFiltered, canPointsBatchAll, canPointsRecords, canPointsMonthly,
+			canPointsSpecialRules, canReview, canManagePlatformUsers, createdBy,
+		)
 		if err != nil {
 			return err
 		}
@@ -8752,7 +8811,13 @@ SELECT pu.password_hash,
        pu.can_view_board,
        pu.can_view_nodes,
        pu.can_manage_nodes,
-       COALESCE(pu.can_manage_points,false),
+       (COALESCE(pu.can_manage_points,false) OR COALESCE(pu.can_points_users,false) OR COALESCE(pu.can_points_batch_filtered,false) OR COALESCE(pu.can_points_batch_all,false) OR COALESCE(pu.can_points_records,false) OR COALESCE(pu.can_points_monthly,false) OR COALESCE(pu.can_points_special_rules,false)) AS can_manage_points,
+       COALESCE(pu.can_points_users,false),
+       COALESCE(pu.can_points_batch_filtered,false),
+       COALESCE(pu.can_points_batch_all,false),
+       COALESCE(pu.can_points_records,false),
+       COALESCE(pu.can_points_monthly,false),
+       COALESCE(pu.can_points_special_rules,false),
        pu.can_review_requests,
        COALESCE(pu.can_manage_platform_users,false),
        pu.created_by,
@@ -8763,7 +8828,9 @@ SELECT pu.password_hash,
 FROM power_users pu
 LEFT JOIN user_accounts ua ON ua.username=pu.username
 WHERE pu.username=$1`, username).Scan(
-		&hash, &out.Username, &uidRaw, &out.CanViewBoard, &out.CanViewNodes, &out.CanManageNodes, &out.CanManagePoints, &out.CanReviewRequests, &out.CanManagePlatformUsers, &out.CreatedBy, &out.UpdatedBy, &out.LastLoginAt, &out.CreatedAt, &out.UpdatedAt,
+		&hash, &out.Username, &uidRaw, &out.CanViewBoard, &out.CanViewNodes, &out.CanManageNodes, &out.CanManagePoints,
+		&out.CanPointsUsers, &out.CanPointsBatchFiltered, &out.CanPointsBatchAll, &out.CanPointsRecords, &out.CanPointsMonthly, &out.CanPointsSpecialRules,
+		&out.CanReviewRequests, &out.CanManagePlatformUsers, &out.CreatedBy, &out.UpdatedBy, &out.LastLoginAt, &out.CreatedAt, &out.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -8792,7 +8859,13 @@ SELECT pu.username,
        pu.can_view_board,
        pu.can_view_nodes,
        pu.can_manage_nodes,
-       COALESCE(pu.can_manage_points,false) AS can_manage_points,
+       (COALESCE(pu.can_manage_points,false) OR COALESCE(pu.can_points_users,false) OR COALESCE(pu.can_points_batch_filtered,false) OR COALESCE(pu.can_points_batch_all,false) OR COALESCE(pu.can_points_records,false) OR COALESCE(pu.can_points_monthly,false) OR COALESCE(pu.can_points_special_rules,false)) AS can_manage_points,
+       COALESCE(pu.can_points_users,false) AS can_points_users,
+       COALESCE(pu.can_points_batch_filtered,false) AS can_points_batch_filtered,
+       COALESCE(pu.can_points_batch_all,false) AS can_points_batch_all,
+       COALESCE(pu.can_points_records,false) AS can_points_records,
+       COALESCE(pu.can_points_monthly,false) AS can_points_monthly,
+       COALESCE(pu.can_points_special_rules,false) AS can_points_special_rules,
        pu.can_review_requests,
        COALESCE(pu.can_manage_platform_users,false) AS can_manage_platform_users,
        pu.created_by,
@@ -8812,7 +8885,11 @@ LIMIT $1`, limit)
 	for rows.Next() {
 		var p PowerUser
 		var uidRaw sql.NullInt64
-		if err := rows.Scan(&p.Username, &uidRaw, &p.IsPlatformUser, &p.CanViewBoard, &p.CanViewNodes, &p.CanManageNodes, &p.CanManagePoints, &p.CanReviewRequests, &p.CanManagePlatformUsers, &p.CreatedBy, &p.UpdatedBy, &p.LastLoginAt, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(
+			&p.Username, &uidRaw, &p.IsPlatformUser, &p.CanViewBoard, &p.CanViewNodes, &p.CanManageNodes, &p.CanManagePoints,
+			&p.CanPointsUsers, &p.CanPointsBatchFiltered, &p.CanPointsBatchAll, &p.CanPointsRecords, &p.CanPointsMonthly, &p.CanPointsSpecialRules,
+			&p.CanReviewRequests, &p.CanManagePlatformUsers, &p.CreatedBy, &p.UpdatedBy, &p.LastLoginAt, &p.CreatedAt, &p.UpdatedAt,
+		); err != nil {
 			return nil, err
 		}
 		if uidRaw.Valid && uidRaw.Int64 > 0 {
@@ -8824,7 +8901,23 @@ LIMIT $1`, limit)
 	return out, rows.Err()
 }
 
-func (s *Store) PromotePlatformUserToPowerUser(ctx context.Context, username string, canViewBoard bool, canViewNodes bool, canManageNodes bool, canManagePoints bool, canReview bool, canManagePlatformUsers bool, updatedBy string) error {
+func (s *Store) PromotePlatformUserToPowerUser(
+	ctx context.Context,
+	username string,
+	canViewBoard bool,
+	canViewNodes bool,
+	canManageNodes bool,
+	canManagePoints bool,
+	canPointsUsers bool,
+	canPointsBatchFiltered bool,
+	canPointsBatchAll bool,
+	canPointsRecords bool,
+	canPointsMonthly bool,
+	canPointsSpecialRules bool,
+	canReview bool,
+	canManagePlatformUsers bool,
+	updatedBy string,
+) error {
 	username = strings.TrimSpace(username)
 	updatedBy = strings.TrimSpace(updatedBy)
 	if username == "" {
@@ -8836,6 +8929,16 @@ func (s *Store) PromotePlatformUserToPowerUser(ctx context.Context, username str
 	if canManageNodes {
 		canViewNodes = true
 	}
+	canManagePoints, canPointsUsers, canPointsBatchFiltered, canPointsBatchAll, canPointsRecords, canPointsMonthly, canPointsSpecialRules =
+		normalizePowerUserPointsPerms(
+			canManagePoints,
+			canPointsUsers,
+			canPointsBatchFiltered,
+			canPointsBatchAll,
+			canPointsRecords,
+			canPointsMonthly,
+			canPointsSpecialRules,
+		)
 	return s.WithTx(ctx, func(tx *sql.Tx) error {
 		var exists bool
 		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM admin_accounts WHERE username=$1)`, username).Scan(&exists); err != nil {
@@ -8856,8 +8959,12 @@ func (s *Store) PromotePlatformUserToPowerUser(ctx context.Context, username str
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `
-INSERT INTO power_users(username, password_hash, platform_uid, can_view_board, can_view_nodes, can_manage_nodes, can_manage_points, can_review_requests, can_manage_platform_users, created_by, updated_by)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10)
+INSERT INTO power_users(
+  username, password_hash, platform_uid, can_view_board, can_view_nodes, can_manage_nodes, can_manage_points,
+  can_points_users, can_points_batch_filtered, can_points_batch_all, can_points_records, can_points_monthly,
+  can_points_special_rules, can_review_requests, can_manage_platform_users, created_by, updated_by
+)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$16)
 ON CONFLICT (username) DO UPDATE SET
   password_hash=EXCLUDED.password_hash,
   platform_uid=EXCLUDED.platform_uid,
@@ -8865,10 +8972,20 @@ ON CONFLICT (username) DO UPDATE SET
   can_view_nodes=EXCLUDED.can_view_nodes,
   can_manage_nodes=EXCLUDED.can_manage_nodes,
   can_manage_points=EXCLUDED.can_manage_points,
+  can_points_users=EXCLUDED.can_points_users,
+  can_points_batch_filtered=EXCLUDED.can_points_batch_filtered,
+  can_points_batch_all=EXCLUDED.can_points_batch_all,
+  can_points_records=EXCLUDED.can_points_records,
+  can_points_monthly=EXCLUDED.can_points_monthly,
+  can_points_special_rules=EXCLUDED.can_points_special_rules,
   can_review_requests=EXCLUDED.can_review_requests,
   can_manage_platform_users=EXCLUDED.can_manage_platform_users,
   updated_by=EXCLUDED.updated_by,
-  updated_at=NOW()`, username, pwdHash, platformUID, canViewBoard, canViewNodes, canManageNodes, canManagePoints, canReview, canManagePlatformUsers, updatedBy); err != nil {
+  updated_at=NOW()`,
+			username, pwdHash, platformUID, canViewBoard, canViewNodes, canManageNodes, canManagePoints,
+			canPointsUsers, canPointsBatchFiltered, canPointsBatchAll, canPointsRecords, canPointsMonthly,
+			canPointsSpecialRules, canReview, canManagePlatformUsers, updatedBy,
+		); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `
@@ -8908,7 +9025,23 @@ WHERE username=$1`, username); err != nil {
 	})
 }
 
-func (s *Store) UpdatePowerUserPermissions(ctx context.Context, username string, canViewBoard bool, canViewNodes bool, canManageNodes bool, canManagePoints bool, canReview bool, canManagePlatformUsers bool, updatedBy string) error {
+func (s *Store) UpdatePowerUserPermissions(
+	ctx context.Context,
+	username string,
+	canViewBoard bool,
+	canViewNodes bool,
+	canManageNodes bool,
+	canManagePoints bool,
+	canPointsUsers bool,
+	canPointsBatchFiltered bool,
+	canPointsBatchAll bool,
+	canPointsRecords bool,
+	canPointsMonthly bool,
+	canPointsSpecialRules bool,
+	canReview bool,
+	canManagePlatformUsers bool,
+	updatedBy string,
+) error {
 	username = strings.TrimSpace(username)
 	updatedBy = strings.TrimSpace(updatedBy)
 	if username == "" {
@@ -8920,10 +9053,27 @@ func (s *Store) UpdatePowerUserPermissions(ctx context.Context, username string,
 	if canManageNodes {
 		canViewNodes = true
 	}
+	canManagePoints, canPointsUsers, canPointsBatchFiltered, canPointsBatchAll, canPointsRecords, canPointsMonthly, canPointsSpecialRules =
+		normalizePowerUserPointsPerms(
+			canManagePoints,
+			canPointsUsers,
+			canPointsBatchFiltered,
+			canPointsBatchAll,
+			canPointsRecords,
+			canPointsMonthly,
+			canPointsSpecialRules,
+		)
 	res, err := s.db.ExecContext(ctx, `
 UPDATE power_users
-SET can_view_board=$2, can_view_nodes=$3, can_manage_nodes=$4, can_manage_points=$5, can_review_requests=$6, can_manage_platform_users=$7, updated_by=$8, updated_at=NOW()
-WHERE username=$1`, username, canViewBoard, canViewNodes, canManageNodes, canManagePoints, canReview, canManagePlatformUsers, updatedBy)
+SET can_view_board=$2, can_view_nodes=$3, can_manage_nodes=$4, can_manage_points=$5,
+    can_points_users=$6, can_points_batch_filtered=$7, can_points_batch_all=$8, can_points_records=$9,
+    can_points_monthly=$10, can_points_special_rules=$11, can_review_requests=$12, can_manage_platform_users=$13,
+    updated_by=$14, updated_at=NOW()
+WHERE username=$1`,
+		username, canViewBoard, canViewNodes, canManageNodes, canManagePoints,
+		canPointsUsers, canPointsBatchFiltered, canPointsBatchAll, canPointsRecords, canPointsMonthly, canPointsSpecialRules,
+		canReview, canManagePlatformUsers, updatedBy,
+	)
 	if err != nil {
 		return err
 	}
@@ -8947,18 +9097,31 @@ func (s *Store) ResolveSessionRolePerms(ctx context.Context, username string) (s
 		return "", 0, false, err
 	}
 	if exists {
-		return "admin", uint32(permViewBoard | permViewNodes | permManageNodes | permReviewRequests | permManagePoints | permManagePlatformUsers), true, nil
+		return "admin", uint32(permViewBoard | permViewNodes | permManageNodes | permReviewRequests | permManagePoints | permManagePlatformUsers | permPointsUsers | permPointsBatchFiltered | permPointsBatchAll | permPointsRecords | permPointsMonthly | permPointsSpecialRules), true, nil
 	}
 	var canViewBoard bool
 	var canViewNodes bool
 	var canManageNodes bool
 	var canManagePoints bool
+	var canPointsUsers bool
+	var canPointsBatchFiltered bool
+	var canPointsBatchAll bool
+	var canPointsRecords bool
+	var canPointsMonthly bool
+	var canPointsSpecialRules bool
 	var canReview bool
 	var canManagePlatformUsers bool
 	err := s.db.QueryRowContext(ctx, `
-SELECT can_view_board, can_view_nodes, COALESCE(can_manage_nodes,false), COALESCE(can_manage_points,false), can_review_requests, COALESCE(can_manage_platform_users,false)
+SELECT can_view_board, can_view_nodes, COALESCE(can_manage_nodes,false), COALESCE(can_manage_points,false),
+       COALESCE(can_points_users,false), COALESCE(can_points_batch_filtered,false), COALESCE(can_points_batch_all,false),
+       COALESCE(can_points_records,false), COALESCE(can_points_monthly,false), COALESCE(can_points_special_rules,false),
+       can_review_requests, COALESCE(can_manage_platform_users,false)
 FROM power_users
-WHERE username=$1`, username).Scan(&canViewBoard, &canViewNodes, &canManageNodes, &canManagePoints, &canReview, &canManagePlatformUsers)
+WHERE username=$1`, username).Scan(
+		&canViewBoard, &canViewNodes, &canManageNodes, &canManagePoints,
+		&canPointsUsers, &canPointsBatchFiltered, &canPointsBatchAll, &canPointsRecords, &canPointsMonthly, &canPointsSpecialRules,
+		&canReview, &canManagePlatformUsers,
+	)
 	if err == nil {
 		perms := uint32(0)
 		if canViewBoard {
@@ -8970,8 +9133,26 @@ WHERE username=$1`, username).Scan(&canViewBoard, &canViewNodes, &canManageNodes
 		if canManageNodes {
 			perms |= permManageNodes
 		}
-		if canManagePoints {
+		if canManagePoints || canPointsUsers || canPointsBatchFiltered || canPointsBatchAll || canPointsRecords || canPointsMonthly || canPointsSpecialRules {
 			perms |= permManagePoints
+		}
+		if canPointsUsers {
+			perms |= permPointsUsers
+		}
+		if canPointsBatchFiltered {
+			perms |= permPointsBatchFiltered
+		}
+		if canPointsBatchAll {
+			perms |= permPointsBatchAll
+		}
+		if canPointsRecords {
+			perms |= permPointsRecords
+		}
+		if canPointsMonthly {
+			perms |= permPointsMonthly
+		}
+		if canPointsSpecialRules {
+			perms |= permPointsSpecialRules
 		}
 		if canReview {
 			perms |= permReviewRequests
@@ -10261,6 +10442,7 @@ func (s *Store) LoadRegistrationRateStats(
 	email string,
 	ipSince time.Time,
 	emailSince time.Time,
+	ipFailureSince time.Time,
 ) (RegistrationRateStats, error) {
 	clientIP = strings.TrimSpace(clientIP)
 	email = strings.TrimSpace(strings.ToLower(email))
@@ -10278,6 +10460,21 @@ WHERE action='register_submit'
 		if last.Valid {
 			v := last.Time
 			out.LastIPAt = &v
+		}
+		var lastFailure sql.NullTime
+		if err := s.db.QueryRowContext(ctx, `
+SELECT COUNT(1), MAX(created_at)
+FROM registration_security_events
+WHERE action='register_submit'
+  AND decision='deny'
+  AND client_ip=$1
+  AND created_at >= $2
+  AND reason NOT IN ('cooldown_by_ip', 'rate_limited_by_ip_window', 'cooldown_by_email', 'rate_limited_by_email_window')`, clientIP, ipFailureSince).Scan(&out.RecentIPFailureCount, &lastFailure); err != nil {
+			return out, err
+		}
+		if lastFailure.Valid {
+			v := lastFailure.Time
+			out.LastIPFailureAt = &v
 		}
 		if out.IPCount >= registerIPLimit {
 			var unlockBase time.Time
@@ -10402,7 +10599,17 @@ SELECT
   e.student_id,
   e.user_agent,
   CASE
-    WHEN e.reason='cooldown_by_ip' THEN e.created_at + INTERVAL '%d seconds'
+    WHEN e.reason='cooldown_by_ip' THEN COALESCE((
+      SELECT x.created_at + INTERVAL '%d seconds'
+      FROM registration_security_events x
+      WHERE x.action='register_submit'
+        AND x.decision='deny'
+        AND x.client_ip=e.client_ip
+        AND x.event_id < e.event_id
+        AND x.reason NOT IN ('cooldown_by_ip', 'rate_limited_by_ip_window', 'cooldown_by_email', 'rate_limited_by_email_window')
+      ORDER BY x.event_id DESC
+      LIMIT 1
+    ), e.created_at + INTERVAL '%d seconds')
     WHEN e.reason='cooldown_by_email' THEN (
       SELECT x.created_at + INTERVAL '%d seconds'
       FROM registration_security_events x
@@ -10465,6 +10672,7 @@ AND ($3='' OR e.action=$3)
 AND ($4='' OR e.decision=$4)
 ORDER BY e.event_id DESC
 LIMIT $5`,
+		int(registerIPCooldown/time.Second),
 		int(registerIPCooldown/time.Second),
 		int(registerEmailCooldown/time.Second),
 		int(registerIPWindow/time.Second),
@@ -12549,12 +12757,30 @@ OFFSET $4`
 	return out, hasMore, nil
 }
 
+type AnnouncementAttachmentInput struct {
+	Filename    string
+	ContentType string
+	SizeBytes   int64
+	SHA256      string
+	Data        []byte
+}
+
+type AnnouncementAttachmentFile struct {
+	Filename    string
+	ContentType string
+	SizeBytes   int64
+	SHA256      string
+	Data        []byte
+}
+
 func (s *Store) ListAnnouncements(ctx context.Context, limit int) ([]Announcement, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 50
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT announcement_id, title, content, pinned, created_by, created_at, updated_at
+SELECT announcement_id, title, content, pinned,
+       attachment_filename, attachment_content_type, attachment_size_bytes, attachment_sha256,
+       created_by, created_at, updated_at
 FROM announcements
 ORDER BY pinned DESC, created_at DESC
 LIMIT $1`, limit)
@@ -12565,7 +12791,19 @@ LIMIT $1`, limit)
 	out := make([]Announcement, 0)
 	for rows.Next() {
 		var a Announcement
-		if err := rows.Scan(&a.AnnouncementID, &a.Title, &a.Content, &a.Pinned, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		if err := rows.Scan(
+			&a.AnnouncementID,
+			&a.Title,
+			&a.Content,
+			&a.Pinned,
+			&a.AttachmentFilename,
+			&a.AttachmentContentType,
+			&a.AttachmentSizeBytes,
+			&a.AttachmentSHA256,
+			&a.CreatedBy,
+			&a.CreatedAt,
+			&a.UpdatedAt,
+		); err != nil {
 			return nil, err
 		}
 		normalizeAnnouncementTimes(&a)
@@ -12574,7 +12812,7 @@ LIMIT $1`, limit)
 	return out, rows.Err()
 }
 
-func (s *Store) CreateAnnouncement(ctx context.Context, title string, content string, pinned bool, createdBy string) error {
+func (s *Store) CreateAnnouncement(ctx context.Context, title string, content string, pinned bool, createdBy string, attachment *AnnouncementAttachmentInput) error {
 	title = strings.TrimSpace(title)
 	content = strings.TrimSpace(content)
 	createdBy = strings.TrimSpace(createdBy)
@@ -12584,10 +12822,49 @@ func (s *Store) CreateAnnouncement(ctx context.Context, title string, content st
 	if createdBy == "" {
 		createdBy = "admin"
 	}
+	var filename, contentType, sha string
+	var size int64
+	var data []byte
+	if attachment != nil && len(attachment.Data) > 0 {
+		filename = strings.TrimSpace(attachment.Filename)
+		contentType = strings.TrimSpace(attachment.ContentType)
+		sha = strings.TrimSpace(attachment.SHA256)
+		size = attachment.SizeBytes
+		data = attachment.Data
+	}
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO announcements(title, content, pinned, created_by)
-VALUES($1,$2,$3,$4)`, title, content, pinned, createdBy)
+INSERT INTO announcements(
+  title, content, pinned,
+  attachment_filename, attachment_content_type, attachment_size_bytes, attachment_sha256, attachment_data,
+  created_by
+)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+		title, content, pinned, filename, contentType, size, sha, data, createdBy)
 	return err
+}
+
+func (s *Store) GetAnnouncementAttachment(ctx context.Context, id int) (AnnouncementAttachmentFile, error) {
+	var out AnnouncementAttachmentFile
+	if id <= 0 {
+		return out, errors.New("id 不合法")
+	}
+	err := s.db.QueryRowContext(ctx, `
+SELECT attachment_filename, attachment_content_type, attachment_size_bytes, attachment_sha256, attachment_data
+FROM announcements
+WHERE announcement_id=$1 AND attachment_data IS NOT NULL`, id).Scan(
+		&out.Filename,
+		&out.ContentType,
+		&out.SizeBytes,
+		&out.SHA256,
+		&out.Data,
+	)
+	if err != nil {
+		return out, err
+	}
+	if len(out.Data) == 0 {
+		return out, sql.ErrNoRows
+	}
+	return out, nil
 }
 
 func (s *Store) DeleteAnnouncement(ctx context.Context, id int) error {
@@ -12735,6 +13012,7 @@ union_users AS (
     ua.platform_uid,
     TRUE AS is_platform_user,
     COALESCE(NULLIF(ua.role, ''), 'user') AS role,
+    ua.created_at,
     FALSE AS can_view_board,
     FALSE AS can_view_nodes,
     FALSE AS can_review_requests,
@@ -12756,6 +13034,7 @@ union_users AS (
     COALESCE(ua.platform_uid, aa.platform_uid) AS platform_uid,
     FALSE AS is_platform_user,
     'admin' AS role,
+    COALESCE(ua.created_at, aa.created_at) AS created_at,
     TRUE AS can_view_board,
     TRUE AS can_view_nodes,
     TRUE AS can_review_requests,
@@ -12776,6 +13055,7 @@ union_users AS (
     COALESCE(ua.platform_uid, pu.platform_uid) AS platform_uid,
     (ua.username IS NOT NULL) AS is_platform_user,
     'power_user' AS role,
+    COALESCE(ua.created_at, pu.created_at) AS created_at,
     pu.can_view_board,
     pu.can_view_nodes,
     pu.can_review_requests,
@@ -12791,7 +13071,7 @@ union_users AS (
   FROM power_users pu
   LEFT JOIN user_accounts ua ON ua.username = pu.username
 )
-SELECT uu.username, uu.platform_uid, uu.is_platform_user, uu.role, uu.can_view_board, uu.can_view_nodes, uu.can_review_requests, uu.can_manage_platform_users, uu.two_factor_enabled,
+SELECT uu.username, uu.platform_uid, uu.is_platform_user, uu.role, uu.created_at, uu.can_view_board, uu.can_view_nodes, uu.can_review_requests, uu.can_manage_platform_users, uu.two_factor_enabled,
        uu.email, uu.student_id, uu.real_name, uu.advisor, uu.expected_graduation_year, uu.expected_graduation_month, uu.phone,
        COALESCE(u.balance, 0) AS general_balance,
        COALESCE(u.carryover_balance, 0) AS carryover_balance,
@@ -12814,7 +13094,7 @@ LIMIT $1`, limit)
 		var d AdminUserDetail
 		var uidRaw sql.NullInt64
 		if err := rows.Scan(
-			&d.Username, &uidRaw, &d.IsPlatformUser, &d.Role, &d.CanViewBoard, &d.CanViewNodes, &d.CanReviewRequest, &d.CanManagePlatformUsers, &d.TwoFactorEnabled,
+			&d.Username, &uidRaw, &d.IsPlatformUser, &d.Role, &d.CreatedAt, &d.CanViewBoard, &d.CanViewNodes, &d.CanReviewRequest, &d.CanManagePlatformUsers, &d.TwoFactorEnabled,
 			&d.Email, &d.StudentID, &d.RealName, &d.Advisor, &d.ExpectedGradYear, &d.ExpectedGradMonth, &d.Phone,
 			&d.Balance, &d.CarryoverBalance, &d.ExclusiveBalance, &d.TotalBalance, &d.Status, &d.UsageRecords, &d.TotalCost, &d.LastUsageAt,
 		); err != nil {
@@ -12884,7 +13164,13 @@ SELECT
   COALESCE(pu.can_view_board, FALSE) AS can_view_board,
   COALESCE(pu.can_view_nodes, FALSE) AS can_view_nodes,
   COALESCE(pu.can_manage_nodes, FALSE) AS can_manage_nodes,
-  COALESCE(pu.can_manage_points, FALSE) AS can_manage_points,
+  (COALESCE(pu.can_manage_points,false) OR COALESCE(pu.can_points_users,false) OR COALESCE(pu.can_points_batch_filtered,false) OR COALESCE(pu.can_points_batch_all,false) OR COALESCE(pu.can_points_records,false) OR COALESCE(pu.can_points_monthly,false) OR COALESCE(pu.can_points_special_rules,false)) AS can_manage_points,
+  COALESCE(pu.can_points_users, FALSE) AS can_points_users,
+  COALESCE(pu.can_points_batch_filtered, FALSE) AS can_points_batch_filtered,
+  COALESCE(pu.can_points_batch_all, FALSE) AS can_points_batch_all,
+  COALESCE(pu.can_points_records, FALSE) AS can_points_records,
+  COALESCE(pu.can_points_monthly, FALSE) AS can_points_monthly,
+  COALESCE(pu.can_points_special_rules, FALSE) AS can_points_special_rules,
   COALESCE(pu.can_review_requests, FALSE) AS can_review_requests,
   COALESCE(pu.can_manage_platform_users, FALSE) AS can_manage_platform_users
 FROM user_accounts ua
@@ -12931,6 +13217,12 @@ LIMIT $1`, limit)
 			&row.CanViewNodes,
 			&row.CanManageNodes,
 			&row.CanManagePoints,
+			&row.CanPointsUsers,
+			&row.CanPointsBatchFiltered,
+			&row.CanPointsBatchAll,
+			&row.CanPointsRecords,
+			&row.CanPointsMonthly,
+			&row.CanPointsSpecialRules,
 			&row.CanReviewRequests,
 			&row.CanManagePlatformUsers,
 		); err != nil {
@@ -13064,6 +13356,16 @@ FOR UPDATE`, in.Username).Scan(&existingRole, &existingUID); err != nil {
 	if in.CanManageNodes {
 		in.CanViewNodes = true
 	}
+	in.CanManagePoints, in.CanPointsUsers, in.CanPointsBatchFiltered, in.CanPointsBatchAll, in.CanPointsRecords, in.CanPointsMonthly, in.CanPointsSpecialRules =
+		normalizePowerUserPointsPerms(
+			in.CanManagePoints,
+			in.CanPointsUsers,
+			in.CanPointsBatchFiltered,
+			in.CanPointsBatchAll,
+			in.CanPointsRecords,
+			in.CanPointsMonthly,
+			in.CanPointsSpecialRules,
+		)
 
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO user_accounts(
@@ -13118,11 +13420,12 @@ ON CONFLICT (username) DO UPDATE SET
 	if in.Role == "power_user" {
 		if _, err := tx.ExecContext(ctx, `
 INSERT INTO power_users(
-  username, password_hash, platform_uid, can_view_board, can_view_nodes, can_manage_nodes, can_manage_points, can_review_requests,
-  can_manage_platform_users, created_by, updated_by, last_login_at, two_factor_enabled, two_factor_secret, two_factor_pending_secret,
-  created_at, updated_at
+  username, password_hash, platform_uid, can_view_board, can_view_nodes, can_manage_nodes, can_manage_points,
+  can_points_users, can_points_batch_filtered, can_points_batch_all, can_points_records, can_points_monthly,
+  can_points_special_rules, can_review_requests, can_manage_platform_users, created_by, updated_by, last_login_at,
+  two_factor_enabled, two_factor_secret, two_factor_pending_secret, created_at, updated_at
 )
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,$11,$12,$13,$14,$15,$16)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$16,$17,$18,$19,$20,$21,$22)
 ON CONFLICT (username) DO UPDATE SET
   password_hash=EXCLUDED.password_hash,
   platform_uid=EXCLUDED.platform_uid,
@@ -13130,6 +13433,12 @@ ON CONFLICT (username) DO UPDATE SET
   can_view_nodes=EXCLUDED.can_view_nodes,
   can_manage_nodes=EXCLUDED.can_manage_nodes,
   can_manage_points=EXCLUDED.can_manage_points,
+  can_points_users=EXCLUDED.can_points_users,
+  can_points_batch_filtered=EXCLUDED.can_points_batch_filtered,
+  can_points_batch_all=EXCLUDED.can_points_batch_all,
+  can_points_records=EXCLUDED.can_points_records,
+  can_points_monthly=EXCLUDED.can_points_monthly,
+  can_points_special_rules=EXCLUDED.can_points_special_rules,
   can_review_requests=EXCLUDED.can_review_requests,
   can_manage_platform_users=EXCLUDED.can_manage_platform_users,
   updated_by=EXCLUDED.updated_by,
@@ -13139,8 +13448,9 @@ ON CONFLICT (username) DO UPDATE SET
   two_factor_pending_secret=EXCLUDED.two_factor_pending_secret,
   created_at=EXCLUDED.created_at,
   updated_at=EXCLUDED.updated_at`,
-			in.Username, in.PasswordHash, finalUID, in.CanViewBoard, in.CanViewNodes, in.CanManageNodes, in.CanManagePoints, in.CanReviewRequests,
-			in.CanManagePlatformUsers, operator, in.LastLoginAt, in.TwoFactorEnabled, in.TwoFactorSecret, in.TwoFactorPendingSecret, in.AccountCreatedAt, in.AccountUpdatedAt,
+			in.Username, in.PasswordHash, finalUID, in.CanViewBoard, in.CanViewNodes, in.CanManageNodes, in.CanManagePoints,
+			in.CanPointsUsers, in.CanPointsBatchFiltered, in.CanPointsBatchAll, in.CanPointsRecords, in.CanPointsMonthly, in.CanPointsSpecialRules,
+			in.CanReviewRequests, in.CanManagePlatformUsers, operator, in.LastLoginAt, in.TwoFactorEnabled, in.TwoFactorSecret, in.TwoFactorPendingSecret, in.AccountCreatedAt, in.AccountUpdatedAt,
 		); err != nil {
 			return false, false, false, err
 		}
@@ -13371,7 +13681,7 @@ func (s *Store) ListSpecialMonthlyPointsRules(ctx context.Context, limit int) ([
 		limit = 1000
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT username, monthly_points, enabled, updated_by, created_at, updated_at
+SELECT username, monthly_points, enabled, note, updated_by, created_at, updated_at
 FROM special_monthly_points_rules
 ORDER BY username
 LIMIT $1`, limit)
@@ -13382,7 +13692,7 @@ LIMIT $1`, limit)
 	out := make([]SpecialMonthlyPointsRule, 0)
 	for rows.Next() {
 		var v SpecialMonthlyPointsRule
-		if err := rows.Scan(&v.Username, &v.MonthlyPoints, &v.Enabled, &v.UpdatedBy, &v.CreatedAt, &v.UpdatedAt); err != nil {
+		if err := rows.Scan(&v.Username, &v.MonthlyPoints, &v.Enabled, &v.Note, &v.UpdatedBy, &v.CreatedAt, &v.UpdatedAt); err != nil {
 			return nil, err
 		}
 		normalizeSpecialMonthlyPointsRuleTimes(&v)
@@ -13391,8 +13701,9 @@ LIMIT $1`, limit)
 	return out, rows.Err()
 }
 
-func (s *Store) UpsertSpecialMonthlyPointsRule(ctx context.Context, username string, monthlyPoints float64, enabled bool, updatedBy string) error {
+func (s *Store) UpsertSpecialMonthlyPointsRule(ctx context.Context, username string, monthlyPoints float64, enabled bool, note string, updatedBy string) error {
 	username = strings.TrimSpace(username)
+	note = strings.TrimSpace(note)
 	updatedBy = strings.TrimSpace(updatedBy)
 	if username == "" {
 		return errors.New("username 不能为空")
@@ -13404,13 +13715,14 @@ func (s *Store) UpsertSpecialMonthlyPointsRule(ctx context.Context, username str
 		updatedBy = "admin"
 	}
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO special_monthly_points_rules(username, monthly_points, enabled, updated_by)
-VALUES($1,$2,$3,$4)
+INSERT INTO special_monthly_points_rules(username, monthly_points, enabled, note, updated_by)
+VALUES($1,$2,$3,$4,$5)
 ON CONFLICT (username) DO UPDATE SET
   monthly_points=EXCLUDED.monthly_points,
   enabled=EXCLUDED.enabled,
+  note=EXCLUDED.note,
   updated_by=EXCLUDED.updated_by,
-  updated_at=NOW()`, username, monthlyPoints, enabled, updatedBy)
+  updated_at=NOW()`, username, monthlyPoints, enabled, note, updatedBy)
 	return err
 }
 

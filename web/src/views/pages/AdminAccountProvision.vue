@@ -53,8 +53,17 @@
                 clearable
                 placeholder="例如 60000"
                 :fetch-suggestions="queryNodeOptions"
+                @change="onProvisionNodeChange"
+                @blur="onProvisionNodeBlur"
                 @select="onProvisionNodeSelect"
-              />
+              >
+                <template #default="{ item }">
+                  <div class="node-option-item">
+                    <div class="node-option-title">{{ item.value }}</div>
+                    <div class="node-option-desc">{{ item.description }}</div>
+                  </div>
+                </template>
+              </el-autocomplete>
             </el-form-item>
           </el-col>
           <el-col :span="8">
@@ -80,6 +89,38 @@
           </el-col>
         </el-row>
       </el-form>
+      <div class="provision-node-preview">
+        <div class="preview-head">
+          <div class="section-title-wrap">
+            <span class="section-icon tone-node"><el-icon><Monitor /></el-icon></span>
+            <span>已选节点核对信息</span>
+          </div>
+        </div>
+        <el-empty
+          v-if="!provisionForm.node_id.trim()"
+          description="请选择节点后自动展示 CPU / GPU / 硬盘 信息，避免开通到错误节点"
+          :image-size="58"
+        />
+        <el-alert
+          v-else-if="!selectedProvisionNode"
+          title="未找到该节点的最新上报信息，请检查节点编号是否正确，或先到“节点状态”页确认该节点已接入。"
+          type="warning"
+          show-icon
+          :closable="false"
+          class="mb"
+        />
+        <el-descriptions v-else :column="3" border size="small" class="preview-desc">
+          <el-descriptions-item label="节点编号">{{ selectedProvisionNode.node_id }}</el-descriptions-item>
+          <el-descriptions-item label="节点IP">{{ selectedProvisionNode.node_ip || "-" }}</el-descriptions-item>
+          <el-descriptions-item label="最后心跳">{{ fmtTime(selectedProvisionNode.last_seen_at) }}</el-descriptions-item>
+          <el-descriptions-item label="CPU 型号">{{ selectedProvisionNode.cpu_model || "-" }}</el-descriptions-item>
+          <el-descriptions-item label="CPU 数量">{{ fmtNodeCount(selectedProvisionNode.cpu_count, "核") }}</el-descriptions-item>
+          <el-descriptions-item label="GPU 型号">{{ selectedProvisionNode.gpu_model || "-" }}</el-descriptions-item>
+          <el-descriptions-item label="GPU 数量">{{ fmtNodeCount(selectedProvisionNode.gpu_count, "张") }}</el-descriptions-item>
+          <el-descriptions-item label="硬盘总量">{{ fmtNodeGB(selectedProvisionNode.disk_total_gb) }}</el-descriptions-item>
+          <el-descriptions-item label="硬盘已用">{{ fmtNodeGB(selectedProvisionNode.disk_used_gb) }}</el-descriptions-item>
+        </el-descriptions>
+      </div>
       <div class="provision-user-preview">
         <div class="preview-head">
           <div class="section-title-wrap">
@@ -392,6 +433,7 @@ import {
   type AdminAccountProvisionLog,
   type AdminAccountProvisionResp,
   type AdminUserDetail,
+  type NodeStatus,
   type PlatformUserDetail,
   type UserNodeAccount,
   type UserRequest,
@@ -401,14 +443,21 @@ import { authState } from "../../lib/authStore";
 import { formatServerDateTime, toServerEpochMs } from "../../lib/time";
 import { writeClipboardText } from "../../lib/clipboard";
 import PlatformUserDetailDialog from "../../components/PlatformUserDetailDialog.vue";
-import { Clock, Document, Key, UserFilled } from "@element-plus/icons-vue";
+import { Clock, Document, Key, Monitor, UserFilled } from "@element-plus/icons-vue";
 
 const pageLoading = ref(false);
 const provisioning = ref(false);
 const error = ref("");
 const success = ref("");
 const billingOptions = ref<string[]>([]);
-const nodeOptions = ref<string[]>([]);
+type ProvisionNodeOption = {
+  value: string;
+  description: string;
+  keywords: string;
+};
+
+const nodeOptions = ref<ProvisionNodeOption[]>([]);
+const nodeDetailByID = ref<Record<string, NodeStatus>>({});
 const nodeIPByID = ref<Record<string, string>>({});
 const platformUsers = ref<AdminUserDetail[]>([]);
 const profileVisible = ref(false);
@@ -458,6 +507,11 @@ const pendingAlertTitle = computed(() => {
   const users = pendingOpenRequestUsersText.value;
   return users ? `${base}（申请人：${users}）` : base;
 });
+const selectedProvisionNode = computed<NodeStatus | null>(() => {
+  const nodeID = String(provisionForm.node_id || "").trim();
+  if (!nodeID) return null;
+  return nodeDetailByID.value[nodeID] || null;
+});
 
 function client() {
   return new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
@@ -501,6 +555,18 @@ function fmtTime(v: string): string {
 
 function fmt2(v: number): string {
   return Number(v || 0).toFixed(2);
+}
+
+function fmtNodeCount(v?: number, unit = ""): string {
+  const n = Number(v ?? 0);
+  if (!Number.isFinite(n) || n <= 0) return "-";
+  return `${n}${unit}`;
+}
+
+function fmtNodeGB(v?: number): string {
+  const n = Number(v ?? 0);
+  if (!Number.isFinite(n) || n <= 0) return "-";
+  return `${n.toFixed(n >= 100 ? 0 : 1)} GB`;
 }
 
 function fmtGrad(year: number, month: number): string {
@@ -596,8 +662,13 @@ function queryBillingOptions(queryString: string, cb: (items: Array<{ value: str
   queryOptions(billingOptions.value, queryString, cb);
 }
 
-function queryNodeOptions(queryString: string, cb: (items: Array<{ value: string }>) => void) {
-  queryOptions(nodeOptions.value, queryString, cb);
+function queryNodeOptions(queryString: string, cb: (items: ProvisionNodeOption[]) => void) {
+  const q = String(queryString || "").trim().toLowerCase();
+  cb(
+    nodeOptions.value
+      .filter((item) => (q ? item.keywords.includes(q) : true))
+      .slice(0, 40),
+  );
 }
 
 function openProfile(username: string) {
@@ -640,6 +711,7 @@ function applicantAdvisor(username: string): string {
 function toPlatformUserDetailFromAdminRow(row: AdminUserDetail): PlatformUserDetail {
   return {
     username: row.username,
+    platform_uid: row.platform_uid,
     email: row.email,
     real_name: row.real_name,
     student_id: row.student_id,
@@ -653,6 +725,7 @@ function toPlatformUserDetailFromAdminRow(row: AdminUserDetail): PlatformUserDet
     exclusive_balance: Number(row.exclusive_balance || 0),
     total_balance: Number(row.total_balance || (Number(row.balance || 0) + Number(row.exclusive_balance || 0))),
     status: row.status,
+    created_at: row.created_at,
     node_accounts: row.node_accounts || [],
   };
 }
@@ -727,18 +800,47 @@ function onProvisionNodeSelect(item: { value?: string }) {
   applyProvisionNodeDefaults(provisionForm.node_id);
 }
 
+function onProvisionNodeChange() {
+  provisionActionError.value = "";
+  provisionActionSuccess.value = "";
+  applyProvisionNodeDefaults(provisionForm.node_id);
+}
+
+function onProvisionNodeBlur() {
+  applyProvisionNodeDefaults(provisionForm.node_id);
+}
+
+function buildProvisionNodeDescription(node: NodeStatus): string {
+  const parts = [
+    `CPU ${fmtNodeCount(node.cpu_count, "核")}`,
+    `GPU ${fmtNodeCount(node.gpu_count, "张")}`,
+    `硬盘 ${fmtNodeGB(node.disk_total_gb)}`,
+  ].filter((part) => !part.endsWith("-"));
+  const ip = String(node.node_ip || "").trim();
+  if (ip) parts.push(ip);
+  return parts.join(" | ") || "暂无资源摘要";
+}
+
 async function loadNodeOptions() {
   const r = await client().adminNodes(3000);
-  const ids: string[] = [];
+  const items: ProvisionNodeOption[] = [];
   const ipMap: Record<string, string> = {};
+  const detailMap: Record<string, NodeStatus> = {};
   for (const n of r.nodes ?? []) {
     const id = String(n.node_id || "").trim();
     if (!id) continue;
-    ids.push(id);
+    const description = buildProvisionNodeDescription(n);
+    items.push({
+      value: id,
+      description,
+      keywords: `${id} ${description} ${String(n.cpu_model || "")} ${String(n.gpu_model || "")}`.toLowerCase(),
+    });
     ipMap[id] = String(n.node_ip || "").trim();
+    detailMap[id] = n;
   }
-  nodeOptions.value = uniqSorted(ids);
+  nodeOptions.value = items.sort((a, b) => a.value.localeCompare(b.value, "zh-Hans-CN", { numeric: true, sensitivity: "base" }));
   nodeIPByID.value = ipMap;
+  nodeDetailByID.value = detailMap;
 }
 
 async function loadPlatformUsers() {
@@ -1141,6 +1243,10 @@ reloadAll();
   color: var(--el-color-info);
 }
 
+.tone-node {
+  color: var(--el-color-primary);
+}
+
 .mb {
   margin-bottom: 12px;
 }
@@ -1151,10 +1257,28 @@ reloadAll();
 }
 
 .preview-desc,
+.provision-node-preview,
 .provision-user-preview,
 .pending-open-banner,
 .note-user-detail {
   margin-bottom: 12px;
+}
+
+.node-option-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.35;
+}
+
+.node-option-title {
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.node-option-desc {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 
 .note-user-lines {

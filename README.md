@@ -325,11 +325,13 @@ sudo visudo -cf /etc/sudoers.d/gpu-deploy
 ```bash
 # "60020 60000 60002 60005 60014 60016 60001" 第一批节点
 # "60006 60010" 第二批节点
-# "60020 60018 60017 60015 60014 60012 60010 60008 60007 60006 60005 60004 60003 60002 60000" 全部节点
+# "60020 60018 60017 60015 60014 60012 60010 60008 60007 60006 60005 60004 60003 60002 60001 60000" 全部节点
 # 60013 60009 60003 特殊节点
 # NODE_IDS="60020" bash ./scripts/distribute_workspace.sh
 # 一键并发分发并“仅重装已安装过 agent 的节点”，结果写入当前目录“计算节点部署情况.txt”
 # cd /home/gpuops/gpu-ops && CONTROLLER_URL=http://192.0.2.10:60039 AGENT_TOKEN=<replace-with-agent-token> SSH_GUARD_EXCLUDE_USERS="root gpuops" ENABLE_SYSTEM_CPU_RESERVE=1 SYSTEM_CPU_RESERVE_PERCENT=5 ENABLE_SYSTEM_MEMORY_RESERVE=1 SYSTEM_MEMORY_RESERVE_GB=8 PARALLEL=8 bash scripts/deploy_installed_nodes_only.sh
+# 当只部署 60003 时，SSH Guard 排除用户需要额外包含 operator：
+# cd /home/gpuops/gpu-ops && NODE_IDS="60003" CONTROLLER_URL=http://192.0.2.10:60039 AGENT_TOKEN=<replace-with-agent-token> SSH_GUARD_EXCLUDE_USERS="root gpuops operator" ENABLE_SYSTEM_CPU_RESERVE=1 SYSTEM_CPU_RESERVE_PERCENT=5 ENABLE_SYSTEM_MEMORY_RESERVE=1 SYSTEM_MEMORY_RESERVE_GB=8 PARALLEL=8 bash scripts/deploy_installed_nodes_only.sh
 
 # 控制节点先构建前端
 cd /home/gpuops/gpu-ops/web && pnpm build
@@ -342,7 +344,7 @@ bash ./scripts/distribute_workspace.sh
 # 只对指定节点分发并重装（示例：60000）
 # 注意：SYSTEM_MEMORY_RESERVE_GB 的含义是“给系统预留多少内存”，不是“把用户限制到多少内存”
 cd /home/gpuops/gpu-ops && \
-  NODE_IDS="60000" \
+  NODE_IDS="60020 60018 60017 60015 60014 60012 60010 60008 60007 60006 60005 60004 60003 60002 60001 60000" \
   CONTROLLER_URL=http://192.0.2.10:60039 \
   AGENT_TOKEN=<replace-with-agent-token> \
   SSH_GUARD_EXCLUDE_USERS="root gpuops" \

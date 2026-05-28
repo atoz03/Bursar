@@ -45,6 +45,12 @@ export type AuthMeResp = {
   can_view_nodes?: boolean;
   can_manage_nodes?: boolean;
   can_manage_points?: boolean;
+  can_points_users?: boolean;
+  can_points_batch_filtered?: boolean;
+  can_points_batch_all?: boolean;
+  can_points_records?: boolean;
+  can_points_monthly?: boolean;
+  can_points_special_rules?: boolean;
   can_review_requests?: boolean;
   can_manage_platform_users?: boolean;
   expires_at?: string;
@@ -442,6 +448,7 @@ export type SpecialMonthlyPointsRule = {
   username: string;
   monthly_points: number;
   enabled: boolean;
+  note: string;
   updated_by: string;
   created_at: string;
   updated_at: string;
@@ -797,6 +804,10 @@ export type Announcement = {
   title: string;
   content: string;
   pinned: boolean;
+  attachment_filename?: string;
+  attachment_content_type?: string;
+  attachment_size_bytes?: number;
+  attachment_sha256?: string;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -817,6 +828,7 @@ export type AdminUserDetail = {
   platform_uid?: number;
   is_platform_user?: boolean;
   role: string;
+  created_at: string;
   can_view_board: boolean;
   can_view_nodes: boolean;
   can_review_requests: boolean;
@@ -957,6 +969,12 @@ export type PowerUser = {
   can_view_nodes: boolean;
   can_manage_nodes: boolean;
   can_manage_points: boolean;
+  can_points_users: boolean;
+  can_points_batch_filtered: boolean;
+  can_points_batch_all: boolean;
+  can_points_records: boolean;
+  can_points_monthly: boolean;
+  can_points_special_rules: boolean;
   can_review_requests: boolean;
   can_manage_platform_users: boolean;
   created_by: string;
@@ -1274,6 +1292,10 @@ export class ApiClient {
 
   async announcements(limit = 20): Promise<{ announcements: Announcement[] }> {
     return await this.getJson(`/api/announcements?limit=${limit}`);
+  }
+
+  announcementAttachmentUrl(id: number): string {
+    return this.url(`/api/announcements/${encodeURIComponent(String(id))}/attachment`);
   }
 
   async guideline(): Promise<UserGuidelineResp> {
@@ -2265,7 +2287,7 @@ export class ApiClient {
     return await this.getJson("/api/admin/points/special-rules", this.adminHeaders());
   }
 
-  async adminPointsUpsertSpecialRule(payload: { username: string; monthly_points: number; enabled: boolean }): Promise<{ ok: boolean }> {
+  async adminPointsUpsertSpecialRule(payload: { username: string; monthly_points: number; enabled: boolean; note: string }): Promise<{ ok: boolean }> {
     return await this.postJson("/api/admin/points/special-rules", payload, this.adminHeaders());
   }
 
@@ -2332,6 +2354,7 @@ export class ApiClient {
     email_window_seconds: number;
     email_limit: number;
     ip_cooldown_seconds: number;
+    ip_cooldown_failures: number;
     email_cooldown_seconds: number;
     captcha_ttl_seconds: number;
     allowed_email_domains: string[];
@@ -2429,8 +2452,26 @@ export class ApiClient {
     return await this.postJson(`/api/admin/profile-change-requests/${requestId}/reject`, {}, this.adminHeaders());
   }
 
-  async adminCreateAnnouncement(payload: { title: string; content: string; pinned: boolean }): Promise<{ ok: boolean }> {
-    return await this.postJson(`/api/admin/announcements`, payload, this.adminHeaders());
+  async adminCreateAnnouncement(payload: { title: string; content: string; pinned: boolean; attachment?: File | null }): Promise<{ ok: boolean }> {
+    if (!payload.attachment) {
+      return await this.postJson(`/api/admin/announcements`, payload, this.adminHeaders());
+    }
+    const form = new FormData();
+    form.set("title", payload.title);
+    form.set("content", payload.content);
+    form.set("pinned", payload.pinned ? "1" : "0");
+    form.set("attachment", payload.attachment);
+    const res = await fetch(this.url(`/api/admin/announcements`), {
+      method: "POST",
+      headers: { ...this.adminHeaders(), ...this.csrfHeaders() },
+      body: form,
+      credentials: "include",
+    });
+    if (!res.ok) {
+      const text = await this.readText(res);
+      throw normalizeServerError(res.status, text);
+    }
+    return (await res.json()) as { ok: boolean };
   }
 
   async adminDeleteAnnouncement(id: number): Promise<{ ok: boolean }> {
@@ -2932,6 +2973,12 @@ export class ApiClient {
     can_view_nodes: boolean;
     can_manage_nodes: boolean;
     can_manage_points: boolean;
+    can_points_users: boolean;
+    can_points_batch_filtered: boolean;
+    can_points_batch_all: boolean;
+    can_points_records: boolean;
+    can_points_monthly: boolean;
+    can_points_special_rules: boolean;
     can_review_requests: boolean;
     can_manage_platform_users: boolean;
   }): Promise<{ ok: boolean }> {
@@ -2944,6 +2991,12 @@ export class ApiClient {
     can_view_nodes: boolean;
     can_manage_nodes: boolean;
     can_manage_points: boolean;
+    can_points_users: boolean;
+    can_points_batch_filtered: boolean;
+    can_points_batch_all: boolean;
+    can_points_records: boolean;
+    can_points_monthly: boolean;
+    can_points_special_rules: boolean;
     can_review_requests: boolean;
     can_manage_platform_users: boolean;
   }): Promise<{ ok: boolean }> {
@@ -2957,6 +3010,12 @@ export class ApiClient {
       can_view_nodes: boolean;
       can_manage_nodes: boolean;
       can_manage_points: boolean;
+      can_points_users: boolean;
+      can_points_batch_filtered: boolean;
+      can_points_batch_all: boolean;
+      can_points_records: boolean;
+      can_points_monthly: boolean;
+      can_points_special_rules: boolean;
       can_review_requests: boolean;
       can_manage_platform_users: boolean;
     },

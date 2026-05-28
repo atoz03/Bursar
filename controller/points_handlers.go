@@ -48,6 +48,7 @@ type adminPointsSpecialRuleReq struct {
 	Username      string  `json:"username"`
 	MonthlyPoints float64 `json:"monthly_points"`
 	Enabled       bool    `json:"enabled"`
+	Note          string  `json:"note"`
 }
 
 type adminPointsMonthlyResetReq struct {
@@ -1277,6 +1278,7 @@ func (s *Server) handleAdminPointsSpecialRulesUpsert(c *gin.Context) {
 		return
 	}
 	req.Username = strings.TrimSpace(req.Username)
+	req.Note = strings.TrimSpace(req.Note)
 	if req.Username == "" {
 		c.JSON(400, gin.H{"error": "username 不能为空"})
 		return
@@ -1285,7 +1287,7 @@ func (s *Server) handleAdminPointsSpecialRulesUpsert(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "monthly_points 不能为负数"})
 		return
 	}
-	if err := s.store.UpsertSpecialMonthlyPointsRule(c.Request.Context(), req.Username, req.MonthlyPoints, req.Enabled, s.currentOperator(c)); err != nil {
+	if err := s.store.UpsertSpecialMonthlyPointsRule(c.Request.Context(), req.Username, req.MonthlyPoints, req.Enabled, req.Note, s.currentOperator(c)); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}

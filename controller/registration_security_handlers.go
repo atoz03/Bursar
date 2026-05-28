@@ -70,6 +70,7 @@ func (s *Server) handleAdminRegisterSecurityPolicy(c *gin.Context) {
 		"email_window_seconds":     int(registerEmailWindow / time.Second),
 		"email_limit":              registerEmailLimit,
 		"ip_cooldown_seconds":      int(registerIPCooldown / time.Second),
+		"ip_cooldown_failures":     registerIPCooldownFailures,
 		"email_cooldown_seconds":   int(registerEmailCooldown / time.Second),
 		"captcha_ttl_seconds":      int(registerCaptchaTTL / time.Second),
 		"captcha_option_count":     registerCaptchaOptionCount,
