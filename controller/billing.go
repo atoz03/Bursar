@@ -65,8 +65,18 @@ func CalculateProcessCostWithPolicy(
 	globalPrices PriceIndex,
 	defaultPricePerMinute float64,
 ) float64 {
+	return CalculateGPUUsageCostWithPolicy(proc.GPUUsage, nodeModelPrices, nodePricePerMinute, globalPrices, defaultPricePerMinute)
+}
+
+func CalculateGPUUsageCostWithPolicy(
+	gpuUsage []GPUUsage,
+	nodeModelPrices PriceIndex,
+	nodePricePerMinute *float64,
+	globalPrices PriceIndex,
+	defaultPricePerMinute float64,
+) float64 {
 	cost := 0.0
-	for _, g := range proc.GPUUsage {
+	for _, g := range gpuUsage {
 		if p, ok := nodeModelPrices.MatchPrice(g.GPUModel); ok {
 			cost += p
 			continue
@@ -82,6 +92,32 @@ func CalculateProcessCostWithPolicy(
 		cost += defaultPricePerMinute
 	}
 	return math.Round(cost*10000) / 10000
+}
+
+func GPUUsageBillingKey(g GPUUsage) string {
+	if busID := strings.TrimSpace(g.GPUBusID); busID != "" {
+		return "bus:" + strings.ToLower(busID)
+	}
+	if g.GPUID >= 0 {
+		return fmt.Sprintf("id:%d", g.GPUID)
+	}
+	return "model:" + strings.TrimSpace(g.GPUModel)
+}
+
+func ChargeableGPUUsageForBilling(gpuUsage []GPUUsage, seen map[string]struct{}) []GPUUsage {
+	if len(gpuUsage) == 0 {
+		return nil
+	}
+	out := make([]GPUUsage, 0, len(gpuUsage))
+	for _, g := range gpuUsage {
+		key := GPUUsageBillingKey(g)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, g)
+	}
+	return out
 }
 
 func StatusForBalance(balance, warningThreshold, limitedThreshold float64) string {

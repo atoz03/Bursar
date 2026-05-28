@@ -29,7 +29,12 @@
         <el-form-item><el-checkbox v-model="createForm.can_view_board">可看运营看板</el-checkbox></el-form-item>
         <el-form-item><el-checkbox v-model="createForm.can_view_nodes">可看节点状态</el-checkbox></el-form-item>
         <el-form-item><el-checkbox v-model="createForm.can_manage_nodes">可修改节点状态</el-checkbox></el-form-item>
-        <el-form-item><el-checkbox v-model="createForm.can_manage_points">可管理积分（加减）</el-checkbox></el-form-item>
+        <el-form-item><el-checkbox v-model="createForm.can_points_users">可看积分用户/单调</el-checkbox></el-form-item>
+        <el-form-item><el-checkbox v-model="createForm.can_points_batch_filtered">可做筛选批量积分</el-checkbox></el-form-item>
+        <el-form-item><el-checkbox v-model="createForm.can_points_batch_all">可做全体积分调整</el-checkbox></el-form-item>
+        <el-form-item><el-checkbox v-model="createForm.can_points_records">可看积分记录</el-checkbox></el-form-item>
+        <el-form-item><el-checkbox v-model="createForm.can_points_monthly">可管月初规则/重置</el-checkbox></el-form-item>
+        <el-form-item><el-checkbox v-model="createForm.can_points_special_rules">可管特殊月度积分</el-checkbox></el-form-item>
         <el-form-item><el-checkbox v-model="createForm.can_review_requests">可做注册审核</el-checkbox></el-form-item>
         <el-form-item><el-checkbox v-model="createForm.can_manage_platform_users">可管理平台用户</el-checkbox></el-form-item>
         <el-form-item><el-button type="primary" @click="create">新增高级用户</el-button></el-form-item>
@@ -68,7 +73,12 @@
         <el-form-item><el-checkbox v-model="promoteForm.can_view_board">可看运营看板</el-checkbox></el-form-item>
         <el-form-item><el-checkbox v-model="promoteForm.can_view_nodes">可看节点状态</el-checkbox></el-form-item>
         <el-form-item><el-checkbox v-model="promoteForm.can_manage_nodes">可修改节点状态</el-checkbox></el-form-item>
-        <el-form-item><el-checkbox v-model="promoteForm.can_manage_points">可管理积分（加减）</el-checkbox></el-form-item>
+        <el-form-item><el-checkbox v-model="promoteForm.can_points_users">可看积分用户/单调</el-checkbox></el-form-item>
+        <el-form-item><el-checkbox v-model="promoteForm.can_points_batch_filtered">可做筛选批量积分</el-checkbox></el-form-item>
+        <el-form-item><el-checkbox v-model="promoteForm.can_points_batch_all">可做全体积分调整</el-checkbox></el-form-item>
+        <el-form-item><el-checkbox v-model="promoteForm.can_points_records">可看积分记录</el-checkbox></el-form-item>
+        <el-form-item><el-checkbox v-model="promoteForm.can_points_monthly">可管月初规则/重置</el-checkbox></el-form-item>
+        <el-form-item><el-checkbox v-model="promoteForm.can_points_special_rules">可管特殊月度积分</el-checkbox></el-form-item>
         <el-form-item><el-checkbox v-model="promoteForm.can_review_requests">可做注册审核</el-checkbox></el-form-item>
         <el-form-item><el-checkbox v-model="promoteForm.can_manage_platform_users">可管理平台用户</el-checkbox></el-form-item>
         <el-form-item><el-button type="primary" @click="promote">提升为高级用户</el-button></el-form-item>
@@ -90,8 +100,23 @@
       <el-table-column label="节点修改" width="120">
         <template #default="{ row }"><el-switch v-model="row.can_manage_nodes" @change="savePerm(row)" /></template>
       </el-table-column>
-      <el-table-column label="积分管理" width="120">
-        <template #default="{ row }"><el-switch v-model="row.can_manage_points" @change="savePerm(row)" /></template>
+      <el-table-column label="积分用户/单调" width="140">
+        <template #default="{ row }"><el-switch v-model="row.can_points_users" @change="savePerm(row)" /></template>
+      </el-table-column>
+      <el-table-column label="筛选批量积分" width="140">
+        <template #default="{ row }"><el-switch v-model="row.can_points_batch_filtered" @change="savePerm(row)" /></template>
+      </el-table-column>
+      <el-table-column label="全体积分调整" width="140">
+        <template #default="{ row }"><el-switch v-model="row.can_points_batch_all" @change="savePerm(row)" /></template>
+      </el-table-column>
+      <el-table-column label="积分记录" width="120">
+        <template #default="{ row }"><el-switch v-model="row.can_points_records" @change="savePerm(row)" /></template>
+      </el-table-column>
+      <el-table-column label="月初规则/重置" width="140">
+        <template #default="{ row }"><el-switch v-model="row.can_points_monthly" @change="savePerm(row)" /></template>
+      </el-table-column>
+      <el-table-column label="特殊月度积分" width="140">
+        <template #default="{ row }"><el-switch v-model="row.can_points_special_rules" @change="savePerm(row)" /></template>
       </el-table-column>
       <el-table-column label="注册审核" width="120">
         <template #default="{ row }"><el-switch v-model="row.can_review_requests" @change="savePerm(row)" /></template>
@@ -143,7 +168,12 @@ const createForm = reactive({
   can_view_board: true,
   can_view_nodes: true,
   can_manage_nodes: false,
-  can_manage_points: false,
+  can_points_users: false,
+  can_points_batch_filtered: false,
+  can_points_batch_all: false,
+  can_points_records: false,
+  can_points_monthly: false,
+  can_points_special_rules: false,
   can_review_requests: false,
   can_manage_platform_users: false,
 });
@@ -152,10 +182,56 @@ const promoteForm = reactive({
   can_view_board: true,
   can_view_nodes: true,
   can_manage_nodes: false,
-  can_manage_points: false,
+  can_points_users: false,
+  can_points_batch_filtered: false,
+  can_points_batch_all: false,
+  can_points_records: false,
+  can_points_monthly: false,
+  can_points_special_rules: false,
   can_review_requests: false,
   can_manage_platform_users: false,
 });
+
+function normalizePointsPermState<T extends {
+  can_points_users: boolean;
+  can_points_batch_filtered: boolean;
+  can_points_batch_all: boolean;
+  can_points_records: boolean;
+  can_points_monthly: boolean;
+  can_points_special_rules: boolean;
+}>(state: T): T {
+  if (state.can_points_batch_filtered) {
+    state.can_points_users = true;
+  }
+  return state;
+}
+
+function pointsPermPayload(state: {
+  can_points_users: boolean;
+  can_points_batch_filtered: boolean;
+  can_points_batch_all: boolean;
+  can_points_records: boolean;
+  can_points_monthly: boolean;
+  can_points_special_rules: boolean;
+}) {
+  normalizePointsPermState(state);
+  const canManagePoints =
+    state.can_points_users ||
+    state.can_points_batch_filtered ||
+    state.can_points_batch_all ||
+    state.can_points_records ||
+    state.can_points_monthly ||
+    state.can_points_special_rules;
+  return {
+    can_manage_points: canManagePoints,
+    can_points_users: state.can_points_users,
+    can_points_batch_filtered: state.can_points_batch_filtered,
+    can_points_batch_all: state.can_points_batch_all,
+    can_points_records: state.can_points_records,
+    can_points_monthly: state.can_points_monthly,
+    can_points_special_rules: state.can_points_special_rules,
+  };
+}
 
 function tableTimeFormatter(_: unknown, __: unknown, cellValue: unknown): string {
   return formatServerDateTime(String(cellValue ?? ""));
@@ -208,13 +284,14 @@ async function create() {
   }
   try {
     const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+    const pointsPerms = pointsPermPayload(createForm);
     await client.adminCreatePowerUser({
       username: createForm.username.trim(),
       password: createForm.password,
       can_view_board: createForm.can_view_board,
       can_view_nodes: createForm.can_view_nodes,
       can_manage_nodes: createForm.can_manage_nodes,
-      can_manage_points: createForm.can_manage_points,
+      ...pointsPerms,
       can_review_requests: createForm.can_review_requests,
       can_manage_platform_users: createForm.can_manage_platform_users,
     });
@@ -224,7 +301,12 @@ async function create() {
     createForm.can_view_board = true;
     createForm.can_view_nodes = true;
     createForm.can_manage_nodes = false;
-    createForm.can_manage_points = false;
+    createForm.can_points_users = false;
+    createForm.can_points_batch_filtered = false;
+    createForm.can_points_batch_all = false;
+    createForm.can_points_records = false;
+    createForm.can_points_monthly = false;
+    createForm.can_points_special_rules = false;
     createForm.can_review_requests = false;
     createForm.can_manage_platform_users = false;
     await reload();
@@ -242,17 +324,29 @@ async function promote() {
   }
   try {
     const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+    const pointsPerms = pointsPermPayload(promoteForm);
     await client.adminPromotePowerUser({
       username: promoteForm.username.trim(),
       can_view_board: promoteForm.can_view_board,
       can_view_nodes: promoteForm.can_view_nodes,
       can_manage_nodes: promoteForm.can_manage_nodes,
-      can_manage_points: promoteForm.can_manage_points,
+      ...pointsPerms,
       can_review_requests: promoteForm.can_review_requests,
       can_manage_platform_users: promoteForm.can_manage_platform_users,
     });
     success.value = `已提升为高级用户：${promoteForm.username.trim()}`;
     promoteForm.username = "";
+    promoteForm.can_view_board = true;
+    promoteForm.can_view_nodes = true;
+    promoteForm.can_manage_nodes = false;
+    promoteForm.can_points_users = false;
+    promoteForm.can_points_batch_filtered = false;
+    promoteForm.can_points_batch_all = false;
+    promoteForm.can_points_records = false;
+    promoteForm.can_points_monthly = false;
+    promoteForm.can_points_special_rules = false;
+    promoteForm.can_review_requests = false;
+    promoteForm.can_manage_platform_users = false;
     await reload();
   } catch (e: any) {
     error.value = e?.message ?? String(e);
@@ -264,11 +358,12 @@ async function savePerm(row: PowerUser) {
   success.value = "";
   try {
     const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+    const pointsPerms = pointsPermPayload(row);
     await client.adminUpdatePowerUserPermissions(row.username, {
       can_view_board: row.can_view_board,
       can_view_nodes: row.can_view_nodes,
       can_manage_nodes: row.can_manage_nodes,
-      can_manage_points: row.can_manage_points,
+      ...pointsPerms,
       can_review_requests: row.can_review_requests,
       can_manage_platform_users: row.can_manage_platform_users,
     });

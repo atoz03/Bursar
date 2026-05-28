@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 var (
@@ -86,5 +87,67 @@ func TestBuildNumericChoiceCaptcha(t *testing.T) {
 	}
 	if len(seenKinds) != 5 {
 		t.Fatalf("seen captcha kinds=%v, want all 5 kinds", seenKinds)
+	}
+}
+
+func TestShouldTriggerRegisterIPCooldown(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	recent := now.Add(-(registerIPCooldown - time.Second))
+	expired := now.Add(-(registerIPCooldown + time.Second))
+
+	if shouldTriggerRegisterIPCooldown(RegistrationRateStats{}, now) {
+		t.Fatal("unexpected cooldown for empty stats")
+	}
+	if shouldTriggerRegisterIPCooldown(RegistrationRateStats{
+		RecentIPFailureCount: registerIPCooldownFailures - 1,
+		LastIPFailureAt:      &recent,
+	}, now) {
+		t.Fatal("unexpected cooldown below failure threshold")
+	}
+	if shouldTriggerRegisterIPCooldown(RegistrationRateStats{
+		RecentIPFailureCount: registerIPCooldownFailures,
+		LastIPFailureAt:      &expired,
+	}, now) {
+		t.Fatal("unexpected cooldown after cooldown window expired")
+	}
+	if !shouldTriggerRegisterIPCooldown(RegistrationRateStats{
+		RecentIPFailureCount: registerIPCooldownFailures,
+		LastIPFailureAt:      &recent,
+	}, now) {
+		t.Fatal("expected cooldown for recent failures at threshold")
+	}
+}
+
+func TestNormalizeRegisterEmail(t *testing.T) {
+	t.Parallel()
+
+	normalized, local, domain, err := normalizeRegisterEmail("26b123456@Stu.HIT.edu.cn")
+	if err != nil {
+		t.Fatalf("normalizeRegisterEmail() error: %v", err)
+	}
+	if normalized != "26B123456@students.example.org" {
+		t.Fatalf("normalized=%q", normalized)
+	}
+	if local != "26B123456" {
+		t.Fatalf("local=%q", local)
+	}
+	if domain != "students.example.org" {
+		t.Fatalf("domain=%q", domain)
+	}
+}
+
+func TestValidateRegisterUsername(t *testing.T) {
+	t.Parallel()
+
+	if err := validateRegisterUsername("zs26B123456", "26B123456"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := validateRegisterUsername("zs26B123456", ""); err == nil {
+		t.Fatal("expected error for empty email local")
+	}
+	if err := validateRegisterUsername("z126B123456", "26B123456"); err == nil {
+		t.Fatal("expected error for invalid prefix")
 	}
 }

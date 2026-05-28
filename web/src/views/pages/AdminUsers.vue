@@ -115,6 +115,9 @@
         <el-table-column prop="status" label="状态" width="100" sortable="custom">
           <template #default="{ row }">{{ effectiveStatus(row) }}</template>
         </el-table-column>
+        <el-table-column prop="created_at" label="开通时间" width="180" sortable="custom">
+          <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
+        </el-table-column>
         <el-table-column label="操作" width="420" fixed="right">
           <template #default="{ row }">
             <el-space>
@@ -427,7 +430,7 @@ const exemptionSet = ref<Set<string>>(new Set());
 const keyword = ref("");
 type UserKeywordField = "all" | "username" | "platform_uid" | "real_name" | "student_id" | "advisor" | "email" | "phone" | "role" | "status";
 type UserSortOrder = "ascending" | "descending" | null;
-type UserSortKey = "username" | "platform_uid" | "real_name" | "role" | "two_factor_enabled" | "student_id" | "email" | "expected_graduation_year" | "balance" | "status";
+type UserSortKey = "username" | "platform_uid" | "real_name" | "role" | "two_factor_enabled" | "student_id" | "email" | "expected_graduation_year" | "balance" | "status" | "created_at";
 const keywordField = ref<UserKeywordField>("all");
 const userSortKey = ref<UserSortKey | "">("");
 const userSortOrder = ref<UserSortOrder>(null);
@@ -569,6 +572,7 @@ function adminUserSortValue(row: AdminUserDetail, key: UserSortKey): number | st
   if (key === "platform_uid") return Number(row.platform_uid ?? 0);
   if (key === "role") return adminRoleWeight(row.role);
   if (key === "two_factor_enabled") return row.two_factor_enabled ? 1 : 0;
+  if (key === "created_at") return Date.parse(String(row.created_at || "")) || 0;
   if (key === "expected_graduation_year") {
     const year = Number(row.expected_graduation_year ?? 0);
     const month = Number(row.expected_graduation_month ?? 0);

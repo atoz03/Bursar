@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -61,7 +62,15 @@ const (
 	permManageNodes         = 8
 	permManagePoints        = 16
 	permManagePlatformUsers = 32
+	permPointsUsers         = 64
+	permPointsBatchFiltered = 128
+	permPointsBatchAll      = 256
+	permPointsRecords       = 512
+	permPointsMonthly       = 1024
+	permPointsSpecialRules  = 2048
 )
+
+const permAnyPoints = permManagePoints | permPointsUsers | permPointsBatchFiltered | permPointsBatchAll | permPointsRecords | permPointsMonthly | permPointsSpecialRules
 
 func NewServer(cfg Config, store *Store) *Server {
 	return &Server{
@@ -1096,6 +1105,7 @@ func (s *Server) RouterWeb() *gin.Engine {
 	api.POST("/auth/reset-password", s.handleAuthResetPassword)
 	api.POST("/auth/change-password", s.authSession(), s.handleAuthChangePassword)
 	api.GET("/announcements", s.handleAnnouncementsList)
+	api.GET("/announcements/:id/attachment", s.handleAnnouncementAttachmentDownload)
 	api.GET("/guideline", s.handleUserGuidelineGet)
 	api.POST("/tools/provision/decrypt", s.authSession(), s.handleToolProvisionDecrypt)
 
@@ -1130,7 +1140,7 @@ func (s *Server) RouterWeb() *gin.Engine {
 	admin.POST("/users/import.csv", s.requirePlatformUsersPermission(), s.handleAdminUsersImportCSV)
 	admin.GET("/users/deleted", s.requirePlatformUsersPermission(), s.handleAdminDeletedUsers)
 	admin.GET("/users/duplicates", s.requirePlatformUsersPermission(), s.handleAdminUserDuplicates)
-	admin.GET("/users/:username/profile", s.requirePlatformUsersPermission(), s.handleAdminUserProfile)
+	admin.GET("/users/:username/profile", s.requirePlatformUsersOrPointsUsersPermission(), s.handleAdminUserProfile)
 	admin.POST("/users/:username/2fa/enable", s.requireSuperAdmin(), s.handleAdminUserTwoFactorEnable)
 	admin.POST("/users/:username/2fa/disable", s.requireSuperAdmin(), s.handleAdminUserTwoFactorDisable)
 	admin.POST("/users/:username/block", s.requirePlatformUsersPermission(), s.handleAdminUserBlock)
@@ -1256,19 +1266,19 @@ func (s *Server) RouterWeb() *gin.Engine {
 	admin.GET("/stats/platform-users/:username/nodes", s.requireBoardPermission(), s.handleAdminStatsPlatformUserNodes)
 	admin.GET("/stats/monthly", s.requireBoardPermission(), s.handleAdminStatsMonthly)
 	admin.GET("/stats/recharges", s.requireBoardPermission(), s.handleAdminStatsRecharges)
-	admin.GET("/points/users", s.requirePointsPermission(), s.handleAdminPointsUsers)
-	admin.GET("/points/records", s.requirePointsPermission(), s.handleAdminPointsRecords)
-	admin.POST("/points/adjust", s.requirePointsPermission(), s.handleAdminPointsAdjust)
-	admin.POST("/points/batch-grant", s.requirePointsPermission(), s.handleAdminPointsBatchGrant)
-	admin.POST("/points/batch-adjust-users", s.requirePointsPermission(), s.handleAdminPointsBatchAdjustUsers)
-	admin.POST("/points/batch-set-users", s.requirePointsPermission(), s.handleAdminPointsBatchSetUsers)
-	admin.GET("/points/special-rules", s.requirePointsPermission(), s.handleAdminPointsSpecialRulesList)
-	admin.POST("/points/special-rules", s.requirePointsPermission(), s.handleAdminPointsSpecialRulesUpsert)
-	admin.DELETE("/points/special-rules/:username", s.requirePointsPermission(), s.handleAdminPointsSpecialRulesDelete)
-	admin.GET("/points/monthly-config", s.requirePointsPermission(), s.handleAdminPointsMonthlyConfigGet)
-	admin.POST("/points/monthly-config", s.requirePointsPermission(), s.handleAdminPointsMonthlyConfigSet)
-	admin.GET("/points/monthly-reset/status", s.requirePointsPermission(), s.handleAdminPointsMonthlyResetStatus)
-	admin.POST("/points/monthly-reset", s.requirePointsPermission(), s.handleAdminPointsMonthlyReset)
+	admin.GET("/points/users", s.requirePointsUsersPermission(), s.handleAdminPointsUsers)
+	admin.GET("/points/records", s.requirePointsRecordsPermission(), s.handleAdminPointsRecords)
+	admin.POST("/points/adjust", s.requirePointsUsersPermission(), s.handleAdminPointsAdjust)
+	admin.POST("/points/batch-grant", s.requirePointsBatchAllPermission(), s.handleAdminPointsBatchGrant)
+	admin.POST("/points/batch-adjust-users", s.requirePointsBatchFilteredPermission(), s.handleAdminPointsBatchAdjustUsers)
+	admin.POST("/points/batch-set-users", s.requirePointsBatchFilteredPermission(), s.handleAdminPointsBatchSetUsers)
+	admin.GET("/points/special-rules", s.requirePointsSpecialRulesPermission(), s.handleAdminPointsSpecialRulesList)
+	admin.POST("/points/special-rules", s.requirePointsSpecialRulesPermission(), s.handleAdminPointsSpecialRulesUpsert)
+	admin.DELETE("/points/special-rules/:username", s.requirePointsSpecialRulesPermission(), s.handleAdminPointsSpecialRulesDelete)
+	admin.GET("/points/monthly-config", s.requirePointsMonthlyPermission(), s.handleAdminPointsMonthlyConfigGet)
+	admin.POST("/points/monthly-config", s.requirePointsMonthlyPermission(), s.handleAdminPointsMonthlyConfigSet)
+	admin.GET("/points/monthly-reset/status", s.requirePointsMonthlyPermission(), s.handleAdminPointsMonthlyResetStatus)
+	admin.POST("/points/monthly-reset", s.requirePointsMonthlyPermission(), s.handleAdminPointsMonthlyReset)
 
 	// 兼容单端口部署：未启用 internal_listen_addr 时，Agent/Registry/HA 内部接口仍挂在 /api 下。
 	// 启用 internal 独立端口后，这些接口仅在 RouterInternal 暴露。
@@ -1372,7 +1382,7 @@ func (s *Server) authAdmin() gin.HandlerFunc {
 		if strings.HasPrefix(auth, prefix) && strings.TrimSpace(strings.TrimPrefix(auth, prefix)) == s.cfg.AdminToken {
 			c.Set("auth_method", "token")
 			c.Set("auth_role", "admin")
-			c.Set("auth_perms", uint32(permViewBoard|permViewNodes|permManageNodes|permReviewRequests|permManagePoints|permManagePlatformUsers))
+			c.Set("auth_perms", uint32(permViewBoard|permViewNodes|permManageNodes|permReviewRequests|permManagePoints|permManagePlatformUsers|permPointsUsers|permPointsBatchFiltered|permPointsBatchAll|permPointsRecords|permPointsMonthly|permPointsSpecialRules))
 			c.Next()
 			return
 		}
@@ -1590,9 +1600,66 @@ func (s *Server) requirePointsPermission() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		if role == "power_user" && (getAuthPerms(c)&permManagePoints) != 0 {
+		if role == "power_user" && (getAuthPerms(c)&permAnyPoints) != 0 {
 			c.Next()
 			return
+		}
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+	}
+}
+
+func (s *Server) requirePointsModulePermission(mask uint32) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		role := getAuthRole(c)
+		if role == "admin" {
+			c.Next()
+			return
+		}
+		if role == "power_user" && (getAuthPerms(c)&mask) != 0 {
+			c.Next()
+			return
+		}
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+	}
+}
+
+func (s *Server) requirePointsUsersPermission() gin.HandlerFunc {
+	return s.requirePointsModulePermission(permPointsUsers)
+}
+
+func (s *Server) requirePointsBatchFilteredPermission() gin.HandlerFunc {
+	return s.requirePointsModulePermission(permPointsBatchFiltered)
+}
+
+func (s *Server) requirePointsBatchAllPermission() gin.HandlerFunc {
+	return s.requirePointsModulePermission(permPointsBatchAll)
+}
+
+func (s *Server) requirePointsRecordsPermission() gin.HandlerFunc {
+	return s.requirePointsModulePermission(permPointsRecords)
+}
+
+func (s *Server) requirePointsMonthlyPermission() gin.HandlerFunc {
+	return s.requirePointsModulePermission(permPointsMonthly)
+}
+
+func (s *Server) requirePointsSpecialRulesPermission() gin.HandlerFunc {
+	return s.requirePointsModulePermission(permPointsSpecialRules)
+}
+
+func (s *Server) requirePlatformUsersOrPointsUsersPermission() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		role := getAuthRole(c)
+		if role == "admin" {
+			c.Next()
+			return
+		}
+		if role == "power_user" {
+			perms := getAuthPerms(c)
+			if (perms&permManagePlatformUsers) != 0 || (perms&permPointsUsers) != 0 {
+				c.Next()
+				return
+			}
 		}
 		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "forbidden"})
 	}
@@ -1844,6 +1911,12 @@ func platformUserCSVHeaders() []string {
 		"can_view_nodes",
 		"can_manage_nodes",
 		"can_manage_points",
+		"can_points_users",
+		"can_points_batch_filtered",
+		"can_points_batch_all",
+		"can_points_records",
+		"can_points_monthly",
+		"can_points_special_rules",
 		"can_review_requests",
 		"can_manage_platform_users",
 	}
@@ -2013,6 +2086,36 @@ func parsePlatformUserBackupCSVRow(header map[string]int, record []string) (Plat
 	if out.CanManagePoints, err = parseCSVBool(csvFieldValue(record, header, "can_manage_points")); err != nil {
 		return PlatformUserBackupRow{}, fmt.Errorf("can_manage_points 解析失败：%w", err)
 	}
+	if _, ok := header["can_points_users"]; ok {
+		if out.CanPointsUsers, err = parseCSVBool(csvFieldValue(record, header, "can_points_users")); err != nil {
+			return PlatformUserBackupRow{}, fmt.Errorf("can_points_users 解析失败：%w", err)
+		}
+	}
+	if _, ok := header["can_points_batch_filtered"]; ok {
+		if out.CanPointsBatchFiltered, err = parseCSVBool(csvFieldValue(record, header, "can_points_batch_filtered")); err != nil {
+			return PlatformUserBackupRow{}, fmt.Errorf("can_points_batch_filtered 解析失败：%w", err)
+		}
+	}
+	if _, ok := header["can_points_batch_all"]; ok {
+		if out.CanPointsBatchAll, err = parseCSVBool(csvFieldValue(record, header, "can_points_batch_all")); err != nil {
+			return PlatformUserBackupRow{}, fmt.Errorf("can_points_batch_all 解析失败：%w", err)
+		}
+	}
+	if _, ok := header["can_points_records"]; ok {
+		if out.CanPointsRecords, err = parseCSVBool(csvFieldValue(record, header, "can_points_records")); err != nil {
+			return PlatformUserBackupRow{}, fmt.Errorf("can_points_records 解析失败：%w", err)
+		}
+	}
+	if _, ok := header["can_points_monthly"]; ok {
+		if out.CanPointsMonthly, err = parseCSVBool(csvFieldValue(record, header, "can_points_monthly")); err != nil {
+			return PlatformUserBackupRow{}, fmt.Errorf("can_points_monthly 解析失败：%w", err)
+		}
+	}
+	if _, ok := header["can_points_special_rules"]; ok {
+		if out.CanPointsSpecialRules, err = parseCSVBool(csvFieldValue(record, header, "can_points_special_rules")); err != nil {
+			return PlatformUserBackupRow{}, fmt.Errorf("can_points_special_rules 解析失败：%w", err)
+		}
+	}
 	if out.CanReviewRequests, err = parseCSVBool(csvFieldValue(record, header, "can_review_requests")); err != nil {
 		return PlatformUserBackupRow{}, fmt.Errorf("can_review_requests 解析失败：%w", err)
 	}
@@ -2020,6 +2123,14 @@ func parsePlatformUserBackupCSVRow(header map[string]int, record []string) (Plat
 		if out.CanManagePlatformUsers, err = parseCSVBool(csvFieldValue(record, header, "can_manage_platform_users")); err != nil {
 			return PlatformUserBackupRow{}, fmt.Errorf("can_manage_platform_users 解析失败：%w", err)
 		}
+	}
+	if out.CanManagePoints && !out.CanPointsUsers && !out.CanPointsBatchFiltered && !out.CanPointsBatchAll && !out.CanPointsRecords && !out.CanPointsMonthly && !out.CanPointsSpecialRules {
+		out.CanPointsUsers = true
+		out.CanPointsBatchFiltered = true
+		out.CanPointsBatchAll = true
+		out.CanPointsRecords = true
+		out.CanPointsMonthly = true
+		out.CanPointsSpecialRules = true
 	}
 	return out, nil
 }
@@ -2075,6 +2186,12 @@ func (s *Server) handleAdminUsersExportCSV(c *gin.Context) {
 			strconv.FormatBool(row.CanViewNodes),
 			strconv.FormatBool(row.CanManageNodes),
 			strconv.FormatBool(row.CanManagePoints),
+			strconv.FormatBool(row.CanPointsUsers),
+			strconv.FormatBool(row.CanPointsBatchFiltered),
+			strconv.FormatBool(row.CanPointsBatchAll),
+			strconv.FormatBool(row.CanPointsRecords),
+			strconv.FormatBool(row.CanPointsMonthly),
+			strconv.FormatBool(row.CanPointsSpecialRules),
 			strconv.FormatBool(row.CanReviewRequests),
 			strconv.FormatBool(row.CanManagePlatformUsers),
 		}
@@ -2784,7 +2901,13 @@ type announcementCreateReq struct {
 	Pinned  bool   `json:"pinned"`
 }
 
+const maxAnnouncementAttachmentBytes = 30 << 20
+
 func (s *Server) handleAnnouncementCreate(c *gin.Context) {
+	if strings.HasPrefix(strings.ToLower(c.GetHeader("Content-Type")), "multipart/form-data") {
+		s.handleAnnouncementCreateMultipart(c)
+		return
+	}
 	var req announcementCreateReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -2796,11 +2919,102 @@ func (s *Server) handleAnnouncementCreate(c *gin.Context) {
 			createdBy = strings.TrimSpace(x)
 		}
 	}
-	if err := s.store.CreateAnnouncement(c.Request.Context(), req.Title, req.Content, req.Pinned, createdBy); err != nil {
+	if err := s.store.CreateAnnouncement(c.Request.Context(), req.Title, req.Content, req.Pinned, createdBy, nil); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func (s *Server) handleAnnouncementCreateMultipart(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxAnnouncementAttachmentBytes+2<<20)
+	if err := c.Request.ParseMultipartForm(maxAnnouncementAttachmentBytes + 2<<20); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "上传内容过大或格式不合法"})
+		return
+	}
+	createdBy := "admin"
+	if v, ok := c.Get("auth_user"); ok {
+		if x, ok2 := v.(string); ok2 && strings.TrimSpace(x) != "" {
+			createdBy = strings.TrimSpace(x)
+		}
+	}
+	title := strings.TrimSpace(c.PostForm("title"))
+	content := strings.TrimSpace(c.PostForm("content"))
+	pinnedText := strings.TrimSpace(strings.ToLower(c.PostForm("pinned")))
+	pinned := pinnedText == "1" || pinnedText == "true" || pinnedText == "yes" || pinnedText == "on"
+
+	var attachment *AnnouncementAttachmentInput
+	file, header, err := c.Request.FormFile("attachment")
+	if err == nil {
+		defer file.Close()
+		data, readErr := io.ReadAll(io.LimitReader(file, maxAnnouncementAttachmentBytes+1))
+		if readErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "读取附件失败"})
+			return
+		}
+		if len(data) > maxAnnouncementAttachmentBytes {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "附件不能超过 30MB"})
+			return
+		}
+		if len(data) > 0 {
+			sum := sha256.Sum256(data)
+			contentType := strings.TrimSpace(header.Header.Get("Content-Type"))
+			if contentType == "" {
+				contentType = http.DetectContentType(data)
+			}
+			filename := strings.TrimSpace(filepath.Base(header.Filename))
+			if filename == "." || filename == string(filepath.Separator) {
+				filename = "announcement-attachment"
+			}
+			attachment = &AnnouncementAttachmentInput{
+				Filename:    filename,
+				ContentType: contentType,
+				SizeBytes:   int64(len(data)),
+				SHA256:      hex.EncodeToString(sum[:]),
+				Data:        data,
+			}
+		}
+	} else if !errors.Is(err, http.ErrMissingFile) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "附件字段不合法"})
+		return
+	}
+
+	if err := s.store.CreateAnnouncement(c.Request.Context(), title, content, pinned, createdBy, attachment); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func (s *Server) handleAnnouncementAttachmentDownload(c *gin.Context) {
+	id, err := strconv.Atoi(strings.TrimSpace(c.Param("id")))
+	if err != nil || id <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "id 不合法"})
+		return
+	}
+	attachment, err := s.store.GetAnnouncementAttachment(c.Request.Context(), id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not_found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	filename := strings.TrimSpace(attachment.Filename)
+	if filename == "" {
+		filename = fmt.Sprintf("announcement-%d-attachment", id)
+	}
+	contentType := strings.TrimSpace(attachment.ContentType)
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	c.Header("Content-Type", contentType)
+	c.Header("Content-Length", strconv.Itoa(len(attachment.Data)))
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q; filename*=UTF-8''%s", filename, url.PathEscape(filename)))
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("Cache-Control", "no-store")
+	c.Data(http.StatusOK, contentType, attachment.Data)
 }
 
 func (s *Server) handleAnnouncementDelete(c *gin.Context) {
@@ -5636,6 +5850,12 @@ type powerUserCreateReq struct {
 	CanViewNodes           bool   `json:"can_view_nodes"`
 	CanManageNodes         bool   `json:"can_manage_nodes"`
 	CanManagePoints        bool   `json:"can_manage_points"`
+	CanPointsUsers         bool   `json:"can_points_users"`
+	CanPointsBatchFiltered bool   `json:"can_points_batch_filtered"`
+	CanPointsBatchAll      bool   `json:"can_points_batch_all"`
+	CanPointsRecords       bool   `json:"can_points_records"`
+	CanPointsMonthly       bool   `json:"can_points_monthly"`
+	CanPointsSpecialRules  bool   `json:"can_points_special_rules"`
 	CanReviewRequests      bool   `json:"can_review_requests"`
 	CanManagePlatformUsers bool   `json:"can_manage_platform_users"`
 }
@@ -5646,6 +5866,12 @@ type powerUserPromoteReq struct {
 	CanViewNodes           bool   `json:"can_view_nodes"`
 	CanManageNodes         bool   `json:"can_manage_nodes"`
 	CanManagePoints        bool   `json:"can_manage_points"`
+	CanPointsUsers         bool   `json:"can_points_users"`
+	CanPointsBatchFiltered bool   `json:"can_points_batch_filtered"`
+	CanPointsBatchAll      bool   `json:"can_points_batch_all"`
+	CanPointsRecords       bool   `json:"can_points_records"`
+	CanPointsMonthly       bool   `json:"can_points_monthly"`
+	CanPointsSpecialRules  bool   `json:"can_points_special_rules"`
 	CanReviewRequests      bool   `json:"can_review_requests"`
 	CanManagePlatformUsers bool   `json:"can_manage_platform_users"`
 }
@@ -5655,6 +5881,12 @@ type powerUserPermReq struct {
 	CanViewNodes           bool `json:"can_view_nodes"`
 	CanManageNodes         bool `json:"can_manage_nodes"`
 	CanManagePoints        bool `json:"can_manage_points"`
+	CanPointsUsers         bool `json:"can_points_users"`
+	CanPointsBatchFiltered bool `json:"can_points_batch_filtered"`
+	CanPointsBatchAll      bool `json:"can_points_batch_all"`
+	CanPointsRecords       bool `json:"can_points_records"`
+	CanPointsMonthly       bool `json:"can_points_monthly"`
+	CanPointsSpecialRules  bool `json:"can_points_special_rules"`
 	CanReviewRequests      bool `json:"can_review_requests"`
 	CanManagePlatformUsers bool `json:"can_manage_platform_users"`
 }
@@ -5680,7 +5912,24 @@ func (s *Server) handleAdminPowerUsersCreate(c *gin.Context) {
 	if createdBy == "" {
 		createdBy = "admin"
 	}
-	if err := s.store.CreatePowerUser(c.Request.Context(), req.Username, req.Password, req.CanViewBoard, req.CanViewNodes, req.CanManageNodes, req.CanManagePoints, req.CanReviewRequests, req.CanManagePlatformUsers, createdBy); err != nil {
+	if err := s.store.CreatePowerUser(
+		c.Request.Context(),
+		req.Username,
+		req.Password,
+		req.CanViewBoard,
+		req.CanViewNodes,
+		req.CanManageNodes,
+		req.CanManagePoints,
+		req.CanPointsUsers,
+		req.CanPointsBatchFiltered,
+		req.CanPointsBatchAll,
+		req.CanPointsRecords,
+		req.CanPointsMonthly,
+		req.CanPointsSpecialRules,
+		req.CanReviewRequests,
+		req.CanManagePlatformUsers,
+		createdBy,
+	); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -5705,6 +5954,12 @@ func (s *Server) handleAdminPowerUsersPromote(c *gin.Context) {
 		req.CanViewNodes,
 		req.CanManageNodes,
 		req.CanManagePoints,
+		req.CanPointsUsers,
+		req.CanPointsBatchFiltered,
+		req.CanPointsBatchAll,
+		req.CanPointsRecords,
+		req.CanPointsMonthly,
+		req.CanPointsSpecialRules,
 		req.CanReviewRequests,
 		req.CanManagePlatformUsers,
 		operator,
@@ -5730,7 +5985,23 @@ func (s *Server) handleAdminPowerUsersUpdatePermissions(c *gin.Context) {
 	if updatedBy == "" {
 		updatedBy = "admin"
 	}
-	if err := s.store.UpdatePowerUserPermissions(c.Request.Context(), username, req.CanViewBoard, req.CanViewNodes, req.CanManageNodes, req.CanManagePoints, req.CanReviewRequests, req.CanManagePlatformUsers, updatedBy); err != nil {
+	if err := s.store.UpdatePowerUserPermissions(
+		c.Request.Context(),
+		username,
+		req.CanViewBoard,
+		req.CanViewNodes,
+		req.CanManageNodes,
+		req.CanManagePoints,
+		req.CanPointsUsers,
+		req.CanPointsBatchFiltered,
+		req.CanPointsBatchAll,
+		req.CanPointsRecords,
+		req.CanPointsMonthly,
+		req.CanPointsSpecialRules,
+		req.CanReviewRequests,
+		req.CanManagePlatformUsers,
+		updatedBy,
+	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "记录不存在"})
 			return
@@ -9349,6 +9620,7 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 		}
 		miningEvidenceByUser := make(map[string][]map[string]any)
 		billedLocalUsers := make(map[string]struct{})
+		billedGPUByBillingUser := make(map[string]map[string]struct{})
 
 		for _, proc := range data.Users {
 			localUsername := strings.TrimSpace(proc.Username)
@@ -9388,7 +9660,15 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 
 			gpuCost := 0.0
 			if len(proc.GPUUsage) > 0 {
-				gpuCost = CalculateProcessCostWithPolicy(proc, nodeModelPriceIndex, nodePriceOverride, priceIndex, s.cfg.DefaultPricePerMinute)
+				if nodePointsBillingEnabled && !exempted {
+					seenGPU := billedGPUByBillingUser[billingUsername]
+					if seenGPU == nil {
+						seenGPU = make(map[string]struct{})
+						billedGPUByBillingUser[billingUsername] = seenGPU
+					}
+					chargeableGPUUsage := ChargeableGPUUsageForBilling(proc.GPUUsage, seenGPU)
+					gpuCost = CalculateGPUUsageCostWithPolicy(chargeableGPUUsage, nodeModelPriceIndex, nodePriceOverride, priceIndex, s.cfg.DefaultPricePerMinute)
+				}
 			}
 			proc.Command = cmdRaw
 			if len(proc.Command) > 256 {

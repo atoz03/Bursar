@@ -147,7 +147,7 @@
       </div>
       <el-alert
         class="order-security-alert"
-        :title="`当前策略：IP窗口 ${registerSecurityPolicy.ip_window_seconds || '-'}s（上限 ${registerSecurityPolicy.ip_limit || '-'}），邮箱窗口 ${registerSecurityPolicy.email_window_seconds || '-'}s（上限 ${registerSecurityPolicy.email_limit || '-'}），IP冷却 ${registerSecurityPolicy.ip_cooldown_seconds || '-'}s，邮箱冷却 ${registerSecurityPolicy.email_cooldown_seconds || '-'}s`"
+        :title="`当前策略：IP窗口 ${registerSecurityPolicy.ip_window_seconds || '-'}s（上限 ${registerSecurityPolicy.ip_limit || '-'}），邮箱窗口 ${registerSecurityPolicy.email_window_seconds || '-'}s（上限 ${registerSecurityPolicy.email_limit || '-'}），IP冷却 ${registerSecurityPolicy.ip_cooldown_seconds || '-'}s（最近失败 ${registerSecurityPolicy.ip_cooldown_failures || '-'} 次后触发），邮箱冷却 ${registerSecurityPolicy.email_cooldown_seconds || '-'}s`"
         type="info"
         :closable="false"
       />
@@ -234,71 +234,6 @@
             <el-space>
               <el-button size="small" @click="toggleDisposableDomain(row, !row.enabled)">{{ row.enabled ? "设为禁用" : "启用" }}</el-button>
               <el-button size="small" type="danger" @click="removeDisposableDomain(row.domain)">删除</el-button>
-            </el-space>
-          </template>
-        </el-table-column>
-      </el-table>
-
-      <el-divider class="order-node-divider" />
-
-      <div class="section-inline-title order-node-title">
-        <span class="section-icon tone-link"><el-icon><Connection /></el-icon></span>
-        <span class="title">节点账号开通申请审核</span>
-      </div>
-      <el-form inline class="order-node-form">
-        <el-form-item label="状态">
-          <el-select v-model="status" style="width: 160px" @change="reloadRequests">
-            <el-option label="待审核" value="pending" />
-            <el-option label="已通过" value="approved" />
-            <el-option label="已拒绝" value="rejected" />
-            <el-option label="全部" value="" />
-          </el-select>
-        </el-form-item>
-        <el-form-item>
-          <el-button :disabled="selectedIds.length===0" :loading="batchLoading" type="success" @click="batchApprove">批量通过</el-button>
-          <el-button :disabled="selectedIds.length===0" :loading="batchLoading" type="danger" @click="batchReject">批量拒绝</el-button>
-          <el-button :loading="requestLoading" @click="reloadRequests">刷新</el-button>
-        </el-form-item>
-      </el-form>
-
-      <el-table :data="rows" stripe height="360" class="order-node-table" @selection-change="onSelectionChange" :row-class-name="requestRowClassName">
-        <el-table-column type="selection" width="45" />
-        <el-table-column prop="request_id" label="ID" width="80" />
-        <el-table-column prop="request_type" label="类型" width="100" />
-        <el-table-column label="平台账号" width="160">
-          <template #default="{ row }">
-            <el-button link type="primary" @click="openProfile(row.billing_username)">{{ row.billing_username }}</el-button>
-          </template>
-        </el-table-column>
-        <el-table-column prop="node_id" label="端口" width="110" />
-        <el-table-column prop="local_username" label="节点账号" width="160" />
-        <el-table-column prop="message" label="开通理由" min-width="240" />
-        <el-table-column prop="reject_reason" label="拒绝理由" min-width="220" />
-        <el-table-column prop="status" label="状态" width="120" />
-        <el-table-column prop="apply_count_by_billing" label="申请次数" width="100" />
-        <el-table-column prop="duplicate_reason" label="风险提示" width="220" />
-        <el-table-column prop="created_at" label="提交时间" min-width="180" :formatter="tableTimeFormatter" />
-        <el-table-column label="操作" width="220" fixed="right">
-          <template #default="{ row }">
-            <el-space>
-              <el-button
-                size="small"
-                type="success"
-                :disabled="row.status !== 'pending'"
-                :loading="actionLoadingId === row.request_id"
-                @click="approve(row.request_id)"
-              >
-                通过
-              </el-button>
-              <el-button
-                size="small"
-                type="danger"
-                :disabled="row.status !== 'pending'"
-                :loading="actionLoadingId === row.request_id"
-                @click="reject(row)"
-              >
-                拒绝
-              </el-button>
             </el-space>
           </template>
         </el-table-column>
@@ -431,12 +366,11 @@ import {
   type RegistrationRequest,
   type RegistrationRequestView,
   type RegistrationSecurityEvent,
-  type UserRequest,
 } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
 import PlatformUserDetailDialog from "../../components/PlatformUserDetailDialog.vue";
-import { Clock, Connection, Document, Lock, UserFilled, WarningFilled } from "@element-plus/icons-vue";
+import { Clock, Document, Lock, UserFilled, WarningFilled } from "@element-plus/icons-vue";
 import { formatServerDateTime } from "../../lib/time";
 
 const loading = ref(false);
@@ -462,6 +396,7 @@ const registerSecurityPolicy = reactive({
   email_window_seconds: 0,
   email_limit: 0,
   ip_cooldown_seconds: 0,
+  ip_cooldown_failures: 0,
   email_cooldown_seconds: 0,
   captcha_ttl_seconds: 0,
   allowed_email_domains: [] as string[],
@@ -471,13 +406,6 @@ const disposableDomainKeyword = ref("");
 const disposableDomains = ref<RegistrationDisposableEmailDomain[]>([]);
 const newDisposableDomain = ref("");
 const newDisposableDomainNote = ref("");
-
-const requestLoading = ref(false);
-const status = ref("pending");
-const rows = ref<UserRequest[]>([]);
-const actionLoadingId = ref<number | null>(null);
-const batchLoading = ref(false);
-const selectedIds = ref<number[]>([]);
 
 const profileLoading = ref(false);
 const profileActionId = ref<number | null>(null);
@@ -521,10 +449,6 @@ function formatConflictFields(fields?: string[]): string {
 
 function conflictRowClassName() {
   return "dup-row";
-}
-
-function requestRowClassName({ row }: { row: UserRequest }) {
-  return row.duplicate_flag ? "dup-row" : "";
 }
 
 function normalizeDiffValue(v: unknown): string {
@@ -657,6 +581,7 @@ async function reloadRegisterSecurityPolicy() {
     registerSecurityPolicy.email_window_seconds = Number(r.email_window_seconds || 0);
     registerSecurityPolicy.email_limit = Number(r.email_limit || 0);
     registerSecurityPolicy.ip_cooldown_seconds = Number(r.ip_cooldown_seconds || 0);
+    registerSecurityPolicy.ip_cooldown_failures = Number(r.ip_cooldown_failures || 0);
     registerSecurityPolicy.email_cooldown_seconds = Number(r.email_cooldown_seconds || 0);
     registerSecurityPolicy.captcha_ttl_seconds = Number(r.captcha_ttl_seconds || 0);
     registerSecurityPolicy.allowed_email_domains = Array.isArray(r.allowed_email_domains) ? r.allowed_email_domains : [];
@@ -821,110 +746,6 @@ async function rejectRegistration(id: number, defaultReason = "") {
   }
 }
 
-async function reloadRequests() {
-  requestLoading.value = true;
-  error.value = "";
-  rows.value = [];
-  try {
-    const r = await client().adminRequests({ status: status.value, limit: 500 });
-    rows.value = (r.requests ?? []).filter((x) => String(x.request_type || "").trim() === "open");
-  } catch (e: any) {
-    error.value = e?.message ?? String(e);
-  } finally {
-    requestLoading.value = false;
-  }
-}
-
-async function approve(id: number) {
-  actionLoadingId.value = id;
-  error.value = "";
-  try {
-    await client().adminApproveRequest(id);
-    await reloadRequests();
-  } catch (e: any) {
-    error.value = e?.message ?? String(e);
-  } finally {
-    actionLoadingId.value = null;
-  }
-}
-
-async function reject(row: UserRequest) {
-  const id = Number(row.request_id || 0);
-  if (!id) return;
-  let reason = "";
-  try {
-    const isUnbind = String(row.request_type || "").trim() === "unbind";
-    const input: any = await ElMessageBox.prompt(
-      isUnbind ? "请填写拒绝解绑申请理由（必填）。" : "请填写拒绝理由（必填，用户端可见）。",
-      isUnbind ? "拒绝解绑申请" : "拒绝申请",
-      {
-        confirmButtonText: "确认拒绝",
-        cancelButtonText: "取消",
-        inputType: "textarea",
-        inputPlaceholder: isUnbind ? "例如：当前理由不充分，请补充真实解绑原因后重提" : "例如：申请理由不完整，请补充研究方向、课题和资源需求后重提",
-        inputValidator: (v: string) => String(v || "").trim().length > 0 || "拒绝理由不能为空",
-      },
-    );
-    reason = String(input?.value || "").trim();
-  } catch {
-    return;
-  }
-  actionLoadingId.value = id;
-  error.value = "";
-  try {
-    await client().adminRejectRequest(id, reason);
-    await reloadRequests();
-  } catch (e: any) {
-    error.value = e?.message ?? String(e);
-  } finally {
-    actionLoadingId.value = null;
-  }
-}
-
-function onSelectionChange(v: UserRequest[]) {
-  selectedIds.value = (v ?? []).map((x) => x.request_id);
-}
-
-async function batchApprove() {
-  await batchReview("approved");
-}
-async function batchReject() {
-  await batchReview("rejected");
-}
-async function batchReview(newStatus: "approved" | "rejected") {
-  if (selectedIds.value.length === 0) return;
-  let reason = "";
-  if (newStatus === "rejected") {
-    try {
-      const input: any = await ElMessageBox.prompt(
-        `请填写批量拒绝理由（必填，用户端可见）。\n本次共 ${selectedIds.value.length} 条申请。`,
-        "批量拒绝申请",
-        {
-          confirmButtonText: "确认拒绝",
-          cancelButtonText: "取消",
-          inputType: "textarea",
-          inputPlaceholder: "例如：申请材料不完整，请按要求补充后重新提交",
-          inputValidator: (v: string) => String(v || "").trim().length > 0 || "拒绝理由不能为空",
-        },
-      );
-      reason = String(input?.value || "").trim();
-    } catch {
-      return;
-    }
-  }
-  batchLoading.value = true;
-  error.value = "";
-  try {
-    await client().adminBatchReview(selectedIds.value, newStatus, reason);
-    selectedIds.value = [];
-    await reloadRequests();
-  } catch (e: any) {
-    error.value = e?.message ?? String(e);
-  } finally {
-    batchLoading.value = false;
-  }
-}
-
 async function reloadProfileChanges() {
   profileLoading.value = true;
   error.value = "";
@@ -998,7 +819,6 @@ async function reloadAll() {
     await reloadRegisterSecurityPolicy();
     await reloadRegisterSecurityEvents();
     await reloadDisposableDomains();
-    await reloadRequests();
     await reloadProfileChanges();
   } catch (e: any) {
     error.value = e?.message ?? String(e);
@@ -1033,10 +853,6 @@ onMounted(() => {
 .order-pending-table { order: 11; }
 .order-rejected-title { order: 20; }
 .order-rejected-table { order: 21; }
-.order-node-divider { order: 30; }
-.order-node-title { order: 31; }
-.order-node-form { order: 32; }
-.order-node-table { order: 33; }
 .order-conflict-title { order: 40; }
 .order-conflict-table { order: 41; }
 .order-profile-divider { order: 50; }
@@ -1086,10 +902,6 @@ onMounted(() => {
 .tone-reject {
   background: linear-gradient(135deg, #991b1b, #dc2626);
   color: #fee2e2;
-}
-.tone-link {
-  background: linear-gradient(135deg, #115e59, #0f766e);
-  color: #ccfbf1;
 }
 .tone-profile {
   background: linear-gradient(135deg, #312e81, #4f46e5);

@@ -37,6 +37,9 @@
             <div class="ann-time">发布时间：{{ fmtTime(a.created_at) }}</div>
           </div>
           <div class="md-body" v-html="renderMarkdown(a.content)" />
+          <el-link v-if="a.attachment_filename" type="primary" :href="announcementAttachmentUrl(a)" target="_blank" class="ann-attachment">
+            下载附件：{{ a.attachment_filename }}
+          </el-link>
         </div>
       </el-card>
 
@@ -68,6 +71,10 @@ function noticeSeenKey(): string {
 
 function fmtTime(v: string): string {
   return formatServerDateTime(v);
+}
+
+function announcementAttachmentUrl(row: Announcement): string {
+  return new ApiClient(settingsState.baseUrl).announcementAttachmentUrl(row.announcement_id);
 }
 
 function markAnnouncementSeen(rows: Announcement[]) {
@@ -143,6 +150,9 @@ reload();
 .ann-time {
   font-size: 12px;
   color: #64748b;
+}
+.ann-attachment {
+  margin-top: 6px;
 }
 .md-body :deep(p) { margin: 6px 0; color:#334155; }
 .md-body :deep(h1), .md-body :deep(h2), .md-body :deep(h3), .md-body :deep(h4) { margin: 8px 0; color:#0f172a; }

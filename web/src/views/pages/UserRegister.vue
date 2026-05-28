@@ -42,18 +42,18 @@
         class="mb"
       />
       <el-alert
-        :title="t('所有字段都必填。用户名必须按“姓名缩写+学号”填写；用户名、学号、邮箱都不能和已注册账号、待审核申请或待验证申请重复。', 'All fields are required. Username must be initials + student ID, and username, student ID, and email must be unique across registered, pending-review, and pending-verification accounts.')"
+        :title="t('所有字段都必填。用户名按“姓名缩写 + 邮箱前缀”生成；用户名、学号、邮箱都不能和已注册账号、待审核申请或待验证申请重复。', 'All fields are required. Username is generated as initials + email prefix, and username, student ID, and email must be unique across registered, pending-review, and pending-verification accounts.')"
         type="warning"
         :closable="false"
         show-icon
         class="mb"
       />
       <div class="rule-chips">
-        <span class="chip chip-orange">{{ t("用户名：姓名缩写+学号", "Username: initials + student ID") }}</span>
+        <span class="chip chip-orange">{{ t("用户名：姓名缩写+邮箱前缀", "Username: initials + email prefix") }}</span>
         <span class="chip chip-cyan">{{ t("学号：全平台唯一", "Student ID: globally unique") }}</span>
         <span class="chip chip-blue">{{ t("邮箱：仅允许 @example.org / @students.example.org", "Email: only @example.org / @students.example.org") }}</span>
       </div>
-      <div class="rule-note">{{ t("提交前会自动校验重复项；并强制校验“用户名=姓名缩写+学号”“邮箱前缀=学号（学号自动转大写）”。", "The form checks duplicates before submit, enforces username = initials + student ID, and email prefix = student ID (student ID is auto-uppercased).") }}</div>
+      <div class="rule-note">{{ t("提交前会自动校验重复项；用户名只需要输入姓名缩写部分，系统会自动把邮箱前缀拼到后面。", "The form checks duplicates before submit. You only type the initials part of the username, and the email prefix is appended automatically.") }}</div>
 
       <el-form label-position="top" :disabled="submitted || registerLocked" class="register-form">
         <div class="section-grid">
@@ -75,16 +75,18 @@
                     @input="onEmailInput"
                     @blur="checkUnique('email')"
                   />
-                  <div class="field-tip">{{ t("必须使用 `@example.org` 或 `@students.example.org`；邮箱前缀必须与学号一致。", "Use only @example.org or @students.example.org; the email prefix must match your student ID.") }}</div>
+                  <div class="field-tip">{{ t("必须使用 `@example.org` 或 `@students.example.org`；邮箱前缀会自动作为用户名后缀。", "Use only @example.org or @students.example.org; the email prefix will be appended to your username automatically.") }}</div>
                   <div v-if="fieldErrors.email" class="field-error">{{ fieldErrors.email }}</div>
                 </el-form-item>
               </el-col>
               <el-col :span="24">
                 <el-form-item required :class="fieldClass('username')">
                   <template #label><span class="required">*</span> {{ t("用户名", "Username") }}</template>
-                  <el-input v-model="form.username" :placeholder="usernamePlaceholder" @input="onUsernameInput" @blur="checkUnique('username')" />
-                  <div class="field-tip">{{ t("必须填写成“姓名拼音首字母缩写 + 学号”。例如：张三 -> zs；李小龙 -> lxl；最终用户名示例：", "Username must be initials + student ID. Example: Zhang San -> zs; Li Xiaolong -> lxl; final example: ") }}<code>{{ usernameExample }}</code></div>
-                  <div class="field-tip">{{ t("前缀只能是 2-8 个小写字母，后缀必须与下方学号完全一致。", "The prefix must be 2-8 lowercase letters, and the suffix must exactly match the student ID below.") }}</div>
+                  <el-input v-model="form.username" :placeholder="usernamePlaceholder" @input="onUsernameInput" @blur="checkUnique('username')">
+                    <template #append>{{ usernameSuffixDisplay }}</template>
+                  </el-input>
+                  <div class="field-tip">{{ t("这里只输入“姓名拼音首字母缩写”部分。例如：张三 -> zs；李小龙 -> lxl；系统会自动拼接邮箱前缀，最终用户名示例：", "Only enter the initials part here. Example: Zhang San -> zs; Li Xiaolong -> lxl; the system will append the email prefix automatically. Final example: ") }}<code>{{ usernameExample }}</code></div>
+                  <div class="field-tip">{{ t("前缀只能是 2-8 个小写字母；邮箱填写后，右侧会自动显示用户名后缀。", "The prefix must be 2-8 lowercase letters; after you enter the email, the username suffix is shown automatically on the right.") }}</div>
                   <div v-if="fieldErrors.username" class="field-error">{{ fieldErrors.username }}</div>
                 </el-form-item>
               </el-col>
@@ -142,7 +144,7 @@
                 <el-form-item required :class="fieldClass('student_id')">
                   <template #label><span class="required">*</span> {{ t("学号", "Student ID") }}</template>
                   <el-input v-model="form.student_id" :placeholder="t('注意全大写，例如26B123456', 'Uppercase only, for example 26B123456')" @input="onStudentInput" @blur="checkUnique('student_id')" />
-                  <div class="field-tip">{{ t("输入小写会自动转为大写；并将用于校验邮箱前缀。", "Lowercase input is auto-converted to uppercase and used to validate the email prefix.") }}</div>
+                  <div class="field-tip">{{ t("输入小写会自动转为大写；学号保持独立校验，不再强制要求与邮箱前缀一致。", "Lowercase input is auto-converted to uppercase. Student ID is validated independently and no longer has to match the email prefix.") }}</div>
                   <div v-if="fieldErrors.student_id" class="field-error">{{ fieldErrors.student_id }}</div>
                 </el-form-item>
               </el-col>
@@ -278,12 +280,15 @@ const captchaOption = ref<number | null>(null);
 let cooldownTimer: ReturnType<typeof setInterval> | null = null;
 const captchaQuestionLabel = computed(() => captchaQuestion.value || t("验证码加载中...", "Loading captcha..."));
 const registerLocked = computed(() => cooldownRemainingSeconds.value > 0);
+const usernameSuffix = computed(() => extractEmailLocalPart(form.email));
+const usernameSuffixDisplay = computed(() => usernameSuffix.value || t("邮箱前缀", "Email prefix"));
+const fullUsername = computed(() => buildFullUsername(form.username, form.email));
 const usernameExample = computed(() => {
-  const student = normalizeStudentIDInput(form.student_id);
-  return `zs${student || "26B123456"}`;
+  const local = usernameSuffix.value || "26B123456";
+  return `zs${local}`;
 });
 const usernamePlaceholder = computed(() =>
-  t(`例如：${usernameExample.value}（姓名缩写+学号）`, `Example: ${usernameExample.value} (initials + student ID)`),
+  t("例如：zs（只填姓名缩写）", "Example: zs (initials only)"),
 );
 const livePasswordError = computed(() => {
   const password = String(form.password || "");
@@ -334,6 +339,18 @@ function normalizeStudentIDInput(v: string): string {
   return String(v || "").trim().toUpperCase();
 }
 
+function extractEmailLocalPart(emailRaw: string): string {
+  const m = String(emailRaw || "").trim().match(/^([^@\s]+)@([^@\s]+)$/);
+  if (!m) return "";
+  return String(m[1] || "").trim().toUpperCase();
+}
+
+function buildFullUsername(prefixRaw: string, emailRaw: string): string {
+  const prefix = String(prefixRaw || "").trim();
+  const suffix = extractEmailLocalPart(emailRaw);
+  return `${prefix}${suffix}`.trim();
+}
+
 function clearFieldError(field: FieldKey) {
   fieldErrors[field] = "";
 }
@@ -364,11 +381,9 @@ function clampFrontendCooldownSeconds(seconds: number): number {
   return Math.max(1, Math.min(MAX_FRONTEND_REGISTER_COOLDOWN_SECONDS, Math.ceil(Number(seconds || 0))));
 }
 
-function normalizeRegisterEmailForStudent(emailRaw: string, studentRaw: string): { value: string; error: string | null } {
-  const student = normalizeStudentIDInput(studentRaw);
+function normalizeRegisterEmailInput(emailRaw: string): { value: string; error: string | null } {
   const email = String(emailRaw || "").trim();
   if (!email) return { value: "", error: "邮箱不能为空" };
-  if (!student) return { value: email, error: "请先填写学号" };
   const m = email.match(/^([^@\s]+)@([^@\s]+)$/);
   if (!m) return { value: email, error: "邮箱格式不合法" };
   const local = String(m[1] || "").trim().toUpperCase();
@@ -376,22 +391,21 @@ function normalizeRegisterEmailForStudent(emailRaw: string, studentRaw: string):
   if (!allowedEmailDomains.includes(domain)) {
     return { value: email, error: "注册邮箱后缀仅支持 @example.org 或 @students.example.org" };
   }
-  if (local !== student) {
-    return { value: `${student}@${domain}`, error: "邮箱前缀必须与学号一致（邮箱前缀=学号）" };
-  }
-  return { value: `${student}@${domain}`, error: null };
+  return { value: `${local}@${domain}`, error: null };
 }
 
-function validateUsernameRuleLocal(usernameRaw: string, studentRaw: string): string {
-  const username = String(usernameRaw || "").trim();
-  const student = normalizeStudentIDInput(studentRaw);
-  if (!username) return "用户名不能为空";
-  if (!student) return "请先填写学号，再按“姓名缩写+学号”填写用户名。";
-  if (Array.from(username).length > 18) return "用户名最多 18 个字符，请缩短后再试。";
-  if (!username.endsWith(student)) return `用户名必须以学号 ${student} 结尾，例如 ${usernameExample.value}。`;
-  const prefix = username.slice(0, username.length - student.length);
+function validateUsernameRuleLocal(usernamePrefixRaw: string, emailRaw: string): string {
+  const prefix = String(usernamePrefixRaw || "").trim();
+  const suffix = extractEmailLocalPart(emailRaw);
+  if (!prefix) return "用户名不能为空";
+  if (!suffix) return "请先填写合法邮箱，再按“姓名缩写+邮箱前缀”填写用户名。";
   if (!/^[a-z]{2,8}$/.test(prefix)) {
-    return `用户名必须写成“姓名缩写+学号”，前缀需为 2-8 个小写字母，例如 ${usernameExample.value}。`;
+    return `用户名必须写成“姓名缩写+邮箱前缀”，前缀需为 2-8 个小写字母，例如 ${usernameExample.value}。`;
+  }
+  const composed = `${prefix}${suffix}`;
+  if (Array.from(composed).length > 18) return "用户名最多 18 个字符，请缩短后再试。";
+  if (!composed.endsWith(suffix)) {
+    return `用户名必须以邮箱前缀 ${suffix} 结尾，例如 ${usernameExample.value}。`;
   }
   return "";
 }
@@ -399,23 +413,20 @@ function validateUsernameRuleLocal(usernameRaw: string, studentRaw: string): str
 function onStudentInput() {
   form.student_id = normalizeStudentIDInput(form.student_id);
   clearFieldError("student_id");
-  if (String(form.username || "").trim()) {
-    fieldErrors.username = validateUsernameRuleLocal(form.username, form.student_id);
-  }
-  const emailRaw = String(form.email || "").trim();
-  if (emailRaw) {
-    const normalized = normalizeRegisterEmailForStudent(emailRaw, form.student_id);
-    form.email = normalized.value;
-    fieldErrors.email = normalized.error || "";
-  }
+  if (String(form.username || "").trim()) fieldErrors.username = validateUsernameRuleLocal(form.username, form.email);
 }
 
 function onEmailInput() {
   clearFieldError("email");
+  const normalized = normalizeRegisterEmailInput(form.email);
+  form.email = normalized.value;
+  if (String(form.username || "").trim()) {
+    fieldErrors.username = validateUsernameRuleLocal(form.username, form.email);
+  }
 }
 
 function onUsernameInput() {
-  fieldErrors.username = validateUsernameRuleLocal(form.username, form.student_id);
+  fieldErrors.username = validateUsernameRuleLocal(form.username, form.email);
 }
 
 function firstFieldErrorMessage(): string {
@@ -433,8 +444,6 @@ function normalizeFieldError(field: FieldKey, msg: string): string {
   if (text === "邮箱已存在") return "该邮箱已被使用，请换一个邮箱。";
   if (text === "邮箱格式不合法") return "邮箱格式不正确，请检查后再填写。";
   if (text.includes("注册邮箱后缀仅支持")) return "邮箱后缀仅支持 @example.org 或 @students.example.org。";
-  if (text.includes("邮箱前缀必须与学号一致")) return "邮箱前缀必须与学号一致（邮箱前缀=学号）。";
-  if (text === "请先填写学号") return "请先填写学号。";
   if (text === "学号已存在") return "该学号已被使用，请确认后再填写。";
   if (text === "用户名已被待审核申请占用") return "该用户名已被他人提交注册申请，请更换。";
   if (text === "邮箱已被待审核申请占用") return "该邮箱已被他人提交注册申请，请更换。";
@@ -443,9 +452,9 @@ function normalizeFieldError(field: FieldKey, msg: string): string {
   if (text === "邮箱已被待验证申请占用") return "该邮箱已有待验证申请，请先完成邮箱验证或稍后重试。";
   if (text === "学号已被待验证申请占用") return "该学号已有待验证申请，请先完成邮箱验证或稍后重试。";
   if (text === "用户名不能为空") return "用户名不能为空。";
-  if (text === "请先填写学号，再按“姓名缩写+学号”格式填写用户名") return "请先填写学号，再按“姓名缩写+学号”格式填写用户名。";
-  if (text.startsWith("用户名必须以学号 ")) return `${text}。`;
-  if (text.includes("用户名必须写成“姓名缩写+学号”")) return `${text}。`;
+  if (text === "请先填写合法邮箱，再按“姓名缩写+邮箱前缀”格式填写用户名") return "请先填写合法邮箱，再按“姓名缩写+邮箱前缀”格式填写用户名。";
+  if (text.startsWith("用户名必须以邮箱前缀 ")) return `${text}。`;
+  if (text.includes("用户名必须写成“姓名缩写+邮箱前缀”")) return `${text}。`;
   if (field === "username" && text.includes("18")) return "用户名最多 18 个字符，请缩短后再试。";
   return text;
 }
@@ -473,15 +482,14 @@ function normalizeRegisterError(msg: string): string {
   }
   if (text === "请完整填写注册信息") return "请把所有必填项填写完整后再提交。";
   if (text === "用户名不能为空") return "用户名不能为空。";
-  if (text === "请先填写学号，再按“姓名缩写+学号”格式填写用户名") return "请先填写学号，再按“姓名缩写+学号”格式填写用户名。";
+  if (text === "请先填写合法邮箱，再按“姓名缩写+邮箱前缀”格式填写用户名") return "请先填写合法邮箱，再按“姓名缩写+邮箱前缀”格式填写用户名。";
   if (text === "用户名不得超过 18 个字符") return "用户名最多 18 个字符，请缩短后再提交。";
-  if (text.startsWith("用户名必须以学号 ")) return `${text}。`;
-  if (text.includes("用户名必须写成“姓名缩写+学号”")) return `${text}。`;
+  if (text.startsWith("用户名必须以邮箱前缀 ")) return `${text}。`;
+  if (text.includes("用户名必须写成“姓名缩写+邮箱前缀”")) return `${text}。`;
   if (text.includes("强密码规则")) return STRONG_PASSWORD_RULE_TEXT;
   if (text === "密码不能包含空格") return "密码不能包含空格。";
   if (text === "邮箱格式不合法") return "邮箱格式不正确，请检查后再提交。";
   if (text.includes("注册邮箱后缀仅支持")) return "注册邮箱后缀仅支持 @example.org 或 @students.example.org。";
-  if (text.includes("邮箱前缀必须与学号一致")) return "邮箱前缀必须与学号一致（邮箱前缀=学号）。";
   if (text === "请求过于频繁，请稍后再试") return "请求过于频繁，请稍后再试。";
   if (text === "该邮箱请求过于频繁，请稍后再试") return "该邮箱请求过于频繁，请稍后再试。";
   if (text === "验证码错误，请重试") return "验证码错误，请重新选择后再提交。";
@@ -516,7 +524,7 @@ function applyRegisterErrorToFields(msg: string) {
     fieldErrors.captcha = normalizeRegisterError(text);
     return;
   }
-  if (text === "邮箱不能为空" || text === "邮箱格式不合法" || text.includes("注册邮箱后缀仅支持") || text.includes("邮箱前缀必须与学号一致")) {
+  if (text === "邮箱不能为空" || text === "邮箱格式不合法" || text.includes("注册邮箱后缀仅支持")) {
     fieldErrors.email = normalizeFieldError("email", text);
     return;
   }
@@ -524,12 +532,12 @@ function applyRegisterErrorToFields(msg: string) {
     fieldErrors.student_id = "请填写学号。";
     return;
   }
-  if (text === "用户名不能为空" || text.startsWith("用户名必须以学号 ") || text.includes("用户名必须写成“姓名缩写+学号”") || text === "用户名不得超过 18 个字符") {
+  if (text === "用户名不能为空" || text.startsWith("用户名必须以邮箱前缀 ") || text.includes("用户名必须写成“姓名缩写+邮箱前缀”") || text === "用户名不得超过 18 个字符") {
     fieldErrors.username = normalizeFieldError("username", text);
     return;
   }
-  if (text === "请先填写学号，再按“姓名缩写+学号”格式填写用户名") {
-    fieldErrors.student_id = "请先填写学号。";
+  if (text === "请先填写合法邮箱，再按“姓名缩写+邮箱前缀”格式填写用户名") {
+    fieldErrors.email = "请先填写合法邮箱。";
     fieldErrors.username = normalizeFieldError("username", text);
     return;
   }
@@ -546,24 +554,25 @@ async function checkUnique(field?: FieldKey): Promise<boolean> {
   form.student_id = normalizeStudentIDInput(form.student_id);
   clearFieldError("username");
   clearFieldError("email");
+  const composedUsername = fullUsername.value;
   const usernameRaw = String(form.username || "").trim();
   if (usernameRaw) {
-    fieldErrors.username = validateUsernameRuleLocal(usernameRaw, form.student_id);
+    fieldErrors.username = validateUsernameRuleLocal(usernameRaw, form.email);
     if (field === "username" && fieldErrors.username) return false;
   }
   const emailRaw = String(form.email || "").trim();
   if (emailRaw) {
-    const normalized = normalizeRegisterEmailForStudent(emailRaw, form.student_id);
+    const normalized = normalizeRegisterEmailInput(emailRaw);
     form.email = normalized.value;
     if (normalized.error) {
       fieldErrors.email = normalized.error;
-      if (field === "email" || field === "student_id") return false;
+      if (field === "email") return false;
     }
   }
   try {
     const client = new ApiClient(settingsState.baseUrl);
     const r = await client.authRegisterCheck({
-      username: form.username,
+      username: composedUsername,
       email: form.email,
       student_id: form.student_id,
     });
@@ -595,8 +604,8 @@ function validateRegisterFormLocal(): boolean {
   if (!String(form.student_id || "").trim()) {
     fieldErrors.student_id = "请填写学号。";
   }
-  fieldErrors.username = validateUsernameRuleLocal(form.username, form.student_id);
-  const normalizedEmail = normalizeRegisterEmailForStudent(form.email, form.student_id);
+  fieldErrors.username = validateUsernameRuleLocal(form.username, form.email);
+  const normalizedEmail = normalizeRegisterEmailInput(form.email);
   form.email = normalizedEmail.value;
   if (normalizedEmail.error) {
     fieldErrors.email = normalizedEmail.error;
@@ -699,6 +708,7 @@ async function submit() {
     const client = new ApiClient(settingsState.baseUrl);
     const r = await client.authRegister({
       ...form,
+      username: fullUsername.value,
       accept_guideline: acceptGuideline.value,
       captcha_id: captchaId.value,
       captcha_option: Number(captchaOption.value),

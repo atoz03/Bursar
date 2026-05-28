@@ -610,12 +610,14 @@ type RegistrationSecurityEvent struct {
 }
 
 type RegistrationRateStats struct {
-	IPCount            int
-	EmailCount         int
-	LastIPAt           *time.Time
-	LastEmailAt        *time.Time
-	IPWindowRetryAt    *time.Time
-	EmailWindowRetryAt *time.Time
+	IPCount              int
+	EmailCount           int
+	LastIPAt             *time.Time
+	LastEmailAt          *time.Time
+	RecentIPFailureCount int
+	LastIPFailureAt      *time.Time
+	IPWindowRetryAt      *time.Time
+	EmailWindowRetryAt   *time.Time
 }
 
 type DeletedUserAccount struct {
@@ -685,6 +687,12 @@ type PowerUser struct {
 	CanViewNodes           bool       `json:"can_view_nodes"`
 	CanManageNodes         bool       `json:"can_manage_nodes"`
 	CanManagePoints        bool       `json:"can_manage_points"`
+	CanPointsUsers         bool       `json:"can_points_users"`
+	CanPointsBatchFiltered bool       `json:"can_points_batch_filtered"`
+	CanPointsBatchAll      bool       `json:"can_points_batch_all"`
+	CanPointsRecords       bool       `json:"can_points_records"`
+	CanPointsMonthly       bool       `json:"can_points_monthly"`
+	CanPointsSpecialRules  bool       `json:"can_points_special_rules"`
 	CanReviewRequests      bool       `json:"can_review_requests"`
 	CanManagePlatformUsers bool       `json:"can_manage_platform_users"`
 	CreatedBy              string     `json:"created_by"`
@@ -735,13 +743,17 @@ type PointsOperationRecord struct {
 }
 
 type Announcement struct {
-	AnnouncementID int       `json:"announcement_id"`
-	Title          string    `json:"title"`
-	Content        string    `json:"content"`
-	Pinned         bool      `json:"pinned"`
-	CreatedBy      string    `json:"created_by"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	AnnouncementID        int       `json:"announcement_id"`
+	Title                 string    `json:"title"`
+	Content               string    `json:"content"`
+	Pinned                bool      `json:"pinned"`
+	AttachmentFilename    string    `json:"attachment_filename,omitempty"`
+	AttachmentContentType string    `json:"attachment_content_type,omitempty"`
+	AttachmentSizeBytes   int64     `json:"attachment_size_bytes,omitempty"`
+	AttachmentSHA256      string    `json:"attachment_sha256,omitempty"`
+	CreatedBy             string    `json:"created_by"`
+	CreatedAt             time.Time `json:"created_at"`
+	UpdatedAt             time.Time `json:"updated_at"`
 }
 
 type AdminNote struct {
@@ -759,6 +771,7 @@ type AdminUserDetail struct {
 	PlatformUID            *int              `json:"platform_uid,omitempty"`
 	IsPlatformUser         bool              `json:"is_platform_user"`
 	Role                   string            `json:"role"`
+	CreatedAt              time.Time         `json:"created_at"`
 	CanViewBoard           bool              `json:"can_view_board"`
 	CanViewNodes           bool              `json:"can_view_nodes"`
 	CanReviewRequest       bool              `json:"can_review_requests"`
@@ -812,6 +825,12 @@ type PlatformUserBackupRow struct {
 	CanViewNodes            bool       `json:"can_view_nodes"`
 	CanManageNodes          bool       `json:"can_manage_nodes"`
 	CanManagePoints         bool       `json:"can_manage_points"`
+	CanPointsUsers          bool       `json:"can_points_users"`
+	CanPointsBatchFiltered  bool       `json:"can_points_batch_filtered"`
+	CanPointsBatchAll       bool       `json:"can_points_batch_all"`
+	CanPointsRecords        bool       `json:"can_points_records"`
+	CanPointsMonthly        bool       `json:"can_points_monthly"`
+	CanPointsSpecialRules   bool       `json:"can_points_special_rules"`
 	CanReviewRequests       bool       `json:"can_review_requests"`
 	CanManagePlatformUsers  bool       `json:"can_manage_platform_users"`
 }
@@ -916,6 +935,7 @@ type SpecialMonthlyPointsRule struct {
 	Username      string    `json:"username"`
 	MonthlyPoints float64   `json:"monthly_points"`
 	Enabled       bool      `json:"enabled"`
+	Note          string    `json:"note"`
 	UpdatedBy     string    `json:"updated_by"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`

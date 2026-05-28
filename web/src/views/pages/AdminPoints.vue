@@ -1,6 +1,6 @@
 <template>
   <div class="content-stack">
-    <el-card class="section-card">
+    <el-card v-if="allowPointsUsers" class="section-card">
       <template #header>
         <div class="section-head">
           <div class="section-title-wrap">
@@ -102,7 +102,7 @@
       </el-table>
     </el-card>
 
-    <el-card class="section-card">
+    <el-card v-if="allowPointsBatchFiltered" class="section-card">
       <template #header>
         <div class="section-head">
           <div class="section-title-wrap">
@@ -162,7 +162,7 @@
       </div>
     </el-card>
 
-    <el-card class="section-card">
+    <el-card v-if="allowPointsBatchAll" class="section-card">
       <template #header>
         <div class="section-head">
           <div class="section-title-wrap">
@@ -197,7 +197,7 @@
       </el-form>
     </el-card>
 
-    <el-card class="section-card">
+    <el-card v-if="allowPointsRecords" class="section-card">
       <template #header>
         <div class="section-head">
           <div class="section-title-wrap">
@@ -250,7 +250,7 @@
       </el-table>
     </el-card>
 
-    <el-card class="section-card">
+    <el-card v-if="allowPointsMonthly" class="section-card">
       <template #header>
         <div class="section-head">
           <div class="section-title-wrap">
@@ -305,7 +305,7 @@
       </div>
     </el-card>
 
-    <el-card class="section-card">
+    <el-card v-if="allowPointsSpecialRules" class="section-card">
       <template #header>
         <div class="section-head">
           <div class="section-title-wrap">
@@ -334,25 +334,34 @@
         <el-form-item>
           <el-checkbox v-model="ruleEnabled">启用</el-checkbox>
         </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="ruleNote" placeholder="记录设置原因，方便后续回看" clearable style="width: 320px" />
+        </el-form-item>
         <el-form-item>
           <el-button :loading="ruleSaving" type="primary" @click="saveRule">新增/更新</el-button>
         </el-form-item>
       </el-form>
 
       <el-table :data="rules" stripe height="300">
-        <el-table-column prop="username" label="用户名" width="180" />
+        <el-table-column prop="username" label="用户名" width="180">
+          <template #default="{ row }">
+            <button type="button" class="username-link" @click="openUserDetail(row.username)">{{ row.username }}</button>
+          </template>
+        </el-table-column>
         <el-table-column label="每月积分" width="120">
           <template #default="{ row }">{{ fmt2(row.monthly_points) }}</template>
         </el-table-column>
         <el-table-column label="启用" width="100">
           <template #default="{ row }">{{ row.enabled ? "是" : "否" }}</template>
         </el-table-column>
+        <el-table-column prop="note" label="备注" min-width="220" show-overflow-tooltip />
         <el-table-column prop="updated_by" label="更新人" width="140" />
         <el-table-column label="更新时间" min-width="180">
           <template #default="{ row }">{{ fmtTime(row.updated_at) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="120">
+        <el-table-column label="操作" width="180">
           <template #default="{ row }">
+            <el-button size="small" @click="editRule(row)">编辑</el-button>
             <el-button size="small" type="danger" plain @click="removeRule(row.username)">删除</el-button>
           </template>
         </el-table-column>
@@ -402,7 +411,7 @@
       </template>
     </el-dialog>
 
-    <PlatformUserDetailDialog v-model="detailVisible" :username="detailUsername" />
+    <PlatformUserDetailDialog v-if="allowPointsUsers" v-model="detailVisible" :username="detailUsername" />
   </div>
 </template>
 
@@ -477,6 +486,7 @@ const maxOverdraftLimit = ref(500);
 const ruleUsername = ref("");
 const rulePoints = ref(100);
 const ruleEnabled = ref(true);
+const ruleNote = ref("");
 
 const adjustVisible = ref(false);
 const adjustUsername = ref("");
@@ -525,6 +535,13 @@ const displayUsers = computed<PointsUser[]>(() => {
   const base = (users.value || []).filter((row) => !(hasPointsFilter.value && isAdminRole(row.role)));
   return sortPointsUsers(base, pointsUserSortKey.value, pointsUserSortOrder.value);
 });
+
+const allowPointsUsers = computed(() => authState.role === "admin" || authState.canPointsUsers);
+const allowPointsBatchFiltered = computed(() => authState.role === "admin" || authState.canPointsBatchFiltered);
+const allowPointsBatchAll = computed(() => authState.role === "admin" || authState.canPointsBatchAll);
+const allowPointsRecords = computed(() => authState.role === "admin" || authState.canPointsRecords);
+const allowPointsMonthly = computed(() => authState.role === "admin" || authState.canPointsMonthly);
+const allowPointsSpecialRules = computed(() => authState.role === "admin" || authState.canPointsSpecialRules);
 
 const filteredBatchTargetUsernames = computed<string[]>(() => {
   const base = displayUsers.value || [];
@@ -831,6 +848,7 @@ function setAdjustCurrentBalances(
 }
 
 async function loadAdjustCurrentBalances(username: string) {
+  if (!allowPointsUsers.value) return;
   const u = String(username || "").trim();
   if (!u) return;
   adjustBalanceLoading.value = true;
@@ -873,6 +891,10 @@ function clearRecordsQueryTimer() {
 }
 
 async function loadUsers() {
+  if (!allowPointsUsers.value) {
+    users.value = [];
+    return;
+  }
   const kw = String(keyword.value || "").trim();
   const limit = kw ? USERS_QUERY_LIMIT_FILTERED : USERS_QUERY_LIMIT_EMPTY;
   const r = await client().adminPointsUsers({ keyword: kw, keywordField: keywordField.value, limit });
@@ -880,21 +902,40 @@ async function loadUsers() {
 }
 
 async function loadAllUsers() {
+  if (!allowPointsUsers.value) {
+    allUsers.value = [];
+    return;
+  }
   const r = await client().adminPointsUsers({ limit: ALL_USERS_LIMIT });
   allUsers.value = dedupUsers(r.users ?? []);
 }
 
 async function loadRecords() {
+  if (!allowPointsRecords.value) {
+    records.value = [];
+    return;
+  }
   const r = await client().adminPointsRecords({ username: String(recordKeyword.value || "").trim(), limit: RECORDS_QUERY_LIMIT });
   records.value = r.records ?? [];
 }
 
 async function loadRules() {
+  if (!allowPointsSpecialRules.value) {
+    rules.value = [];
+    return;
+  }
   const r = await client().adminPointsSpecialRules();
   rules.value = r.rules ?? [];
 }
 
 async function loadMonthlyStatus() {
+  if (!allowPointsMonthly.value) {
+    monthlyStatus.month_key = "";
+    monthlyStatus.has_run = false;
+    monthlyStatus.run = null;
+    monthlyStatus.last_run = null;
+    return;
+  }
   const r = await client().adminPointsMonthlyResetStatus();
   monthlyStatus.month_key = r.month_key;
   monthlyStatus.has_run = !!r.has_run;
@@ -903,6 +944,7 @@ async function loadMonthlyStatus() {
 }
 
 async function loadMonthlyConfig() {
+  if (!allowPointsMonthly.value) return;
   const r = await client().adminPointsMonthlyConfig();
   doctorPoints.value = Number(r.config?.doctor_points ?? 200);
   masterPoints.value = Number(r.config?.master_points ?? 100);
@@ -916,7 +958,20 @@ async function reloadAll() {
   error.value = "";
   success.value = "";
   try {
-    await Promise.all([loadUsers(), loadAllUsers(), loadRecords(), loadRules(), loadMonthlyStatus(), loadMonthlyConfig()]);
+    const tasks: Array<Promise<void>> = [];
+    if (allowPointsUsers.value) {
+      tasks.push(loadUsers(), loadAllUsers());
+    }
+    if (allowPointsRecords.value) {
+      tasks.push(loadRecords());
+    }
+    if (allowPointsSpecialRules.value) {
+      tasks.push(loadRules());
+    }
+    if (allowPointsMonthly.value) {
+      tasks.push(loadMonthlyStatus(), loadMonthlyConfig());
+    }
+    await Promise.all(tasks);
   } catch (e: any) {
     error.value = e?.message ?? String(e);
   } finally {
@@ -925,6 +980,7 @@ async function reloadAll() {
 }
 
 async function saveMonthlyConfig() {
+  if (!allowPointsMonthly.value) return;
   configSaving.value = true;
   error.value = "";
   success.value = "";
@@ -946,6 +1002,7 @@ async function saveMonthlyConfig() {
 }
 
 function openAdjust(row: PointsUser) {
+  if (!allowPointsUsers.value) return;
   adjustUsername.value = row.username;
   adjustDelta.value = 100;
   adjustReason.value = "";
@@ -964,12 +1021,14 @@ function openAdjust(row: PointsUser) {
 }
 
 function openUserDetail(username: string) {
+  if (!allowPointsUsers.value) return;
   detailUsername.value = String(username || "").trim();
   if (!detailUsername.value) return;
   detailVisible.value = true;
 }
 
 async function submitAdjust() {
+  if (!allowPointsUsers.value) return;
   if (!adjustUsername.value.trim()) return;
   if (!adjustDelta.value) {
     error.value = "调整值不能为 0";
@@ -1008,6 +1067,7 @@ async function submitAdjust() {
 }
 
 async function runFilteredBatchAdjust() {
+  if (!allowPointsBatchFiltered.value) return;
   const amount = Number(filteredBatchAmount.value || 0);
   if (amount === 0) {
     error.value = "筛选批量调整值不能为 0";
@@ -1063,6 +1123,7 @@ async function runFilteredBatchAdjust() {
 }
 
 async function runFilteredBatchSet() {
+  if (!allowPointsBatchFiltered.value) return;
   const value = Number(filteredBatchSetValue.value || 0);
   const scope = filteredBatchScope.value;
   const nodeID = String(filteredBatchNodeId.value || "").trim();
@@ -1117,6 +1178,7 @@ async function runFilteredBatchSet() {
 }
 
 async function runBatchGrant() {
+  if (!allowPointsBatchAll.value) return;
   const amount = Number(batchAmount.value || 0);
   if (amount === 0) {
     error.value = "全体调整值不能为 0";
@@ -1163,6 +1225,7 @@ async function runBatchGrant() {
 }
 
 async function runMonthlyReset() {
+  if (!allowPointsMonthly.value) return;
   try {
     await ElMessageBox.confirm(
       forceReset.value
@@ -1196,6 +1259,7 @@ async function runMonthlyReset() {
 }
 
 async function saveRule() {
+  if (!allowPointsSpecialRules.value) return;
   const username = ruleUsername.value.trim();
   if (!username) {
     error.value = "用户名不能为空";
@@ -1209,11 +1273,13 @@ async function saveRule() {
       username,
       monthly_points: Number(rulePoints.value || 0),
       enabled: !!ruleEnabled.value,
+      note: ruleNote.value.trim(),
     });
     success.value = "特殊用户规则已保存";
     ruleUsername.value = "";
     rulePoints.value = 100;
     ruleEnabled.value = true;
+    ruleNote.value = "";
     await loadRules();
   } catch (e: any) {
     error.value = e?.message ?? String(e);
@@ -1229,6 +1295,7 @@ function autoFillRuleForUsername(rawUsername: string) {
   if (hit) {
     rulePoints.value = Number(hit.monthly_points || 0);
     ruleEnabled.value = !!hit.enabled;
+    ruleNote.value = String(hit.note || "");
     return;
   }
   const user = allUsers.value.find((u) => String(u.username || "").trim() === username);
@@ -1242,6 +1309,7 @@ function autoFillRuleForUsername(rawUsername: string) {
     rulePoints.value = Number(otherPoints.value || 0);
   }
   ruleEnabled.value = true;
+  ruleNote.value = "";
 }
 
 function onKeywordSelect(item: any) {
@@ -1275,6 +1343,13 @@ function onRuleUsernameChange() {
   autoFillRuleForUsername(ruleUsername.value);
 }
 
+function editRule(row: SpecialMonthlyPointsRule) {
+  ruleUsername.value = String(row.username || "").trim();
+  rulePoints.value = Number(row.monthly_points || 0);
+  ruleEnabled.value = !!row.enabled;
+  ruleNote.value = String(row.note || "");
+}
+
 function onKeywordInputChange() {
   const kw = String(keyword.value || "").trim();
   clearUsersQueryTimer();
@@ -1296,6 +1371,7 @@ function onRecordKeywordInputChange() {
 }
 
 async function removeRule(username: string) {
+  if (!allowPointsSpecialRules.value) return;
   try {
     await ElMessageBox.confirm(`确认删除特殊规则用户 ${username} 吗？`, "二次确认", {
       type: "warning",
@@ -1449,6 +1525,17 @@ onBeforeUnmount(() => {
 .delta-minus {
   color: #b91c1c;
   font-weight: 700;
+}
+.username-link {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #16a34a;
+  font-weight: 600;
+  cursor: pointer;
+}
+.username-link:hover {
+  text-decoration: underline;
 }
 @media (max-width: 900px) {
   .section-head {
