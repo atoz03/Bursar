@@ -1,13 +1,46 @@
 let typesetTimer: number | null = null;
+let typesetting = false;
+let rerunAfterTypeset = false;
 
 declare global {
   interface Window {
     MathJax?: {
-      typesetPromise?: () => Promise<void>;
-      typesetClear?: () => void;
+      typesetPromise?: (elements?: Element[]) => Promise<void>;
+      typesetClear?: (elements?: Element[]) => void;
     };
     __gpuopsMathReady?: boolean;
-    __gpuopsMathObserver?: MutationObserver;
+  }
+}
+
+function mathTargets(): Element[] {
+  if (typeof document === "undefined") return [];
+  return Array.from(document.querySelectorAll(".md-body"));
+}
+
+function runMathTypeset(): void {
+  const mj = window.MathJax;
+  if (!mj?.typesetPromise) return;
+  const targets = mathTargets();
+  if (targets.length === 0) return;
+  if (typesetting) {
+    rerunAfterTypeset = true;
+    return;
+  }
+  typesetting = true;
+  try {
+    mj.typesetClear?.(targets);
+    mj
+      .typesetPromise(targets)
+      .catch(() => {})
+      .finally(() => {
+        typesetting = false;
+        if (rerunAfterTypeset) {
+          rerunAfterTypeset = false;
+          queueMathTypeset();
+        }
+      });
+  } catch {
+    typesetting = false;
   }
 }
 
@@ -18,14 +51,7 @@ export function queueMathTypeset(): void {
   }
   typesetTimer = window.setTimeout(() => {
     typesetTimer = null;
-    const mj = window.MathJax;
-    if (!mj?.typesetPromise) return;
-    try {
-      mj.typesetClear?.();
-      mj.typesetPromise().catch(() => {});
-    } catch {
-      // ignore
-    }
+    runMathTypeset();
   }, 60);
 }
 
@@ -61,16 +87,4 @@ export function setupMathSupport(): void {
   };
 
   injectMathJaxScript();
-
-  if (!window.__gpuopsMathObserver) {
-    window.__gpuopsMathObserver = new MutationObserver(() => {
-      queueMathTypeset();
-    });
-    window.__gpuopsMathObserver.observe(document.body, {
-      childList: true,
-      subtree: true,
-      characterData: true,
-    });
-  }
 }
-
