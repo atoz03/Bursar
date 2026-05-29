@@ -1,5 +1,8 @@
 import { queueMathTypeset } from "./math";
 
+const MAX_MATH_EXPRESSIONS = 100;
+const MAX_MATH_EXPR_LEN = 4000;
+
 function escapeHtml(input: string): string {
   return (input || "")
     .replaceAll("&", "&amp;")
@@ -18,25 +21,33 @@ function buildMathPlaceholders(md: string): { text: string; dict: Map<string, st
   };
 
   let text = md;
-
-  text = text.replace(/\$\$([\s\S]+?)\$\$/g, (_m, expr: string) => {
-    const token = nextToken();
+  const addMathPlaceholder = (expr: string, block: boolean): string | null => {
     const content = String(expr || "").trim();
-    dict.set(token, `<div class="md-math-block">\\[${escapeHtml(content)}\\]</div>`);
+    if (!content || content.length > MAX_MATH_EXPR_LEN || dict.size >= MAX_MATH_EXPRESSIONS) {
+      return null;
+    }
+    const token = nextToken();
+    const escaped = escapeHtml(content);
+    dict.set(
+      token,
+      block ? `<div class="md-math-block">\\[${escaped}\\]</div>` : `<span class="md-math-inline">\\(${escaped}\\)</span>`,
+    );
+    return token;
+  };
+
+  text = text.replace(/\$\$([\s\S]+?)\$\$/g, (match: string, expr: string) => {
+    const token = addMathPlaceholder(expr, true);
+    if (!token) return match;
     return `\n${token}\n`;
   });
 
-  text = text.replace(/\\\((.+?)\\\)/g, (_m, expr: string) => {
-    const token = nextToken();
-    const content = String(expr || "").trim();
-    dict.set(token, `<span class="md-math-inline">\\(${escapeHtml(content)}\\)</span>`);
-    return token;
+  text = text.replace(/\\\((.+?)\\\)/g, (match: string, expr: string) => {
+    return addMathPlaceholder(expr, false) ?? match;
   });
 
-  text = text.replace(/(^|[^\\$])\$([^\n$]+?)\$/g, (_m, prefix: string, expr: string) => {
-    const token = nextToken();
-    const content = String(expr || "").trim();
-    dict.set(token, `<span class="md-math-inline">\\(${escapeHtml(content)}\\)</span>`);
+  text = text.replace(/(^|[^\\$])\$([^\n$]+?)\$/g, (match: string, prefix: string, expr: string) => {
+    const token = addMathPlaceholder(expr, false);
+    if (!token) return match;
     return `${prefix}${token}`;
   });
 

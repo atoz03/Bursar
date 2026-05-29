@@ -14,9 +14,10 @@ import (
 )
 
 const (
-	totpIssuer = "GPU Ops"
-	totpDigits = 6
-	totpPeriod = 30
+	totpIssuer    = "GPU Ops"
+	totpDigits    = 6
+	totpPeriod    = 30
+	totpSkewSteps = 2
 )
 
 var totpBase32Encoding = base32.StdEncoding.WithPadding(base32.NoPadding)
@@ -66,7 +67,7 @@ func verifyTOTPCode(secret string, code string, now time.Time) bool {
 	if len(code) != totpDigits {
 		return false
 	}
-	for _, skew := range []int{-1, 0, 1} {
+	for skew := -totpSkewSteps; skew <= totpSkewSteps; skew++ {
 		candidate, err := generateTOTPCode(secret, now.Add(time.Duration(skew*totpPeriod)*time.Second))
 		if err != nil {
 			return false

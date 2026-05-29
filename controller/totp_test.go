@@ -26,18 +26,30 @@ func TestGenerateTOTPCodeRFCVectors(t *testing.T) {
 	}
 }
 
-func TestVerifyTOTPCodeAllowsOneStepSkew(t *testing.T) {
+func TestVerifyTOTPCodeAllowsConfiguredClockSkew(t *testing.T) {
 	secret, err := generateTOTPSecret()
 	if err != nil {
 		t.Fatalf("generateTOTPSecret error: %v", err)
 	}
 	now := time.Unix(1710000000, 0)
-	code, err := generateTOTPCode(secret, now.Add(-30*time.Second))
+	for _, offset := range []time.Duration{
+		-time.Duration(totpSkewSteps) * totpPeriod * time.Second,
+		time.Duration(totpSkewSteps) * totpPeriod * time.Second,
+	} {
+		code, err := generateTOTPCode(secret, now.Add(offset))
+		if err != nil {
+			t.Fatalf("generateTOTPCode error: %v", err)
+		}
+		if !verifyTOTPCode(secret, code, now) {
+			t.Fatalf("verifyTOTPCode should accept offset %s", offset)
+		}
+	}
+	oldCode, err := generateTOTPCode(secret, now.Add(-time.Duration(totpSkewSteps+1)*totpPeriod*time.Second))
 	if err != nil {
 		t.Fatalf("generateTOTPCode error: %v", err)
 	}
-	if !verifyTOTPCode(secret, code, now) {
-		t.Fatalf("verifyTOTPCode should accept one-step skew")
+	if verifyTOTPCode(secret, oldCode, now) {
+		t.Fatalf("verifyTOTPCode should reject codes outside the skew window")
 	}
 	if verifyTOTPCode(secret, "000000", now) {
 		t.Fatalf("verifyTOTPCode should reject wrong code")
