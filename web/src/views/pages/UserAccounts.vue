@@ -31,7 +31,7 @@
           <span>首次登录请先看这里</span>
         </div>
         <div class="first-guide-body">
-          已经有节点账号时，用“绑定已有账号”；从未分配过节点账号时，直接用“申请新账号”，不需要 challenge。
+          已经有节点账号时，用“绑定已有账号”；从未分配过节点账号时，才使用“新生申请节点账号”，不需要 challenge。
         </div>
         <el-button size="small" type="success" plain class="first-guide-dismiss" @click="dismissFirstGuide">✓ 已了解</el-button>
       </div>
@@ -260,7 +260,7 @@
         </el-card>
         </el-tab-pane>
 
-        <el-tab-pane label="申请新节点账号" name="open">
+        <el-tab-pane label="新生申请节点账号" name="open" :disabled="openAccountTabDisabled">
           <div class="path-panel mb">
             <div class="panel-head">
               <strong>新生节点账号申请</strong>
@@ -293,7 +293,7 @@
                   :placeholder="openReasonPlaceholder"
                 />
               </el-form-item>
-              <el-button type="primary" :loading="openRequesting" :disabled="!!pendingOpenRequest || rows.length > 0 || !!activeChallenge" @click="submitOpenRequest">
+              <el-button type="primary" :loading="openRequesting" :disabled="!!pendingOpenRequest || openAccountTabDisabled" @click="submitOpenRequest">
                 提交节点开通申请
               </el-button>
             </el-form>
@@ -522,6 +522,7 @@ const hasNewProvisionMessage = computed(() =>
 const showFirstGuideRedDots = computed(() => !firstGuideRead.value);
 const headerNeedAttention = computed(() => hasNewProvisionMessage.value || showFirstGuideRedDots.value);
 const hasPendingAccounts = computed(() => (rows.value || []).some((x) => !x.identity_aligned));
+const openAccountTabDisabled = computed(() => (rows.value || []).length > 0 || !!activeChallenge.value);
 
 const decryptPayload = computed(() => {
   const fromQuery = String(route.query.payload || "");
@@ -708,9 +709,6 @@ async function reload(silent = false) {
     mappedNodeInfos.value = r.mapped_node_infos ?? [];
     activeChallenge.value = (r.active_challenge as UserNodeBindChallengeInfo) || null;
     bindCooldown.value = (r.bind_cooldown as UserNodeBindCooldown) || null;
-    if (activeChallenge.value || (rows.value || []).length > 0) {
-      accountMode.value = "existing";
-    }
     const m = await client().userProvisionMessages(120);
     provisionMessages.value = m.messages ?? [];
     const reqs = await client().userRequests(200);
