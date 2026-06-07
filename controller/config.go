@@ -24,8 +24,11 @@ type Config struct {
 
 	DatabaseDSN string `yaml:"database_dsn"`
 
-	AgentToken string `yaml:"agent_token"`
-	AdminToken string `yaml:"admin_token"`
+	AgentToken            string            `yaml:"agent_token"`
+	AgentLegacyTokens     []string          `yaml:"agent_legacy_tokens"`
+	AgentNodeTokens       map[string]string `yaml:"agent_node_tokens"`
+	AgentNodeTokenEnforce bool              `yaml:"agent_node_token_enforce"`
+	AdminToken            string            `yaml:"admin_token"`
 	// AuthSecret 用于签名 Web 登录会话（cookie）。建议使用强随机值。
 	AuthSecret string `yaml:"auth_secret"`
 
@@ -124,6 +127,19 @@ func (c *Config) Validate() error {
 	}
 	if c.AgentToken == "" {
 		return errors.New("agent_token 不能为空（用于保护 /api/metrics）")
+	}
+	for _, tok := range c.AgentLegacyTokens {
+		if strings.TrimSpace(tok) == "" {
+			return errors.New("agent_legacy_tokens 不能包含空值")
+		}
+	}
+	for nodeID, tok := range c.AgentNodeTokens {
+		if strings.TrimSpace(nodeID) == "" {
+			return errors.New("agent_node_tokens 不能包含空 node_id")
+		}
+		if strings.TrimSpace(tok) == "" {
+			return errors.New("agent_node_tokens 不能包含空 token")
+		}
 	}
 	if c.AdminToken == "" {
 		return errors.New("admin_token 不能为空（用于保护 /api/admin/* 与充值/单价设置）")

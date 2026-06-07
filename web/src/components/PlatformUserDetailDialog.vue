@@ -15,6 +15,7 @@
         <el-descriptions-item label="结转积分">{{ Number(user.carryover_balance || 0).toFixed(2) }}</el-descriptions-item>
         <el-descriptions-item label="节点专属积分">{{ Number(user.exclusive_balance || 0).toFixed(2) }}</el-descriptions-item>
         <el-descriptions-item label="总可用积分">{{ Number(user.total_balance ?? ((user.general_balance ?? user.balance ?? 0) + (user.carryover_balance || 0) + (user.exclusive_balance || 0))).toFixed(2) }}</el-descriptions-item>
+        <el-descriptions-item label="本月已使用积分">{{ Number(user.month_used_points || 0).toFixed(2) }}</el-descriptions-item>
         <el-descriptions-item label="状态">{{ user.status || "-" }}</el-descriptions-item>
         <el-descriptions-item label="角色">{{ roleText(user.role || "") }}</el-descriptions-item>
       </el-descriptions>

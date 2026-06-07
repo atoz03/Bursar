@@ -396,6 +396,14 @@ func normalizeSSHExemptionEntryTimes(x *SSHExemptionEntry) {
 	x.UpdatedAt = asBeijingWallTime(x.UpdatedAt)
 }
 
+func normalizeSSHTemporaryUserEntryTimes(x *SSHTemporaryUserEntry) {
+	if x == nil {
+		return
+	}
+	x.CreatedAt = asBeijingWallTime(x.CreatedAt)
+	x.UpdatedAt = asBeijingWallTime(x.UpdatedAt)
+}
+
 func normalizeAnnouncementTimes(x *Announcement) {
 	if x == nil {
 		return
@@ -3263,12 +3271,45 @@ SELECT DISTINCT local_username FROM (
   WHERE (node_id=$1 OR node_id='*')
     AND local_username <> '*'
   UNION ALL
+  SELECT local_username
+  FROM ssh_temporary_users
+  WHERE (node_id=$1 OR node_id='*')
+  UNION ALL
   SELECT nlu.local_username
   FROM node_local_users nlu
   WHERE nlu.node_id=$1
     AND EXISTS (SELECT 1 FROM has_wildcard WHERE v=true)
 ) t
 WHERE local_username <> ''
+ORDER BY local_username
+LIMIT $2`, nodeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListTemporaryLocalUsersByNode(ctx context.Context, nodeID string, limit int) ([]string, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return nil, errors.New("node_id 不能为空")
+	}
+	if limit <= 0 || limit > 200000 {
+		limit = 50000
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT DISTINCT local_username
+FROM ssh_temporary_users
+WHERE node_id=$1 OR node_id='*'
 ORDER BY local_username
 LIMIT $2`, nodeID, limit)
 	if err != nil {
@@ -3354,6 +3395,39 @@ func (s *Store) IsExempted(ctx context.Context, nodeID string, localUsername str
 	err := s.db.QueryRowContext(ctx, `
 SELECT EXISTS(
   SELECT 1 FROM ssh_exemptions
+  WHERE local_username=$2 AND (node_id=$1 OR node_id='*')
+)`, nodeID, localUsername).Scan(&exists)
+	return exists, err
+}
+
+func (s *Store) IsTemporaryUser(ctx context.Context, nodeID string, localUsername string) (bool, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	if nodeID == "" || localUsername == "" {
+		return false, errors.New("node_id/local_username 不能为空")
+	}
+	var exists bool
+	err := s.db.QueryRowContext(ctx, `
+SELECT EXISTS(
+  SELECT 1 FROM ssh_temporary_users
+  WHERE local_username=$2 AND (node_id=$1 OR node_id='*')
+)`, nodeID, localUsername).Scan(&exists)
+	return exists, err
+}
+
+func (s *Store) IsPointsBypassUser(ctx context.Context, nodeID string, localUsername string) (bool, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	if nodeID == "" || localUsername == "" {
+		return false, errors.New("node_id/local_username 不能为空")
+	}
+	var exists bool
+	err := s.db.QueryRowContext(ctx, `
+SELECT EXISTS(
+  SELECT 1 FROM ssh_exemptions
+  WHERE local_username=$2 AND (node_id=$1 OR node_id='*')
+  UNION ALL
+  SELECT 1 FROM ssh_temporary_users
   WHERE local_username=$2 AND (node_id=$1 OR node_id='*')
 )`, nodeID, localUsername).Scan(&exists)
 	return exists, err
@@ -3824,6 +3898,136 @@ WHERE local_username=$1
 
 func (s *Store) DeleteExemptions(ctx context.Context, nodeID string, localUsername string) error {
 	_, err := s.DeleteExemptionsWithNodes(ctx, nodeID, localUsername)
+	return err
+}
+
+func (s *Store) ListTemporaryUsers(ctx context.Context, nodeID string, limit int) ([]SSHTemporaryUserEntry, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	if limit <= 0 || limit > 200000 {
+		limit = 1000
+	}
+	var rows *sql.Rows
+	var err error
+	if nodeID == "" {
+		rows, err = s.db.QueryContext(ctx, `
+SELECT node_id, local_username, created_by, reason, created_at, updated_at
+FROM ssh_temporary_users
+ORDER BY node_id, local_username
+LIMIT $1`, limit)
+	} else if nodeID == "*" {
+		rows, err = s.db.QueryContext(ctx, `
+SELECT node_id, local_username, created_by, reason, created_at, updated_at
+FROM ssh_temporary_users
+WHERE node_id='*'
+ORDER BY local_username
+LIMIT $1`, limit)
+	} else {
+		rows, err = s.db.QueryContext(ctx, `
+SELECT node_id, local_username, created_by, reason, created_at, updated_at
+FROM ssh_temporary_users
+WHERE node_id=$1 OR node_id='*'
+ORDER BY CASE WHEN node_id='*' THEN 0 ELSE 1 END, local_username
+LIMIT $2`, nodeID, limit)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]SSHTemporaryUserEntry, 0)
+	for rows.Next() {
+		var v SSHTemporaryUserEntry
+		if err := rows.Scan(&v.NodeID, &v.LocalUsername, &v.CreatedBy, &v.Reason, &v.CreatedAt, &v.UpdatedAt); err != nil {
+			return nil, err
+		}
+		normalizeSSHTemporaryUserEntryTimes(&v)
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) UpsertTemporaryUsers(ctx context.Context, nodeID string, usernames []string, createdBy string, reason string) error {
+	nodeID = strings.TrimSpace(nodeID)
+	createdBy = strings.TrimSpace(createdBy)
+	reason = strings.TrimSpace(reason)
+	if nodeID == "" {
+		return errors.New("node_id 不能为空")
+	}
+	if createdBy == "" {
+		createdBy = "admin"
+	}
+	if len(usernames) == 0 {
+		return errors.New("usernames 不能为空")
+	}
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		for _, u := range usernames {
+			u = strings.TrimSpace(u)
+			if u == "" {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, `
+INSERT INTO ssh_temporary_users(node_id, local_username, created_by, reason, updated_at)
+VALUES($1,$2,$3,$4,NOW())
+ON CONFLICT (node_id, local_username) DO UPDATE
+SET created_by=EXCLUDED.created_by, reason=EXCLUDED.reason, updated_at=NOW()`, nodeID, u, createdBy, reason); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (s *Store) DeleteTemporaryUsersWithNodes(ctx context.Context, nodeID string, localUsername string) ([]string, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	localUsername = strings.TrimSpace(localUsername)
+	if nodeID == "" || localUsername == "" {
+		return nil, errors.New("node_id/local_username 不能为空")
+	}
+	deletedNodeSet := map[string]struct{}{}
+	if nodeID == "*" {
+		deletedNodeSet["*"] = struct{}{}
+	} else {
+		deletedNodeSet[nodeID] = struct{}{}
+		var hasGlobal bool
+		if err := s.db.QueryRowContext(ctx, `
+SELECT EXISTS(
+  SELECT 1 FROM ssh_temporary_users
+  WHERE node_id='*' AND local_username=$1
+)`, localUsername).Scan(&hasGlobal); err == nil && hasGlobal {
+			deletedNodeSet["*"] = struct{}{}
+		}
+	}
+	var res sql.Result
+	var err error
+	if nodeID == "*" {
+		res, err = s.db.ExecContext(ctx, `
+DELETE FROM ssh_temporary_users
+WHERE node_id='*' AND local_username=$1`, localUsername)
+	} else {
+		res, err = s.db.ExecContext(ctx, `
+DELETE FROM ssh_temporary_users
+WHERE local_username=$1
+  AND (node_id=$2 OR node_id='*')`, localUsername, nodeID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if n == 0 {
+		return nil, sql.ErrNoRows
+	}
+	nodes := make([]string, 0, len(deletedNodeSet))
+	for k := range deletedNodeSet {
+		nodes = append(nodes, k)
+	}
+	sort.Strings(nodes)
+	return nodes, nil
+}
+
+func (s *Store) DeleteTemporaryUsers(ctx context.Context, nodeID string, localUsername string) error {
+	_, err := s.DeleteTemporaryUsersWithNodes(ctx, nodeID, localUsername)
 	return err
 }
 

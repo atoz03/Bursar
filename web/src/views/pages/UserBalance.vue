@@ -154,7 +154,7 @@
         <el-descriptions-item label="平台账号创建时间">{{ fmtTime(resp.account_created_at || "") }}</el-descriptions-item>
         <el-descriptions-item label="当月剩余积分">{{ fmt2(resp.month_remaining_points ?? resp.balance) }}</el-descriptions-item>
         <el-descriptions-item label="本月已使用积分">{{ fmt2(resp.month_used_points ?? 0) }}</el-descriptions-item>
-        <el-descriptions-item label="累计使用积分">{{ fmt2(resp.total_used_points ?? 0) }}</el-descriptions-item>
+        <el-descriptions-item :label="totalUsedPointsLabel">{{ fmt2(resp.total_used_points ?? 0) }}</el-descriptions-item>
       </el-descriptions>
       <el-card v-if="exclusiveRows.length > 0" style="margin-top: 12px">
         <template #header><b>节点专属积分明细</b></template>
@@ -180,7 +180,7 @@ import { settingsState } from "../../lib/settingsStore";
 import { useRouter } from "vue-router";
 import { authState } from "../../lib/authStore";
 import { renderMarkdown } from "../../lib/markdown";
-import { formatServerDateTime } from "../../lib/time";
+import { formatServerDate, formatServerDateTime, getServerTodayDateText } from "../../lib/time";
 
 const loading = ref(false);
 const error = ref("");
@@ -297,6 +297,13 @@ const statusReason = computed(() => {
 });
 
 const exclusiveRows = computed(() => resp.value?.exclusive_balances ?? []);
+
+const totalUsedPointsLabel = computed(() => {
+  const from = formatServerDate(resp.value?.account_created_at || "");
+  const to = getServerTodayDateText();
+  if (!resp.value || from === "-") return "累计使用积分";
+  return `累计使用积分（${from} 至 ${to}）`;
+});
 
 function announcementAttachmentUrl(row: Announcement): string {
   return new ApiClient(settingsState.baseUrl).announcementAttachmentUrl(row.announcement_id);

@@ -13,7 +13,7 @@ import (
 )
 
 var (
-	controllerVersion = "v3.1"
+	controllerVersion = "v3.2"
 	controllerCommit  = ""
 	controllerBuildAt = ""
 	controllerStartAt = time.Now()

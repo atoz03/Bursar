@@ -603,6 +603,7 @@ export type AdminAccountProvisionResp = {
   local_username: string;
   billing_username: string;
   reissued_key?: boolean;
+  local_user_existed?: boolean;
   email: string;
   ssh_host: string;
   ssh_port: number;
@@ -693,6 +694,18 @@ export type SSHBlacklistEntry = {
 };
 
 export type SSHExemptionEntry = {
+  node_id: string;
+  local_username: string;
+  billing_username: string;
+  source_type: string;
+  source_platform_username: string;
+  created_by: string;
+  reason: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SSHTemporaryUserEntry = {
   node_id: string;
   local_username: string;
   billing_username: string;
@@ -870,6 +883,8 @@ export type PlatformUserDetail = {
   exclusive_balance?: number;
   total_balance?: number;
   exclusive_balances?: NodeExclusivePointsBalance[];
+  month_used_points?: number;
+  total_used_points?: number;
   status: string;
   created_at?: string;
   updated_at?: string;
@@ -2742,6 +2757,7 @@ export class ApiClient {
     ssh_host?: string;
     ssh_port?: number;
     rotate_key?: boolean;
+    confirm_existing_local_user?: boolean;
   }): Promise<AdminAccountProvisionResp> {
     return await this.postJson("/api/admin/accounts/provision", payload, this.adminHeaders());
   }
@@ -2899,6 +2915,7 @@ export class ApiClient {
     kicked?: boolean;
     removed_from_whitelist?: number;
     removed_from_exemptions?: number;
+    removed_from_temporary_users?: number;
     message?: string;
   }> {
     return await this.postJson(
@@ -2960,6 +2977,46 @@ export class ApiClient {
       throw normalizeServerError(res.status, text);
     }
     return (await res.json()) as { ok: boolean };
+  }
+
+  async adminTemporaryUsers(nodeId = ""): Promise<{ entries: SSHTemporaryUserEntry[] }> {
+    const q = new URLSearchParams();
+    if (nodeId) q.set("node_id", nodeId);
+    return await this.getJson(`/api/admin/temporary-users?${q.toString()}`, this.adminHeaders());
+  }
+
+  async adminUpsertTemporaryUsers(
+    nodeId: string,
+    usernames: string[],
+    billingUsernames: string[] = [],
+    reason = "",
+    platformAccounts: Array<{ billing_username: string; node_id: string; local_username: string }> = [],
+  ): Promise<{
+    ok: boolean;
+    entries: number;
+    applied: number;
+    skipped_due_blacklist?: string[];
+    message?: string;
+  }> {
+    return await this.postJson(
+      "/api/admin/temporary-users",
+      { node_id: nodeId, usernames, billing_usernames: billingUsernames, platform_accounts: platformAccounts, reason },
+      this.adminHeaders(),
+    );
+  }
+
+  async adminDeleteTemporaryUsers(nodeId: string, localUsername: string): Promise<{ ok: boolean; kicked?: boolean }> {
+    const q = new URLSearchParams({ node_id: nodeId, local_username: localUsername });
+    const res = await fetch(this.url(`/api/admin/temporary-users?${q.toString()}`), {
+      method: "DELETE",
+      headers: { ...this.adminHeaders(), ...this.csrfHeaders() },
+      credentials: "include",
+    });
+    if (!res.ok) {
+      const text = await this.readText(res);
+      throw normalizeServerError(res.status, text);
+    }
+    return (await res.json()) as { ok: boolean; kicked?: boolean };
   }
 
   async adminPowerUsers(limit = 1000): Promise<{ users: PowerUser[] }> {

@@ -4,7 +4,11 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONTROLLER_DIR="${CONTROLLER_DIR:-${ROOT_DIR}/controller}"
-CONFIG_PATH="${CONFIG_PATH:-${ROOT_DIR}/config/controller.yaml}"
+DEFAULT_CONFIG_PATH="${ROOT_DIR}/config/controller.yaml"
+if [[ -f "${ROOT_DIR}/config/controller.local.yaml" ]]; then
+  DEFAULT_CONFIG_PATH="${ROOT_DIR}/config/controller.local.yaml"
+fi
+CONFIG_PATH="${CONFIG_PATH:-${DEFAULT_CONFIG_PATH}}"
 SERVICE_NAME="${SERVICE_NAME:-gpu-controller}"
 BIN_PATH="${BIN_PATH:-/usr/local/bin/gpu-controller}"
 RUN_USER="${RUN_USER:-$(id -un)}"

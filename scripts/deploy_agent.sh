@@ -145,6 +145,61 @@ WantedBy=multi-user.target
 SVC'"
 
   ssh ${SSH_OPTS} "${target}" "${REMOTE_SUDO} systemctl daemon-reload && ${REMOTE_SUDO} systemctl enable gpu-node-agent && ${REMOTE_SUDO} systemctl restart gpu-node-agent"
+  ssh ${SSH_OPTS} "${target}" "${REMOTE_SUDO} bash -lc 'mkdir -p /etc/gpu-cluster
+cat > /etc/gpu-cluster/public.env <<CONF
+CONTROLLER_URL=\"${CONTROLLER_URL}\"
+NODE_ID=\"${node_id}\"
+CONF
+chmod 0644 /etc/gpu-cluster/public.env
+chown root:root /etc/gpu-cluster/public.env 2>/dev/null || true'"
+  ssh ${SSH_OPTS} "${target}" "${REMOTE_SUDO} bash -lc 'cat > /usr/local/bin/gpuops-claim <<\"EOF2\"
+#!/bin/bash
+set -euo pipefail
+
+PUBLIC_CONF=\"/etc/gpu-cluster/public.env\"
+if [[ -r \"${PUBLIC_CONF}\" ]]; then
+  source \"${PUBLIC_CONF}\"
+fi
+
+TOKEN=\"${1:-}\"
+if [[ -z \"${TOKEN}\" ]]; then
+  echo \"用法：gpuops-claim <challenge_token>\" >&2
+  exit 2
+fi
+
+CONTROLLER_URL=\"${CONTROLLER_URL:-}\"
+NODE_ID=\"${NODE_ID:-}\"
+LOCAL_USER=\"$(id -un 2>/dev/null || whoami)\"
+if [[ -z \"${CONTROLLER_URL}\" || -z \"${NODE_ID}\" || -z \"${LOCAL_USER}\" ]]; then
+  echo \"缺少 CONTROLLER_URL/NODE_ID/LOCAL_USER，无法提交 challenge\" >&2
+  exit 2
+fi
+
+api=\"${CONTROLLER_URL%/}/api/registry/bind-claim\"
+payload=\"$(printf '{\\\"token\\\":\\\"%s\\\",\\\"node_id\\\":\\\"%s\\\",\\\"local_username\\\":\\\"%s\\\"}' \"${TOKEN}\" \"${NODE_ID}\" \"${LOCAL_USER}\")\"
+tmp_resp=\"$(mktemp)\"
+trap 'rm -f \"${tmp_resp}\"' EXIT
+http_code=\"$(curl -sS -o \"${tmp_resp}\" -w '%{http_code}' -H \"Content-Type: application/json\" --data \"${payload}\" \"${api}\")\"
+resp=\"$(cat \"${tmp_resp}\")\"
+if [[ ! \"${http_code}\" =~ ^2[0-9][0-9]$ ]]; then
+  if [[ -n \"${resp}\" ]]; then
+    echo \"${resp}\" >&2
+  fi
+  echo \"gpuops-claim 失败：http ${http_code}\" >&2
+  exit 1
+fi
+echo \"${resp}\"
+msg=\"$(echo \"${resp}\" | sed -n \"s/.*\\\"message\\\":\\\"\\([^\\\"]*\\)\\\".*/\\1/p\")\"
+wait_s=\"$(echo \"${resp}\" | sed -n \"s/.*\\\"estimated_wait_seconds\\\":\\([0-9][0-9]*\\).*/\\1/p\")\"
+if [[ -n \"${msg}\" ]]; then
+  echo \"提示：${msg}\"
+fi
+if [[ -n \"${wait_s}\" ]]; then
+  echo \"建议等待：${wait_s} 秒\"
+fi
+echo
+EOF2'"
+  ssh ${SSH_OPTS} "${target}" "${REMOTE_SUDO} chmod 0755 /usr/local/bin/gpuops-claim"
 
   if [[ "${ENABLE_SSH_GUARD}" == "1" ]]; then
     echo "==> 安装 SSH 登录拦截（仅允许已登记用户；排除：${SSH_GUARD_EXCLUDE_USERS}）"
@@ -290,9 +345,9 @@ EOF2'"
 #!/bin/bash
 set -euo pipefail
 
-CONF=\"/etc/gpu-cluster/ssh_guard.conf\"
-if [[ -f \"${CONF}\" ]]; then
-  source \"${CONF}\"
+PUBLIC_CONF=\"/etc/gpu-cluster/public.env\"
+if [[ -r \"${PUBLIC_CONF}\" ]]; then
+  source \"${PUBLIC_CONF}\"
 fi
 
 TOKEN=\"${1:-}\"

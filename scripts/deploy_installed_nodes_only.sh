@@ -19,8 +19,12 @@ NODE_IDS_DISPLAY=""
 
 CONTROLLER_URL="${CONTROLLER_URL:-}"
 AGENT_TOKEN="${AGENT_TOKEN:-}"
+NODE_AGENT_TOKENS_FILE="${NODE_AGENT_TOKENS_FILE:-}"
 SSH_GUARD_EXCLUDE_USERS="${SSH_GUARD_EXCLUDE_USERS:-root}"
 SKIP_CONTROLLER_HEALTHCHECK="${SKIP_CONTROLLER_HEALTHCHECK:-0}"
+ENABLE_SSH_GUARD="${ENABLE_SSH_GUARD:-0}"
+ENABLE_HOST_SECURITY="${ENABLE_HOST_SECURITY:-0}"
+RESET_USER_CPU_QUOTA_ON_INSTALL="${RESET_USER_CPU_QUOTA_ON_INSTALL:-0}"
 LEGACY_ENABLE_USER_SLICE_CPU_RESERVE="${ENABLE_USER_SLICE_CPU_RESERVE:-}"
 LEGACY_USER_SLICE_CPU_RESERVE_PERCENT="${USER_SLICE_CPU_RESERVE_PERCENT:-}"
 LEGACY_ENABLE_USER_SLICE_MEMORY_RESERVE="${ENABLE_USER_SLICE_MEMORY_RESERVE:-}"
@@ -82,8 +86,12 @@ if [[ ! -d "${SOURCE_DIR}" ]]; then
   echo "源目录不存在：${SOURCE_DIR}" >&2
   exit 2
 fi
-if [[ -z "${CONTROLLER_URL}" || -z "${AGENT_TOKEN}" ]]; then
-  echo "缺少必需参数：CONTROLLER_URL/AGENT_TOKEN" >&2
+if [[ -z "${CONTROLLER_URL}" || ( -z "${AGENT_TOKEN}" && -z "${NODE_AGENT_TOKENS_FILE}" ) ]]; then
+  echo "缺少必需参数：CONTROLLER_URL，以及 AGENT_TOKEN 或 NODE_AGENT_TOKENS_FILE" >&2
+  exit 2
+fi
+if [[ -n "${NODE_AGENT_TOKENS_FILE}" && ! -f "${NODE_AGENT_TOKENS_FILE}" ]]; then
+  echo "NODE_AGENT_TOKENS_FILE 不存在：${NODE_AGENT_TOKENS_FILE}" >&2
   exit 2
 fi
 
@@ -99,8 +107,14 @@ if [[ -n "${NODE_IDS_DISPLAY}" ]]; then
 else
   echo "NODE_IDS=<all>"
 fi
+if [[ -n "${NODE_AGENT_TOKENS_FILE}" ]]; then
+  echo "NODE_AGENT_TOKENS_FILE=${NODE_AGENT_TOKENS_FILE}"
+fi
 echo "SYSTEM_CPU_RESERVE_PERCENT=${SYSTEM_CPU_RESERVE_PERCENT} (enable=${ENABLE_SYSTEM_CPU_RESERVE})"
 echo "SYSTEM_MEMORY_RESERVE_GB=${SYSTEM_MEMORY_RESERVE_GB} (enable=${ENABLE_SYSTEM_MEMORY_RESERVE})"
+echo "ENABLE_SSH_GUARD=${ENABLE_SSH_GUARD}"
+echo "ENABLE_HOST_SECURITY=${ENABLE_HOST_SECURITY}"
+echo "RESET_USER_CPU_QUOTA_ON_INSTALL=${RESET_USER_CPU_QUOTA_ON_INSTALL}"
 if [[ "${LEGACY_CPU_RESERVE_COMPAT_USED}" == "1" ]]; then
   echo "兼容旧变量：USER_SLICE_CPU_RESERVE_PERCENT=${LEGACY_USER_SLICE_CPU_RESERVE_PERCENT} -> SYSTEM_CPU_RESERVE_PERCENT=${SYSTEM_CPU_RESERVE_PERCENT}"
 fi
@@ -148,24 +162,90 @@ write_result() {
   } > "${out_file}"
 }
 
+agent_token_for_node() {
+  local node_id="$1"
+  local tok=""
+  if [[ -n "${NODE_AGENT_TOKENS_FILE}" ]]; then
+    tok="$(awk -F'=' -v id="${node_id}" '
+      /^[[:space:]]*#/ { next }
+      NF >= 2 {
+        k=$1
+        sub(/^[[:space:]]+/, "", k)
+        sub(/[[:space:]]+$/, "", k)
+        if (k == id) {
+          $1=""
+          sub(/^=/, "", $0)
+          sub(/^[[:space:]]+/, "", $0)
+          sub(/[[:space:]]+$/, "", $0)
+          gsub(/^"|"$/, "", $0)
+          print $0
+          exit
+        }
+      }
+    ' "${NODE_AGENT_TOKENS_FILE}")"
+  fi
+  if [[ -z "${tok}" ]]; then
+    tok="${AGENT_TOKEN}"
+  fi
+  printf '%s' "${tok}"
+}
+
+remote_harden_workspace_cmd() {
+  local target_dir="$1"
+  cat <<EOF
+set -e
+target='${target_dir}'
+mkdir -p "\${target}"
+rm -rf -- \
+  "\${target}/config" \
+  "\${target}/my_ssh_keys" \
+  "\${target}/.codex" \
+  "\${target}/使用手册" \
+  "\${target}/README.md" \
+  "\${target}/GPU Ops使用手册.md" \
+  "\${target}/计算节点部署情况.txt" \
+  "\${target}/控制节点安全部署命令.md" \
+  "\${target}/计算节点首次安装交接.md" \
+  "\${target}/go.work.sum" \
+  "\${target}/sudo" \
+  "\${target}/mkdir" \
+  "\${target}/controller/controller" \
+  "\${target}/node-agent/node-agent"
+find "\${target}" -xdev \\( -type d -o -type f \\) -exec chmod 700 {} + 2>/dev/null || true
+EOF
+}
+
 copy_workspace() {
   local key_use_path="$1"
   local port="$2"
   local user="$3"
   local ip="$4"
   local target_dir="$5"
-  local ssh_cmd=(ssh -i "${key_use_path}" -p "${port}" -o StrictHostKeyChecking=no -o ConnectTimeout="${SSH_TIMEOUT}" "${user}@${ip}")
-  local ssh_cmd_no_stdin=(ssh -n -i "${key_use_path}" -p "${port}" -o StrictHostKeyChecking=no -o ConnectTimeout="${SSH_TIMEOUT}" "${user}@${ip}")
+  local ssh_cmd=(ssh -i "${key_use_path}" -p "${port}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR -o ConnectTimeout="${SSH_TIMEOUT}" "${user}@${ip}")
+  local ssh_cmd_no_stdin=(ssh -n -i "${key_use_path}" -p "${port}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR -o ConnectTimeout="${SSH_TIMEOUT}" "${user}@${ip}")
 
-  "${ssh_cmd_no_stdin[@]}" "mkdir -p '${target_dir}'"
+  "${ssh_cmd_no_stdin[@]}" "$(remote_harden_workspace_cmd "${target_dir}")"
   tar -C "${SOURCE_DIR}" \
     --exclude='.git' \
-    --exclude='my_ssh_keys/*.txt' \
+    --exclude='.codex' \
+    --exclude='config' \
+    --exclude='README.md' \
+    --exclude='GPU Ops使用手册.md' \
+    --exclude='使用手册' \
+    --exclude='计算节点部署情况.txt' \
+    --exclude='控制节点安全部署命令.md' \
+    --exclude='计算节点首次安装交接.md' \
+    --exclude='go.work.sum' \
+    --exclude='my_ssh_keys' \
     --exclude='web/node_modules' \
     --exclude='web/dist' \
     --exclude='controller/tmp' \
+    --exclude='controller/controller' \
+    --exclude='node-agent/node-agent' \
+    --exclude='*.pdf' \
+    --exclude='*.txt' \
     -cf - . \
-    | "${ssh_cmd[@]}" "tar -C '${target_dir}' -xf -"
+    | "${ssh_cmd[@]}" "tar -C '${target_dir}' -xf - && $(remote_harden_workspace_cmd "${target_dir}")"
 }
 
 node_has_agent_service() {
@@ -173,7 +253,7 @@ node_has_agent_service() {
   local port="$2"
   local user="$3"
   local ip="$4"
-  ssh -n -i "${key_use_path}" -p "${port}" -o StrictHostKeyChecking=no -o ConnectTimeout="${SSH_TIMEOUT}" "${user}@${ip}" \
+  ssh -n -i "${key_use_path}" -p "${port}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR -o ConnectTimeout="${SSH_TIMEOUT}" "${user}@${ip}" \
     "systemctl list-unit-files 2>/dev/null | grep -q '^gpu-node-agent\\.service' || [[ -f /etc/systemd/system/gpu-node-agent.service ]] || [[ -f /lib/systemd/system/gpu-node-agent.service ]]"
 }
 
@@ -183,10 +263,27 @@ run_install_agent() {
   local user="$3"
   local ip="$4"
   local target_dir="$5"
+  local node_id="$6"
+  local node_agent_token
+  node_agent_token="$(agent_token_for_node "${node_id}")"
+  if [[ -z "${node_agent_token}" ]]; then
+    echo "节点 ${node_id} 缺少 agent token" >&2
+    return 2
+  fi
   local esc_exclude
   esc_exclude="$(printf "%s" "${SSH_GUARD_EXCLUDE_USERS}" | sed "s/'/'\"'\"'/g")"
+  local esc_controller_url
+  esc_controller_url="$(printf "%s" "${CONTROLLER_URL}" | sed "s/'/'\"'\"'/g")"
+  local esc_agent_token
+  esc_agent_token="$(printf "%s" "${node_agent_token}" | sed "s/'/'\"'\"'/g")"
   local esc_skip_health
   esc_skip_health="$(printf "%s" "${SKIP_CONTROLLER_HEALTHCHECK}" | sed "s/'/'\"'\"'/g")"
+  local esc_enable_ssh_guard
+  esc_enable_ssh_guard="$(printf "%s" "${ENABLE_SSH_GUARD}" | sed "s/'/'\"'\"'/g")"
+  local esc_enable_host_security
+  esc_enable_host_security="$(printf "%s" "${ENABLE_HOST_SECURITY}" | sed "s/'/'\"'\"'/g")"
+  local esc_reset_user_cpu_quota
+  esc_reset_user_cpu_quota="$(printf "%s" "${RESET_USER_CPU_QUOTA_ON_INSTALL}" | sed "s/'/'\"'\"'/g")"
   local esc_enable_cpu_reserve
   esc_enable_cpu_reserve="$(printf "%s" "${ENABLE_SYSTEM_CPU_RESERVE}" | sed "s/'/'\"'\"'/g")"
   local esc_cpu_reserve_pct
@@ -195,8 +292,8 @@ run_install_agent() {
   esc_enable_mem_reserve="$(printf "%s" "${ENABLE_SYSTEM_MEMORY_RESERVE}" | sed "s/'/'\"'\"'/g")"
   local esc_mem_reserve_gb
   esc_mem_reserve_gb="$(printf "%s" "${SYSTEM_MEMORY_RESERVE_GB}" | sed "s/'/'\"'\"'/g")"
-  ssh -n -i "${key_use_path}" -p "${port}" -o StrictHostKeyChecking=no -o ConnectTimeout="${SSH_TIMEOUT}" "${user}@${ip}" \
-    "cd '${target_dir}' && sudo -n /bin/bash '${target_dir}/scripts/install_agent_local.sh' 'SSH_GUARD_EXCLUDE_USERS=${esc_exclude}' 'SKIP_CONTROLLER_HEALTHCHECK=${esc_skip_health}' 'ENABLE_SYSTEM_CPU_RESERVE=${esc_enable_cpu_reserve}' 'SYSTEM_CPU_RESERVE_PERCENT=${esc_cpu_reserve_pct}' 'ENABLE_SYSTEM_MEMORY_RESERVE=${esc_enable_mem_reserve}' 'SYSTEM_MEMORY_RESERVE_GB=${esc_mem_reserve_gb}'"
+  ssh -n -i "${key_use_path}" -p "${port}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR -o ConnectTimeout="${SSH_TIMEOUT}" "${user}@${ip}" \
+    "cd '${target_dir}' && sudo -n /bin/bash '${target_dir}/scripts/install_agent_local.sh' 'CONTROLLER_URL=${esc_controller_url}' 'AGENT_TOKEN=${esc_agent_token}' 'SSH_GUARD_EXCLUDE_USERS=${esc_exclude}' 'SKIP_CONTROLLER_HEALTHCHECK=${esc_skip_health}' 'ENABLE_SSH_GUARD=${esc_enable_ssh_guard}' 'ENABLE_HOST_SECURITY=${esc_enable_host_security}' 'RESET_USER_CPU_QUOTA_ON_INSTALL=${esc_reset_user_cpu_quota}' 'ENABLE_SYSTEM_CPU_RESERVE=${esc_enable_cpu_reserve}' 'SYSTEM_CPU_RESERVE_PERCENT=${esc_cpu_reserve_pct}' 'ENABLE_SYSTEM_MEMORY_RESERVE=${esc_enable_mem_reserve}' 'SYSTEM_MEMORY_RESERVE_GB=${esc_mem_reserve_gb}'"
 }
 
 agent_service_ready() {
@@ -204,7 +301,7 @@ agent_service_ready() {
   local port="$2"
   local user="$3"
   local ip="$4"
-  ssh -n -i "${key_use_path}" -p "${port}" -o StrictHostKeyChecking=no -o ConnectTimeout="${SSH_TIMEOUT}" "${user}@${ip}" \
+  ssh -n -i "${key_use_path}" -p "${port}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR -o ConnectTimeout="${SSH_TIMEOUT}" "${user}@${ip}" \
     "systemctl is-enabled gpu-node-agent >/dev/null 2>&1 && systemctl is-active gpu-node-agent >/dev/null 2>&1"
 }
 
@@ -214,7 +311,7 @@ can_run_sudo_nopass() {
   local user="$3"
   local ip="$4"
   local target_dir="$5"
-  ssh -n -i "${key_use_path}" -p "${port}" -o StrictHostKeyChecking=no -o ConnectTimeout="${SSH_TIMEOUT}" "${user}@${ip}" \
+  ssh -n -i "${key_use_path}" -p "${port}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR -o ConnectTimeout="${SSH_TIMEOUT}" "${user}@${ip}" \
     "sudo -n -l /bin/bash '${target_dir}/scripts/install_agent_local.sh' >/dev/null 2>&1"
 }
 
@@ -278,7 +375,7 @@ process_one() {
 
   if node_has_agent_service "${key_use_path}" "${port}" "${user}" "${ip}"; then
     if can_run_sudo_nopass "${key_use_path}" "${port}" "${user}" "${ip}" "${target_dir}"; then
-      if run_install_agent "${key_use_path}" "${port}" "${user}" "${ip}" "${target_dir}" >"${install_log}" 2>&1; then
+      if run_install_agent "${key_use_path}" "${port}" "${user}" "${ip}" "${target_dir}" "${node_id}" >"${install_log}" 2>&1; then
         if agent_service_ready "${key_use_path}" "${port}" "${user}" "${ip}"; then
           end_ts="$(date '+%F %T')"
           write_result "${node_id}" "DEPLOYED" "${start_ts}" "${end_ts}" "${ip}" "${user}" "已安装服务，执行 install_agent_local.sh 成功，已自动 enable --now gpu-node-agent" "${result_file}"
