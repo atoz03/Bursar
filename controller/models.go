@@ -470,6 +470,18 @@ type SSHExemptionEntry struct {
 	UpdatedAt              time.Time `json:"updated_at"`
 }
 
+type SSHTemporaryUserEntry struct {
+	NodeID                 string    `json:"node_id"`
+	LocalUsername          string    `json:"local_username"`
+	BillingUsername        string    `json:"billing_username"`
+	SourceType             string    `json:"source_type"`
+	SourcePlatformUsername string    `json:"source_platform_username"`
+	CreatedBy              string    `json:"created_by"`
+	Reason                 string    `json:"reason"`
+	CreatedAt              time.Time `json:"created_at"`
+	UpdatedAt              time.Time `json:"updated_at"`
+}
+
 type SSHListSource struct {
 	ListType               string    `json:"list_type"`
 	NodeID                 string    `json:"node_id"`

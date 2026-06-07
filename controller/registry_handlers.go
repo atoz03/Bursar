@@ -23,6 +23,9 @@ func (s *Server) handleRegistryResolve(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id/local_username 不能为空"})
 		return
 	}
+	if !s.authorizeAgentNode(c, nodeID) {
+		return
+	}
 
 	ctx := c.Request.Context()
 	exempted, err := s.store.IsExempted(ctx, nodeID, localUsername)
@@ -42,6 +45,16 @@ func (s *Server) handleRegistryResolve(c *gin.Context) {
 	}
 	if blacklisted {
 		c.JSON(http.StatusOK, gin.H{"registered": false, "blacklisted": true})
+		return
+	}
+
+	temporary, err := s.store.IsTemporaryUser(ctx, nodeID, localUsername)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if temporary {
+		c.JSON(http.StatusOK, gin.H{"registered": true, "billing_username": localUsername, "temporary_user": true})
 		return
 	}
 
@@ -320,6 +333,9 @@ func (s *Server) handleRegistryNodeGuardState(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id 不能为空"})
 		return
 	}
+	if !s.authorizeAgentNode(c, nodeID) {
+		return
+	}
 	guardEnabled, err := s.store.IsNodeSSHGuardEnabled(c.Request.Context(), nodeID)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -354,6 +370,9 @@ func (s *Server) handleRegistryNodeUsersTxt(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id 不能为空"})
 		return
 	}
+	if !s.authorizeAgentNode(c, nodeID) {
+		return
+	}
 	users, err := s.store.ListAllowedLocalUsersByNode(c.Request.Context(), nodeID, 200000)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -374,6 +393,9 @@ func (s *Server) handleRegistryNodeBlockedUsersTxt(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id 不能为空"})
 		return
 	}
+	if !s.authorizeAgentNode(c, nodeID) {
+		return
+	}
 	users, err := s.store.ListDeniedLocalUsersByNode(c.Request.Context(), nodeID, 200000)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -392,6 +414,9 @@ func (s *Server) handleRegistryNodeExemptUsersTxt(c *gin.Context) {
 	nodeID := strings.TrimSpace(c.Param("node_id"))
 	if nodeID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id 不能为空"})
+		return
+	}
+	if !s.authorizeAgentNode(c, nodeID) {
 		return
 	}
 	users, err := s.store.ListExemptLocalUsersByNode(c.Request.Context(), nodeID, 200000)

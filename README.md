@@ -52,7 +52,7 @@
 | `scripts/install_agent_local.sh` | 在计算节点本机安装 node-agent、SSH Guard 与安全基线 | `CONTROLLER_URL=... AGENT_TOKEN=... bash scripts/install_agent_local.sh` |
 | `scripts/deploy_controller.sh` | 远程部署控制器二进制和 systemd | `HOST=<ip> bash scripts/deploy_controller.sh` |
 | `scripts/deploy_agent.sh` | 批量远程部署 node-agent 到多节点 | `NODES='60000:ip1 60001:ip2' ... bash scripts/deploy_agent.sh` |
-| `scripts/distribute_workspace.sh` | 按 `my_ssh_keys/server_ssh_map.csv` 把工作区分发到节点；支持 `NODE_IDS='60020 60002'` 只跑指定节点 | `bash scripts/distribute_workspace.sh` |
+| `scripts/distribute_workspace.sh` | 按 `my_ssh_keys/server_ssh_map.csv` 把工作区分发到节点；默认拒绝裸跑，必须显式确认 | `CONFIRM_DISTRIBUTE_WORKSPACE=1 NODE_IDS='60020' bash scripts/distribute_workspace.sh` |
 | `scripts/deploy_installed_nodes_only.sh` | 并发分发到节点；仅对已安装 `gpu-node-agent` 的节点重装，支持 `NODE_IDS='60020 60002'`，输出部署报告 | `CONTROLLER_URL=... AGENT_TOKEN=... bash scripts/deploy_installed_nodes_only.sh` |
 | `scripts/check_server_connectivity.sh` | 按 `server_ssh_map.csv` 检查所有节点 SSH 连通性并输出报告 | `bash scripts/check_server_connectivity.sh` |
 | `scripts/check_status.sh` | 快速检查控制器健康、节点、metrics | `bash scripts/check_status.sh` |
@@ -62,7 +62,7 @@
 补充说明：
 - `install_agent_local.sh` 默认支持 `NODE_ID` 自动识别（按本机 IP 匹配 `my_ssh_keys/server_ssh_map.csv`）。
 - `install_agent_local.sh` 已内置 SSH 防爆破（`fail2ban`）和 `user.slice` 资源预留（默认给系统保留 `5%` CPU + `8G` 内存，可通过 `SYSTEM_CPU_RESERVE_PERCENT`、`SYSTEM_MEMORY_RESERVE_GB` 调整）。
-- `distribute_workspace.sh` 支持并发，默认 `PARALLEL=6`。
+- `distribute_workspace.sh` 支持并发，默认 `PARALLEL=6`，且默认拒绝执行真实分发；先用 `DRY_RUN=1` 检查目标，确认后必须加 `CONFIRM_DISTRIBUTE_WORKSPACE=1`。
 - `distribute_workspace.sh`、`deploy_installed_nodes_only.sh` 都支持 `NODE_IDS` 过滤，例如 `NODE_IDS='60020 60002'` 或 `NODE_IDS='60020,60002'`。
 - `check_server_connectivity.sh` 默认仍是全量读取 `my_ssh_keys/server_ssh_map.csv`。
 
@@ -286,18 +286,22 @@ NODE_ID=60000 CONTROLLER_URL=http://127.0.0.1:60039 AGENT_TOKEN=<agent_token> go
 ## 🧪 计算节点快速测试与构建（首次安装）
 
 ```bash
-# 1) 在控制节点把代码分发到“新节点”（示例只分发 60020）
-cd /home/gpuops/gpu-ops && NODE_IDS="60020" bash scripts/distribute_workspace.sh
+# 1) 在控制节点检查分发目标（不会实际写远端）
+cd /home/gpuops/gpu-ops && DRY_RUN=1 NODE_IDS="60020" bash scripts/distribute_workspace.sh
 
-# 2) 登录到对应计算节点，在节点本机执行首次安装
+# 确认无误后，才对“新节点”实际分发（示例只分发 60020）
+cd /home/gpuops/gpu-ops && CONFIRM_DISTRIBUTE_WORKSPACE=1 NODE_IDS="60020" bash scripts/distribute_workspace.sh
+
+# 2) 登录到对应计算节点，在节点本机执行首次安装（示例节点 60020）
 cd /home/gpuops/gpu-ops && \
+NODE_ID=60020 \
 SSH_GUARD_EXCLUDE_USERS="root gpuops" \
 ENABLE_SYSTEM_CPU_RESERVE=1 \
 SYSTEM_CPU_RESERVE_PERCENT=5 \
 ENABLE_SYSTEM_MEMORY_RESERVE=1 \
 SYSTEM_MEMORY_RESERVE_GB=8 \
 CONTROLLER_URL=http://192.0.2.10:60039 \
-AGENT_TOKEN=6af5911256a62c73d8ecaaf60ffec363f23247a0cf262a8f7c78b188fdeaaf4b \
+AGENT_TOKEN=<agent_token> \
 bash scripts/install_agent_local.sh && \
 sudo systemctl status gpu-node-agent --no-pager
 ```
@@ -327,11 +331,11 @@ sudo visudo -cf /etc/sudoers.d/gpu-deploy
 # "60006 60010" 第二批节点
 # "60020 60018 60017 60015 60014 60012 60010 60008 60007 60006 60005 60004 60003 60002 60001 60000" 全部节点
 # 60013 60009 60003 特殊节点
-# NODE_IDS="60020" bash ./scripts/distribute_workspace.sh
+# DRY_RUN=1 NODE_IDS="60020" bash ./scripts/distribute_workspace.sh
 # 一键并发分发并“仅重装已安装过 agent 的节点”，结果写入当前目录“计算节点部署情况.txt”
-# cd /home/gpuops/gpu-ops && CONTROLLER_URL=http://192.0.2.10:60039 AGENT_TOKEN=6af5911256a62c73d8ecaaf60ffec363f23247a0cf262a8f7c78b188fdeaaf4b SSH_GUARD_EXCLUDE_USERS="root gpuops" ENABLE_SYSTEM_CPU_RESERVE=1 SYSTEM_CPU_RESERVE_PERCENT=5 ENABLE_SYSTEM_MEMORY_RESERVE=1 SYSTEM_MEMORY_RESERVE_GB=8 PARALLEL=8 bash scripts/deploy_installed_nodes_only.sh
+# cd /home/gpuops/gpu-ops && CONTROLLER_URL=http://192.0.2.10:60039 AGENT_TOKEN=<agent_token> SSH_GUARD_EXCLUDE_USERS="root gpuops" ENABLE_SYSTEM_CPU_RESERVE=1 SYSTEM_CPU_RESERVE_PERCENT=5 ENABLE_SYSTEM_MEMORY_RESERVE=1 SYSTEM_MEMORY_RESERVE_GB=8 PARALLEL=8 bash scripts/deploy_installed_nodes_only.sh
 # 当只部署 60003 时，SSH Guard 排除用户需要额外包含 operator：
-# cd /home/gpuops/gpu-ops && NODE_IDS="60003" CONTROLLER_URL=http://192.0.2.10:60039 AGENT_TOKEN=6af5911256a62c73d8ecaaf60ffec363f23247a0cf262a8f7c78b188fdeaaf4b SSH_GUARD_EXCLUDE_USERS="root gpuops operator" ENABLE_SYSTEM_CPU_RESERVE=1 SYSTEM_CPU_RESERVE_PERCENT=5 ENABLE_SYSTEM_MEMORY_RESERVE=1 SYSTEM_MEMORY_RESERVE_GB=8 PARALLEL=8 bash scripts/deploy_installed_nodes_only.sh
+# cd /home/gpuops/gpu-ops && NODE_IDS="60003" CONTROLLER_URL=http://192.0.2.10:60039 AGENT_TOKEN=<agent_token> SSH_GUARD_EXCLUDE_USERS="root gpuops operator" ENABLE_SYSTEM_CPU_RESERVE=1 SYSTEM_CPU_RESERVE_PERCENT=5 ENABLE_SYSTEM_MEMORY_RESERVE=1 SYSTEM_MEMORY_RESERVE_GB=8 PARALLEL=8 bash scripts/deploy_installed_nodes_only.sh
 
 # 控制节点先构建前端
 cd /home/gpuops/gpu-ops/web && pnpm build
@@ -339,9 +343,8 @@ cd /home/gpuops/gpu-ops/web && pnpm build
 cd /home/gpuops/gpu-ops && bash scripts/install_controller_local.sh
 # 控制节点重启服务
 sudo systemctl restart gpu-controller
-# 分发最新版脚本给全部计算节点
-bash ./scripts/distribute_workspace.sh
-# 只对指定节点分发并重装（示例：60000）
+# 常规更新不要跑 distribute_workspace.sh。
+# 只用 deploy_installed_nodes_only.sh：它会分发必要代码、清理节点旧残留、统一权限并重装 agent。
 # 注意：SYSTEM_MEMORY_RESERVE_GB 的含义是“给系统预留多少内存”，不是“把用户限制到多少内存”
 NODE_IDS="60020 60018 60017 60015 60014 60012 60010 60008 60007 60006 60005 60004 60003 60002 60001 60000"
 SSH_GUARD_EXCLUDE_USERS="root gpuops"
@@ -351,7 +354,7 @@ fi
 cd /home/gpuops/gpu-ops && \
   NODE_IDS="${NODE_IDS}" \
   CONTROLLER_URL=http://192.0.2.10:60039 \
-  AGENT_TOKEN=6af5911256a62c73d8ecaaf60ffec363f23247a0cf262a8f7c78b188fdeaaf4b \
+  AGENT_TOKEN=<agent_token> \
   SSH_GUARD_EXCLUDE_USERS="${SSH_GUARD_EXCLUDE_USERS}" \
   ENABLE_SYSTEM_CPU_RESERVE=1 \
   SYSTEM_CPU_RESERVE_PERCENT=10 \
@@ -589,7 +592,7 @@ sudo systemctl start gpu-controller
 | `install_agent_local.sh` | 在计算节点本机一键安装并启用 `gpu-node-agent` | `NODE_ID=60001 CONTROLLER_URL=http://<控制器IP>:60039 AGENT_TOKEN=<token> bash scripts/install_agent_local.sh` |
 | `deploy_agent.sh` | 从控制端批量部署 agent 到多台节点 | `NODES='60000:192.0.2.10 60001:192.0.2.10' AGENT_TOKEN=<token> CONTROLLER_URL=http://<控制器IP>:60039 bash scripts/deploy_agent.sh` |
 | `deploy_controller.sh` | 部署 controller 二进制与配置到远端控制器主机 | `HOST=<控制器主机> CONTROLLER_BIN=./controller/controller bash scripts/deploy_controller.sh` |
-| `distribute_workspace.sh` | 将当前仓库分发到各计算节点 `/home/<用户>/<项目目录>`（支持并发，默认 `PARALLEL=6`，支持 `NODE_IDS` 只跑指定节点） | `NODE_IDS='60020 60002' PARALLEL=8 bash scripts/distribute_workspace.sh` |
+| `distribute_workspace.sh` | 将当前仓库分发到各计算节点 `/home/<用户>/<项目目录>`（默认拒绝裸跑；支持并发和 `NODE_IDS`） | `DRY_RUN=1 NODE_IDS='60020 60002' PARALLEL=8 bash scripts/distribute_workspace.sh` |
 | `deploy_installed_nodes_only.sh` | 并发分发并仅重装“已安装过 gpu-node-agent”的节点，未安装节点仅更新目录，自动生成 `计算节点部署情况.txt`，支持 `NODE_IDS` 过滤 | `NODE_IDS='60020 60002' CONTROLLER_URL=http://<控制器IP>:60039 AGENT_TOKEN=<token> SSH_GUARD_EXCLUDE_USERS='root ...' PARALLEL=8 bash scripts/deploy_installed_nodes_only.sh` |
 | `build_linux.sh` | 构建 Linux 可部署二进制（controller + node-agent） | `bash scripts/build_linux.sh` |
 | `node_prereq_check.sh` | 计算节点上线前检查（只检查，不改系统） | `bash scripts/node_prereq_check.sh` |

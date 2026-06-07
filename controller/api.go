@@ -1255,6 +1255,9 @@ func (s *Server) RouterWeb() *gin.Engine {
 	admin.GET("/exemptions", s.requirePlatformUsersPermission(), s.handleAdminExemptionsList)
 	admin.POST("/exemptions", s.requireSuperAdmin(), s.handleAdminExemptionsUpsert)
 	admin.DELETE("/exemptions", s.requireSuperAdmin(), s.handleAdminExemptionsDelete)
+	admin.GET("/temporary-users", s.requirePlatformUsersPermission(), s.handleAdminTemporaryUsersList)
+	admin.POST("/temporary-users", s.requireSuperAdmin(), s.handleAdminTemporaryUsersUpsert)
+	admin.DELETE("/temporary-users", s.requireSuperAdmin(), s.handleAdminTemporaryUsersDelete)
 	admin.GET("/power-users", s.requireSuperAdmin(), s.handleAdminPowerUsersList)
 	admin.POST("/power-users", s.requireSuperAdmin(), s.handleAdminPowerUsersCreate)
 	admin.POST("/power-users/promote", s.requireSuperAdmin(), s.handleAdminPowerUsersPromote)
@@ -1308,16 +1311,19 @@ func (s *Server) registerInternalAPIRoutes(api *gin.RouterGroup) {
 		return
 	}
 	api.POST("/registry/bind-claim", s.handleRegistryBindClaim)
-	internal := api.Group("")
-	internal.Use(s.authAgent())
-	internal.POST("/metrics", s.handleMetrics)
-	internal.GET("/node/actions", s.handleNodeActions)
-	internal.GET("/ha/status", s.handleHAStatus)
-	internal.GET("/registry/resolve", s.handleRegistryResolve)
-	internal.GET("/registry/nodes/:node_id/guard-state", s.handleRegistryNodeGuardState)
-	internal.GET("/registry/nodes/:node_id/users.txt", s.handleRegistryNodeUsersTxt)
-	internal.GET("/registry/nodes/:node_id/blocked.txt", s.handleRegistryNodeBlockedUsersTxt)
-	internal.GET("/registry/nodes/:node_id/exempt.txt", s.handleRegistryNodeExemptUsersTxt)
+	nodeInternal := api.Group("")
+	nodeInternal.Use(s.authNodeAgent())
+	nodeInternal.POST("/metrics", s.handleMetrics)
+	nodeInternal.GET("/node/actions", s.handleNodeActions)
+	nodeInternal.GET("/registry/resolve", s.handleRegistryResolve)
+	nodeInternal.GET("/registry/nodes/:node_id/guard-state", s.handleRegistryNodeGuardState)
+	nodeInternal.GET("/registry/nodes/:node_id/users.txt", s.handleRegistryNodeUsersTxt)
+	nodeInternal.GET("/registry/nodes/:node_id/blocked.txt", s.handleRegistryNodeBlockedUsersTxt)
+	nodeInternal.GET("/registry/nodes/:node_id/exempt.txt", s.handleRegistryNodeExemptUsersTxt)
+
+	globalInternal := api.Group("")
+	globalInternal.Use(s.authAgent())
+	globalInternal.GET("/ha/status", s.handleHAStatus)
 }
 
 func (s *Server) authSession() gin.HandlerFunc {
@@ -1366,12 +1372,74 @@ func (s *Server) authSession() gin.HandlerFunc {
 func (s *Server) authAgent() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		tok := strings.TrimSpace(c.GetHeader("X-Agent-Token"))
-		if tok == "" || tok != s.cfg.AgentToken {
+		if tok == "" || !s.validAgentToken(tok) {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 			return
 		}
 		c.Next()
 	}
+}
+
+func (s *Server) authNodeAgent() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		tok := strings.TrimSpace(c.GetHeader("X-Agent-Token"))
+		if tok == "" || !s.validKnownAgentToken(tok) {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
+		}
+		c.Next()
+	}
+}
+
+func (s *Server) validAgentToken(tok string) bool {
+	if tok == "" {
+		return false
+	}
+	if tok == strings.TrimSpace(s.cfg.AgentToken) {
+		return true
+	}
+	for _, legacy := range s.cfg.AgentLegacyTokens {
+		if tok == strings.TrimSpace(legacy) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) validKnownAgentToken(tok string) bool {
+	if s.validAgentToken(tok) {
+		return true
+	}
+	for _, nodeTok := range s.cfg.AgentNodeTokens {
+		if tok == strings.TrimSpace(nodeTok) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) validAgentTokenForNode(tok string, nodeID string) bool {
+	tok = strings.TrimSpace(tok)
+	nodeID = strings.TrimSpace(nodeID)
+	if tok == "" || nodeID == "" {
+		return false
+	}
+	if nodeTok := strings.TrimSpace(s.cfg.AgentNodeTokens[nodeID]); nodeTok != "" {
+		if tok == nodeTok {
+			return true
+		}
+		return !s.cfg.AgentNodeTokenEnforce && s.validAgentToken(tok)
+	}
+	return s.validAgentToken(tok)
+}
+
+func (s *Server) authorizeAgentNode(c *gin.Context, nodeID string) bool {
+	tok := strings.TrimSpace(c.GetHeader("X-Agent-Token"))
+	if !s.validAgentTokenForNode(tok, nodeID) {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return false
+	}
+	return true
 }
 
 func (s *Server) authAdmin() gin.HandlerFunc {
@@ -2391,6 +2459,11 @@ func (s *Server) handleAdminUserProfile(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	monthUsedPoints, totalUsedPoints, err := s.store.GetUserUsageCostSummary(ctx, username, time.Now())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	accounts, err := s.store.ListUserNodeAccountsByBilling(ctx, username, 5000)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -2450,6 +2523,8 @@ func (s *Server) handleAdminUserProfile(c *gin.Context) {
 			"exclusive_balance":         exclusiveTotal,
 			"total_balance":             balance + carryoverBalance + exclusiveTotal,
 			"exclusive_balances":        exclusiveRows,
+			"month_used_points":         monthUsedPoints,
+			"total_used_points":         totalUsedPoints,
 			"status":                    status,
 			"created_at":                createdAt,
 			"updated_at":                updatedAt,
@@ -2640,7 +2715,7 @@ func (s *Server) handleAdminUserUnblock(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	if err := s.fillSSHEntryDisplayMeta(c.Request.Context(), "", "blacklist", nil, rows, nil); err != nil {
+	if err := s.fillSSHEntryDisplayMeta(c.Request.Context(), "", "blacklist", nil, rows, nil, nil); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -4099,12 +4174,13 @@ type adminAccountUpdateReq struct {
 }
 
 type adminAccountProvisionReq struct {
-	BillingUsername string `json:"billing_username"`
-	NodeID          string `json:"node_id"`
-	LocalUsername   string `json:"local_username"`
-	SSHHost         string `json:"ssh_host"`
-	SSHPort         int    `json:"ssh_port"`
-	RotateKey       bool   `json:"rotate_key"`
+	BillingUsername          string `json:"billing_username"`
+	NodeID                   string `json:"node_id"`
+	LocalUsername            string `json:"local_username"`
+	SSHHost                  string `json:"ssh_host"`
+	SSHPort                  int    `json:"ssh_port"`
+	RotateKey                bool   `json:"rotate_key"`
+	ConfirmExistingLocalUser bool   `json:"confirm_existing_local_user"`
 }
 
 type toolProvisionDecryptReq struct {
@@ -4862,6 +4938,11 @@ func (s *Server) handleAdminAccountProvision(c *gin.Context) {
 		})
 		return
 	}
+	localUserKnown, err := s.store.IsNodeLocalUserKnown(c.Request.Context(), req.NodeID, req.LocalUsername)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "校验节点本地账号是否已存在失败: " + err.Error()})
+		return
+	}
 
 	mappedBilling, mapped, err := s.store.ResolveBillingUsername(c.Request.Context(), req.NodeID, req.LocalUsername)
 	if err != nil {
@@ -4896,6 +4977,15 @@ func (s *Server) handleAdminAccountProvision(c *gin.Context) {
 			return
 		}
 		wasReissued = true
+	}
+	if localUserKnown && !mapped && !req.ConfirmExistingLocalUser {
+		c.JSON(http.StatusConflict, gin.H{
+			"error":          fmt.Sprintf("节点 %s 已存在本地账号 %s，但平台尚未建立映射。继续开通会复用该本地账号，并用新生成的公钥覆盖该账号 authorized_keys。请确认后重试。", req.NodeID, req.LocalUsername),
+			"reason":         "local_user_exists_unmapped",
+			"node_id":        req.NodeID,
+			"local_username": req.LocalUsername,
+		})
+		return
 	}
 
 	sshPort := inferSSHPort(req.NodeID, req.SSHPort)
@@ -5056,24 +5146,25 @@ func (s *Server) handleAdminAccountProvision(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"ok":                true,
-		"node_id":           req.NodeID,
-		"local_username":    req.LocalUsername,
-		"billing_username":  req.BillingUsername,
-		"platform_uid":      platformUID,
-		"reissued_key":      wasReissued,
-		"email":             userEmail,
-		"ssh_host":          sshHost,
-		"ssh_port":          sshPort,
-		"download_filename": fileName,
-		"ssh_command":       sshCommand,
-		"decrypt_url":       decryptURL,
-		"decrypt_code":      decryptCode,
-		"encrypted_payload": encryptedPayload,
-		"mail_sent":         mailSent,
-		"mail_error":        mailErrMsg,
-		"log_error":         logErrMsg,
-		"notice_error":      noticeErrMsg,
+		"ok":                 true,
+		"node_id":            req.NodeID,
+		"local_username":     req.LocalUsername,
+		"billing_username":   req.BillingUsername,
+		"platform_uid":       platformUID,
+		"reissued_key":       wasReissued,
+		"local_user_existed": localUserKnown,
+		"email":              userEmail,
+		"ssh_host":           sshHost,
+		"ssh_port":           sshPort,
+		"download_filename":  fileName,
+		"ssh_command":        sshCommand,
+		"decrypt_url":        decryptURL,
+		"decrypt_code":       decryptCode,
+		"encrypted_payload":  encryptedPayload,
+		"mail_sent":          mailSent,
+		"mail_error":         mailErrMsg,
+		"log_error":          logErrMsg,
+		"notice_error":       noticeErrMsg,
 		"message": func() string {
 			if wasReissued {
 				return "新密钥重发指令已下发，节点将在下一个心跳周期内刷新账号公钥"
@@ -5467,6 +5558,7 @@ type sshUpsertResult struct {
 	SkippedDueBlacklist   []string `json:"skipped_due_blacklist"`
 	RemovedFromWhitelist  int      `json:"removed_from_whitelist"`
 	RemovedFromExemptions int      `json:"removed_from_exemptions"`
+	RemovedFromTemporary  int      `json:"removed_from_temporary_users"`
 }
 
 func (s *Server) upsertWhitelistEntries(ctx context.Context, entries []sshListEntry, createdBy string, reason string) (sshUpsertResult, error) {
@@ -5513,6 +5605,10 @@ func (s *Server) upsertBlacklistEntries(ctx context.Context, entries []sshListEn
 			result.RemovedFromExemptions += len(nodes)
 		}
 		_ = s.store.DeleteSSHListSource(ctx, "exemptions", e.NodeID, e.LocalUsername)
+		if nodes, err := s.store.DeleteTemporaryUsersWithNodes(ctx, e.NodeID, e.LocalUsername); err == nil {
+			result.RemovedFromTemporary += len(nodes)
+		}
+		_ = s.store.DeleteSSHListSource(ctx, "temporary_users", e.NodeID, e.LocalUsername)
 	}
 	grouped := map[string][]string{}
 	for _, e := range entries {
@@ -5565,7 +5661,159 @@ func (s *Server) upsertExemptionEntries(ctx context.Context, entries []sshListEn
 	return result, nil
 }
 
-func (s *Server) fillSSHEntryDisplayMeta(ctx context.Context, nodeID string, listType string, whitelist []SSHWhitelistEntry, blacklist []SSHBlacklistEntry, exemptions []SSHExemptionEntry) error {
+func (s *Server) upsertTemporaryUserEntries(ctx context.Context, entries []sshListEntry, createdBy string, reason string) (sshUpsertResult, error) {
+	result := sshUpsertResult{}
+	allowed := make([]sshListEntry, 0, len(entries))
+	for _, e := range entries {
+		blacklisted, err := s.store.IsBlacklisted(ctx, e.NodeID, e.LocalUsername)
+		if err != nil {
+			return result, err
+		}
+		if blacklisted {
+			result.SkippedDueBlacklist = append(result.SkippedDueBlacklist, e.NodeID+":"+e.LocalUsername)
+			continue
+		}
+		allowed = append(allowed, e)
+	}
+	grouped := map[string][]string{}
+	for _, e := range allowed {
+		grouped[e.NodeID] = append(grouped[e.NodeID], e.LocalUsername)
+	}
+	for nodeID, users := range grouped {
+		if err := s.store.UpsertTemporaryUsers(ctx, nodeID, trimUniq(users), createdBy, reason); err != nil {
+			return result, err
+		}
+	}
+	for _, e := range allowed {
+		if err := s.store.UpsertSSHListSource(ctx, "temporary_users", e.NodeID, e.LocalUsername, e.SourceType, e.SourcePlatformUsername, createdBy); err != nil {
+			return result, err
+		}
+	}
+	result.Applied = len(allowed)
+	result.SkippedDueBlacklist = trimUniq(result.SkippedDueBlacklist)
+	return result, nil
+}
+
+func (s *Server) enqueueExemptionClearActions(ctx context.Context, entries []sshListEntry, reason string) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "账号加入豁免名单"
+	}
+	for _, e := range entries {
+		nodeID := strings.TrimSpace(e.NodeID)
+		localUsername := strings.TrimSpace(e.LocalUsername)
+		if nodeID == "" || localUsername == "" {
+			continue
+		}
+		targetNodes := []string{nodeID}
+		if nodeID == "*" {
+			targetNodes = targetNodes[:0]
+			nodes, err := s.store.ListNodes(ctx, 5000)
+			if err != nil {
+				log.Printf("[warn] 加入积分绕过名单后展开全部节点失败：local=%s err=%v", localUsername, err)
+				continue
+			}
+			for _, node := range nodes {
+				id := strings.TrimSpace(node.NodeID)
+				if id != "" {
+					targetNodes = append(targetNodes, id)
+				}
+			}
+		}
+		for _, targetNode := range trimUniq(targetNodes) {
+			if action, ok := s.nextCPUQuotaAction(targetNode, localUsername, 0, reason+"，解除 CPU 限速", true); ok {
+				s.enqueueNodeAction(targetNode, action)
+			}
+			if action, ok := s.nextMemoryLimitAction(targetNode, localUsername, 0, reason+"，解除内存限额", true); ok {
+				s.enqueueNodeAction(targetNode, action)
+			}
+			if action, ok := s.nextGPUAccessAction(targetNode, localUsername, false, reason+"，解除欠费 GPU 限制", true); ok {
+				s.enqueueNodeAction(targetNode, action)
+			}
+			if action, ok := s.nextGPUVisibilityAction(targetNode, localUsername, nil, reason+"，恢复 GPU 全可见", true); ok {
+				s.enqueueNodeAction(targetNode, action)
+			}
+		}
+	}
+}
+
+func affectedSSHListEntryNodes(entries []sshListEntry) []string {
+	nodes := make([]string, 0, len(entries))
+	for _, e := range entries {
+		nodeID := strings.TrimSpace(e.NodeID)
+		if nodeID != "" {
+			nodes = append(nodes, nodeID)
+		}
+	}
+	return trimUniq(nodes)
+}
+
+func filterSkippedSSHListEntries(entries []sshListEntry, skipped []string) []sshListEntry {
+	if len(skipped) == 0 {
+		return entries
+	}
+	skip := make(map[string]struct{}, len(skipped))
+	for _, k := range skipped {
+		k = strings.TrimSpace(k)
+		if k != "" {
+			skip[k] = struct{}{}
+		}
+	}
+	out := make([]sshListEntry, 0, len(entries))
+	for _, e := range entries {
+		if _, ok := skip[e.NodeID+":"+e.LocalUsername]; ok {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+func (s *Server) enqueueNodeRefreshActions(ctx context.Context, nodes []string, reason string) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "立即刷新 SSH/积分限速状态"
+	}
+	targets := make(map[string]struct{}, len(nodes))
+	for _, n := range nodes {
+		nodeID := strings.TrimSpace(n)
+		if nodeID == "" {
+			continue
+		}
+		if nodeID == "*" {
+			allNodes, err := s.store.ListNodes(ctx, 5000)
+			if err != nil {
+				log.Printf("[warn] 刷新全部节点失败：reason=%s err=%v", reason, err)
+				continue
+			}
+			for _, node := range allNodes {
+				id := strings.TrimSpace(node.NodeID)
+				if id != "" {
+					targets[id] = struct{}{}
+				}
+			}
+			continue
+		}
+		targets[nodeID] = struct{}{}
+	}
+	for nodeID := range targets {
+		s.enqueueNodeAction(nodeID, Action{
+			Type:   "force_sync",
+			Reason: reason,
+		})
+	}
+}
+
+func (s *Server) enqueueExemptionRefreshActions(ctx context.Context, nodes []string, localUsername string) {
+	localUsername = strings.TrimSpace(localUsername)
+	if localUsername == "" {
+		return
+	}
+	reason := fmt.Sprintf("管理员删除豁免账号 %s，立即刷新 SSH/积分限速状态", localUsername)
+	s.enqueueNodeRefreshActions(ctx, nodes, reason)
+}
+
+func (s *Server) fillSSHEntryDisplayMeta(ctx context.Context, nodeID string, listType string, whitelist []SSHWhitelistEntry, blacklist []SSHBlacklistEntry, exemptions []SSHExemptionEntry, temporaryUsers []SSHTemporaryUserEntry) error {
 	sources, err := s.store.ListSSHListSources(ctx, listType, nodeID, 200000)
 	if err != nil {
 		return err
@@ -5621,6 +5869,9 @@ func (s *Server) fillSSHEntryDisplayMeta(ctx context.Context, nodeID string, lis
 	for i := range exemptions {
 		applyMeta(exemptions[i].NodeID, exemptions[i].LocalUsername, &exemptions[i].SourceType, &exemptions[i].SourcePlatformUsername, &exemptions[i].BillingUsername)
 	}
+	for i := range temporaryUsers {
+		applyMeta(temporaryUsers[i].NodeID, temporaryUsers[i].LocalUsername, &temporaryUsers[i].SourceType, &temporaryUsers[i].SourcePlatformUsername, &temporaryUsers[i].BillingUsername)
+	}
 	return nil
 }
 
@@ -5670,7 +5921,7 @@ func (s *Server) handleAdminWhitelistList(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	if err := s.fillSSHEntryDisplayMeta(c.Request.Context(), nodeID, "whitelist", rows, nil, nil); err != nil {
+	if err := s.fillSSHEntryDisplayMeta(c.Request.Context(), nodeID, "whitelist", rows, nil, nil, nil); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -5729,7 +5980,7 @@ func (s *Server) handleAdminBlacklistList(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	if err := s.fillSSHEntryDisplayMeta(c.Request.Context(), nodeID, "blacklist", nil, rows, nil); err != nil {
+	if err := s.fillSSHEntryDisplayMeta(c.Request.Context(), nodeID, "blacklist", nil, rows, nil, nil); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -5757,13 +6008,14 @@ func (s *Server) handleAdminBlacklistUpsert(c *gin.Context) {
 		s.enqueueKickSSHUser(c.Request.Context(), e.NodeID, e.LocalUsername, fmt.Sprintf("管理员 %s 加入 SSH 黑名单，已强制断开该账号 SSH 会话", operator))
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"ok":                      true,
-		"entries":                 len(entries),
-		"applied":                 result.Applied,
-		"kicked":                  true,
-		"removed_from_whitelist":  result.RemovedFromWhitelist,
-		"removed_from_exemptions": result.RemovedFromExemptions,
-		"message":                 "黑名单优先：冲突项已从白名单/豁免名单自动移除",
+		"ok":                           true,
+		"entries":                      len(entries),
+		"applied":                      result.Applied,
+		"kicked":                       true,
+		"removed_from_whitelist":       result.RemovedFromWhitelist,
+		"removed_from_exemptions":      result.RemovedFromExemptions,
+		"removed_from_temporary_users": result.RemovedFromTemporary,
+		"message":                      "黑名单优先：冲突项已从白名单/豁免名单/临时用户自动移除",
 	})
 }
 
@@ -5792,7 +6044,7 @@ func (s *Server) handleAdminExemptionsList(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	if err := s.fillSSHEntryDisplayMeta(c.Request.Context(), nodeID, "exemptions", nil, nil, rows); err != nil {
+	if err := s.fillSSHEntryDisplayMeta(c.Request.Context(), nodeID, "exemptions", nil, nil, rows, nil); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -5816,6 +6068,8 @@ func (s *Server) handleAdminExemptionsUpsert(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	appliedEntries := filterSkippedSSHListEntries(entries, result.SkippedDueBlacklist)
+	s.enqueueExemptionClearActions(c.Request.Context(), appliedEntries, strings.TrimSpace(req.Reason))
 	c.JSON(http.StatusOK, gin.H{
 		"ok":                    true,
 		"entries":               len(entries),
@@ -5840,7 +6094,71 @@ func (s *Server) handleAdminExemptionsDelete(c *gin.Context) {
 	for _, n := range nodes {
 		_ = s.store.DeleteSSHListSource(c.Request.Context(), "exemptions", n, localUsername)
 	}
+	s.enqueueExemptionRefreshActions(c.Request.Context(), nodes, localUsername)
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func (s *Server) handleAdminTemporaryUsersList(c *gin.Context) {
+	nodeID := strings.TrimSpace(c.Query("node_id"))
+	rows, err := s.store.ListTemporaryUsers(c.Request.Context(), nodeID, 5000)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := s.fillSSHEntryDisplayMeta(c.Request.Context(), nodeID, "temporary_users", nil, nil, nil, rows); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"entries": rows})
+}
+
+func (s *Server) handleAdminTemporaryUsersUpsert(c *gin.Context) {
+	var req sshListUpsertReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	entries, err := s.resolveSSHListEntries(c.Request.Context(), req)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	operator := s.currentOperator(c)
+	result, err := s.upsertTemporaryUserEntries(c.Request.Context(), entries, operator, strings.TrimSpace(req.Reason))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	appliedEntries := filterSkippedSSHListEntries(entries, result.SkippedDueBlacklist)
+	s.enqueueExemptionClearActions(c.Request.Context(), appliedEntries, strings.TrimSpace(req.Reason))
+	s.enqueueNodeRefreshActions(c.Request.Context(), affectedSSHListEntryNodes(appliedEntries), "管理员添加临时用户，立即刷新 SSH/积分限速状态")
+	c.JSON(http.StatusOK, gin.H{
+		"ok":                    true,
+		"entries":               len(entries),
+		"applied":               result.Applied,
+		"skipped_due_blacklist": result.SkippedDueBlacklist,
+		"message":               "临时用户已放行 SSH，并跳过积分扣费/限速；黑名单仍优先。",
+	})
+}
+
+func (s *Server) handleAdminTemporaryUsersDelete(c *gin.Context) {
+	nodeID := strings.TrimSpace(c.Query("node_id"))
+	localUsername := strings.TrimSpace(c.Query("local_username"))
+	nodes, err := s.store.DeleteTemporaryUsersWithNodes(c.Request.Context(), nodeID, localUsername)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "记录不存在"})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	for _, n := range nodes {
+		_ = s.store.DeleteSSHListSource(c.Request.Context(), "temporary_users", n, localUsername)
+		s.enqueueKickSSHUser(c.Request.Context(), n, localUsername, "管理员删除临时用户，已强制刷新登录权限并断开现有 SSH 会话")
+	}
+	s.enqueueNodeRefreshActions(c.Request.Context(), nodes, fmt.Sprintf("管理员删除临时用户 %s，立即刷新 SSH/积分限速状态", localUsername))
+	c.JSON(http.StatusOK, gin.H{"ok": true, "kicked": true})
 }
 
 type powerUserCreateReq struct {
@@ -9205,6 +9523,9 @@ func (s *Server) handleMetrics(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id 不能为空"})
 		return
 	}
+	if !s.authorizeAgentNode(c, data.NodeID) {
+		return
+	}
 	data.ReportID = strings.TrimSpace(data.ReportID)
 	if data.ReportID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "report_id 不能为空（用于幂等防重）"})
@@ -9244,6 +9565,9 @@ func (s *Server) handleNodeActions(c *gin.Context) {
 	nodeID := strings.TrimSpace(c.Query("node_id"))
 	if nodeID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id 不能为空"})
+		return
+	}
+	if !s.authorizeAgentNode(c, nodeID) {
 		return
 	}
 	s.sweepNodeBindFailures(c.Request.Context(), nodeID)
@@ -9600,23 +9924,23 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 			}
 		}
 
-		// 同一台节点的映射/豁免在一次上报内复用，避免对每个进程重复查库。
+		// 同一台节点的映射/积分绕过名单在一次上报内复用，避免对每个进程重复查库。
 		resolveCache := make(map[string]string) // local_username -> billing_username（未绑定时为自身）
-		exemptCache := make(map[string]bool)    // local_username -> 是否 SSH 豁免
-		isExemptLocal := func(localUsername string) (bool, error) {
+		pointsBypassCache := make(map[string]bool)
+		isPointsBypassLocal := func(localUsername string) (bool, error) {
 			localUsername = strings.TrimSpace(localUsername)
 			if localUsername == "" {
 				return false, nil
 			}
-			if v, ok := exemptCache[localUsername]; ok {
+			if v, ok := pointsBypassCache[localUsername]; ok {
 				return v, nil
 			}
-			exempted, err := s.store.IsExempted(ctx, data.NodeID, localUsername)
+			bypassed, err := s.store.IsPointsBypassUser(ctx, data.NodeID, localUsername)
 			if err != nil {
 				return false, err
 			}
-			exemptCache[localUsername] = exempted
-			return exempted, nil
+			pointsBypassCache[localUsername] = bypassed
+			return bypassed, nil
 		}
 		miningEvidenceByUser := make(map[string][]map[string]any)
 		billedLocalUsers := make(map[string]struct{})
@@ -9639,7 +9963,7 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 					})
 				}
 			}
-			exempted, err := isExemptLocal(localUsername)
+			pointsBypassed, err := isPointsBypassLocal(localUsername)
 			if err != nil {
 				return err
 			}
@@ -9660,7 +9984,7 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 
 			gpuCost := 0.0
 			if len(proc.GPUUsage) > 0 {
-				if nodePointsBillingEnabled && !exempted {
+				if nodePointsBillingEnabled && !pointsBypassed {
 					seenGPU := billedGPUByBillingUser[billingUsername]
 					if seenGPU == nil {
 						seenGPU = make(map[string]struct{})
@@ -9679,8 +10003,8 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 			if !nodePointsBillingEnabled {
 				// 积分拦截关闭：保留使用记录，但不计入积分消耗。
 				cost = 0
-			} else if exempted {
-				// SSH 豁免账号放行时仅记录使用，不参与积分扣减和积分限速动作。
+			} else if pointsBypassed {
+				// SSH 豁免/临时账号放行时仅记录使用，不参与积分扣减和积分限速动作。
 				cost = 0
 			}
 
@@ -9705,7 +10029,7 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 				cpuProcCount++
 			}
 
-			if !exempted {
+			if !pointsBypassed {
 				b := billingAggs[billingUsername]
 				if b == nil {
 					b = &billingAgg{locals: make(map[string]struct{})}
@@ -10011,12 +10335,12 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 			if localUsername == "" || strings.EqualFold(localUsername, "root") {
 				return nil
 			}
-			exempted, err := isExemptLocal(localUsername)
+			pointsBypassed, err := isPointsBypassLocal(localUsername)
 			if err != nil {
 				return err
 			}
-			if exempted {
-				// 豁免账号不参与积分余额驱动的限速/欠费动作。
+			if pointsBypassed {
+				// 豁免/临时账号不参与积分余额驱动的限速/欠费动作。
 				return nil
 			}
 			if _, alreadyHandled := syncedRuntimeUsers[localUsername]; alreadyHandled {

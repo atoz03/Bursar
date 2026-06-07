@@ -2793,22 +2793,27 @@ async function provisionAccount() {
     provisionResult.value = r;
     provisionResultVisible.value = true;
     const isReissued = !!r.reissued_key || forceReissued;
+    const reusedExistingLocalUser = !!r.local_user_existed && !isReissued;
     if (r.mail_sent) {
       provisionActionSuccess.value = isReissued
         ? `新密钥已重新生成；密文已发平台内通知，提取码已发送到 ${r.email}`
+        : reusedExistingLocalUser
+          ? `已复用节点上的现有账号并刷新密钥；密文已发平台内通知，提取码已发送到 ${r.email}`
         : `节点账号已开通；密文已发平台内通知，提取码已发送到 ${r.email}`;
     } else {
       provisionActionSuccess.value = isReissued
         ? "新密钥已重新生成，平台内密文通知已生成，但提取码邮件发送失败"
+        : reusedExistingLocalUser
+          ? "已复用节点上的现有账号并刷新密钥，平台内密文通知已生成，但提取码邮件发送失败"
         : "节点账号已开通，平台内密文通知已生成，但提取码邮件发送失败";
     }
     await reload();
     await reloadProvisionLogs();
   };
 
-  const parseProvisionConflict = (e: any): { shouldOfferRotate: boolean; mappedBilling: string } => {
+  const parseProvisionConflict = (e: any): { shouldOfferRotate: boolean; shouldConfirmExistingLocalUser: boolean; mappedBilling: string } => {
     const status = Number(e?.status || 0);
-    if (status !== 409) return { shouldOfferRotate: false, mappedBilling: "" };
+    if (status !== 409) return { shouldOfferRotate: false, shouldConfirmExistingLocalUser: false, mappedBilling: "" };
     const msg = String(e?.message || "").trim();
     let reason = "";
     let mappedBilling = "";
@@ -2822,14 +2827,18 @@ async function provisionAccount() {
         // ignore parse failure and fallback to message matching
       }
     }
+    if (reason === "local_user_exists_unmapped") {
+      return { shouldOfferRotate: false, shouldConfirmExistingLocalUser: true, mappedBilling };
+    }
     if (reason === "mapping_exists_other_user") {
-      return { shouldOfferRotate: false, mappedBilling };
+      return { shouldOfferRotate: false, shouldConfirmExistingLocalUser: false, mappedBilling };
     }
     const sameUserReason = reason === "mapping_exists_same_user";
     const compatibleLegacyReason = reason === "mapping_exists" && (!mappedBilling || mappedBilling === billing);
     const legacyMsgHint = !reason && (msg.includes("已有平台映射") || msg.includes("已绑定到平台账号"));
     return {
       shouldOfferRotate: sameUserReason || compatibleLegacyReason || legacyMsgHint,
+      shouldConfirmExistingLocalUser: false,
       mappedBilling,
     };
   };
@@ -2846,6 +2855,32 @@ async function provisionAccount() {
     await applyProvisionSuccess(r, false);
   } catch (e: any) {
     const conflict = parseProvisionConflict(e);
+    if (conflict.shouldConfirmExistingLocalUser) {
+      try {
+        await ElMessageBox.confirm(
+          `高风险提醒：节点上已经存在这个本地账号，但平台当前没有该账号映射。\n\n节点编号：${node}\n节点账号：${local}\n平台账号：${billing}\n\n继续后系统会复用节点上的现有账号，并把该账号的 authorized_keys 覆盖为新生成的公钥；旧私钥可能无法继续登录。请确认你已经核对过该账号归属。`,
+          "高风险确认：复用现有节点账号",
+          { type: "error", confirmButtonText: "确认复用并覆盖 authorized_keys", cancelButtonText: "取消" },
+        );
+      } catch {
+        return;
+      }
+      try {
+        const r2 = await client.adminProvisionAccount({
+          billing_username: billing,
+          node_id: node,
+          local_username: local,
+          ssh_host: sshHost || undefined,
+          ssh_port: sshPort > 0 ? sshPort : undefined,
+          confirm_existing_local_user: true,
+        });
+        await applyProvisionSuccess(r2, false);
+      } catch (e2: any) {
+        provisionActionError.value = e2?.message ?? String(e2);
+        await ElMessageBox.alert(provisionActionError.value, "开通失败", { type: "error", confirmButtonText: "我知道了" });
+      }
+      return;
+    }
     if (!conflict.shouldOfferRotate) {
       provisionActionError.value = e?.message ?? String(e);
       await ElMessageBox.alert(provisionActionError.value, "开通失败", { type: "error", confirmButtonText: "我知道了" });

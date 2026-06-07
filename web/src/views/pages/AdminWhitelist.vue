@@ -34,10 +34,18 @@
       <el-tab-pane label="SSH 白名单" name="whitelist" />
       <el-tab-pane label="SSH 黑名单" name="blacklist" />
       <el-tab-pane label="SSH 豁免名单" name="exemptions" />
+      <el-tab-pane label="临时用户" name="temporary" />
     </el-tabs>
     <el-alert
       v-if="mode === 'exemptions'"
       title="豁免账号权限：1) 登录校验最高优先级，忽略黑名单/白名单/注册映射限制；2) 不受“清除SSH状态”和黑名单加入时的强制断连影响；3) 控制器不可达时仍可通过本地豁免缓存登录；4) 不扣积分（仅记录使用），且不触发积分限速/欠费动作。"
+      type="warning"
+      show-icon
+      class="mb"
+    />
+    <el-alert
+      v-if="mode === 'temporary'"
+      title="临时用户权限仅次于豁免：可 SSH 登录，不扣积分，不触发积分限速/欠费限制；黑名单仍优先。添加或删除后会立即刷新节点状态，删除时会同时断开现有 SSH 会话。"
       type="warning"
       show-icon
       class="mb"
@@ -153,6 +161,11 @@
           <el-tag type="warning" effect="plain">不扣积分</el-tag>
         </template>
       </el-table-column>
+      <el-table-column v-if="mode === 'temporary'" label="临时策略" width="210">
+        <template #default>
+          <el-tag type="warning" effect="plain">不扣积分 / 不限速</el-tag>
+        </template>
+      </el-table-column>
       <el-table-column prop="reason" label="理由" min-width="220" />
       <el-table-column prop="created_by" label="创建人" width="160" />
       <el-table-column label="更新时间" min-width="180">
@@ -171,7 +184,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { ApiClient, type SSHBlacklistEntry, type SSHExemptionEntry, type SSHWhitelistEntry } from "../../lib/api";
+import { ApiClient, type SSHBlacklistEntry, type SSHExemptionEntry, type SSHTemporaryUserEntry, type SSHWhitelistEntry } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
 import PlatformUserDetailDialog from "../../components/PlatformUserDetailDialog.vue";
@@ -183,8 +196,10 @@ const error = ref("");
 const whitelistRows = ref<SSHWhitelistEntry[]>([]);
 const blacklistRows = ref<SSHBlacklistEntry[]>([]);
 const exemptionRows = ref<SSHExemptionEntry[]>([]);
+const temporaryRows = ref<SSHTemporaryUserEntry[]>([]);
 const nodeOptions = ref<string[]>([]);
-const mode = ref<"whitelist" | "blacklist" | "exemptions">("whitelist");
+type SSHListMode = "whitelist" | "blacklist" | "exemptions" | "temporary";
+const mode = ref<SSHListMode>("whitelist");
 
 const nodeId = ref("*");
 const addMode = ref<"local" | "platform">("local");
@@ -200,26 +215,30 @@ const profileVisible = ref(false);
 const selectedProfileUsername = ref("");
 const ALL_PLATFORM_KEY = "__ALL__";
 const SSH_LIST_MODE_KEY = "ssh_list_mode";
-type SSHListRow = SSHWhitelistEntry | SSHBlacklistEntry | SSHExemptionEntry;
+type SSHListRow = SSHWhitelistEntry | SSHBlacklistEntry | SSHExemptionEntry | SSHTemporaryUserEntry;
 
 const currentRows = computed(() => {
   const rows = mode.value === "whitelist"
     ? whitelistRows.value
     : mode.value === "blacklist"
       ? blacklistRows.value
-      : exemptionRows.value;
+      : mode.value === "exemptions"
+        ? exemptionRows.value
+        : temporaryRows.value;
   return pruneRedundantGlobalPlatformRows(rows);
 });
 const saveButtonText = computed(() => {
   if (mode.value === "whitelist") return "新增白名单";
   if (mode.value === "blacklist") return "新增黑名单并断开SSH";
-  return "新增豁免账号";
+  if (mode.value === "exemptions") return "新增豁免账号";
+  return "新增临时用户";
 });
 const conflictHints = computed(() => {
   const rows = [
     ...(whitelistRows.value || []).map((x) => ({ list: "白名单", node: x.node_id, user: x.local_username })),
     ...(blacklistRows.value || []).map((x) => ({ list: "黑名单", node: x.node_id, user: x.local_username })),
     ...(exemptionRows.value || []).map((x) => ({ list: "豁免名单", node: x.node_id, user: x.local_username })),
+    ...(temporaryRows.value || []).map((x) => ({ list: "临时用户", node: x.node_id, user: x.local_username })),
   ];
   const hints: string[] = [];
   const overlap = (a: string, b: string) => a === b || a === "*" || b === "*";
@@ -234,18 +253,18 @@ const conflictHints = computed(() => {
   return uniqSorted(hints);
 });
 
-function setModeQuery(m: "whitelist" | "blacklist" | "exemptions") {
+function setModeQuery(m: SSHListMode) {
   const u = new URL(window.location.href);
   u.searchParams.set("mode", m);
   window.history.replaceState(null, "", `${u.pathname}${u.search}${u.hash}`);
 }
 
-function getInitMode(): "whitelist" | "blacklist" | "exemptions" {
+function getInitMode(): SSHListMode {
   const u = new URL(window.location.href);
   const q = (u.searchParams.get("mode") || "").trim();
-  if (q === "whitelist" || q === "blacklist" || q === "exemptions") return q;
+  if (q === "whitelist" || q === "blacklist" || q === "exemptions" || q === "temporary") return q;
   const saved = (localStorage.getItem(SSH_LIST_MODE_KEY) || "").trim();
-  if (saved === "whitelist" || saved === "blacklist" || saved === "exemptions") return saved;
+  if (saved === "whitelist" || saved === "blacklist" || saved === "exemptions" || saved === "temporary") return saved;
   return "whitelist";
 }
 
@@ -254,16 +273,18 @@ async function reload(showToast = false) {
   error.value = "";
   try {
     const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
-    const [wl, bl, ex] = await Promise.all([
+    const [wl, bl, ex, tmp] = await Promise.all([
       client.adminWhitelist(filterNode.value.trim()),
       client.adminBlacklist(filterNode.value.trim()),
       client.adminExemptions(filterNode.value.trim()),
+      client.adminTemporaryUsers(filterNode.value.trim()),
     ]);
     whitelistRows.value = wl.entries ?? [];
     blacklistRows.value = bl.entries ?? [];
     exemptionRows.value = ex.entries ?? [];
+    temporaryRows.value = tmp.entries ?? [];
     if (showToast) {
-      ElMessage.success(`刷新成功：白名单 ${whitelistRows.value.length}，黑名单 ${blacklistRows.value.length}，豁免名单 ${exemptionRows.value.length}`);
+      ElMessage.success(`刷新成功：白名单 ${whitelistRows.value.length}，黑名单 ${blacklistRows.value.length}，豁免名单 ${exemptionRows.value.length}，临时用户 ${temporaryRows.value.length}`);
     }
   } catch (e: any) {
     error.value = e?.message ?? String(e);
@@ -319,7 +340,7 @@ function pruneRedundantGlobalPlatformRows<T extends SSHListRow>(rows: T[]): T[] 
   });
 }
 
-function displayNodeID(row: SSHWhitelistEntry | SSHBlacklistEntry | SSHExemptionEntry): string {
+function displayNodeID(row: SSHListRow): string {
   const sourceType = String(row.source_type || "").trim();
   const sourcePlatform = String(row.source_platform_username || "").trim();
   if (sourceType === "platform" && sourcePlatform) return "all";
@@ -329,17 +350,19 @@ function displayNodeID(row: SSHWhitelistEntry | SSHBlacklistEntry | SSHExemption
 async function loadSuggestions() {
   try {
     const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
-    const [accounts, wl, bl, ex] = await Promise.all([
+    const [accounts, wl, bl, ex, tmp] = await Promise.all([
       client.adminAccounts(""),
       client.adminWhitelist(""),
       client.adminBlacklist(""),
       client.adminExemptions(""),
+      client.adminTemporaryUsers(""),
     ]);
     const locals = [
       ...(accounts.accounts ?? []).map((x) => x.local_username),
       ...(wl.entries ?? []).map((x) => x.local_username),
       ...(bl.entries ?? []).map((x) => x.local_username),
       ...(ex.entries ?? []).map((x) => x.local_username),
+      ...(tmp.entries ?? []).map((x) => x.local_username),
     ];
     const billing = [
       ...(accounts.accounts ?? []).map((x) => x.billing_username),
@@ -415,17 +438,25 @@ async function save() {
       const r = await client.adminUpsertBlacklist(nodeId.value.trim(), names, billingNames, reason.value.trim(), platformAccounts);
       const rmW = Number(r.removed_from_whitelist || 0);
       const rmE = Number(r.removed_from_exemptions || 0);
-      if (rmW > 0 || rmE > 0) {
-        ElMessage.warning(`黑名单保存成功（黑名单优先），已移除冲突项：白名单 ${rmW}，豁免 ${rmE}`);
+      const rmT = Number(r.removed_from_temporary_users || 0);
+      if (rmW > 0 || rmE > 0 || rmT > 0) {
+        ElMessage.warning(`黑名单保存成功（黑名单优先），已移除冲突项：白名单 ${rmW}，豁免 ${rmE}，临时用户 ${rmT}`);
       } else {
         ElMessage.success("黑名单保存成功，已下发断开SSH会话指令");
       }
-    } else {
+    } else if (mode.value === "exemptions") {
       const r = await client.adminUpsertExemptions(nodeId.value.trim(), names, billingNames, reason.value.trim(), platformAccounts);
       if ((r.skipped_due_blacklist ?? []).length > 0) {
         ElMessage.warning(`豁免账号已保存 ${r.applied} 条，${(r.skipped_due_blacklist ?? []).length} 条因黑名单优先被跳过`);
       } else {
         ElMessage.success("豁免账号保存成功，节点将快速同步");
+      }
+    } else {
+      const r = await client.adminUpsertTemporaryUsers(nodeId.value.trim(), names, billingNames, reason.value.trim(), platformAccounts);
+      if ((r.skipped_due_blacklist ?? []).length > 0) {
+        ElMessage.warning(`临时用户已保存 ${r.applied} 条，${(r.skipped_due_blacklist ?? []).length} 条因黑名单优先被跳过`);
+      } else {
+        ElMessage.success("临时用户保存成功，节点将快速同步");
       }
     }
     selectedLocalUsers.value = [];
@@ -446,7 +477,7 @@ function openProfile(username: string) {
   profileVisible.value = true;
 }
 
-async function remove(row: SSHWhitelistEntry | SSHBlacklistEntry | SSHExemptionEntry) {
+async function remove(row: SSHListRow) {
   error.value = "";
   try {
     await ElMessageBox.confirm(
@@ -454,7 +485,9 @@ async function remove(row: SSHWhitelistEntry | SSHBlacklistEntry | SSHExemptionE
         ? `确认删除白名单节点账号 ${row.local_username}（节点 ${row.node_id}）吗？系统将同时尝试断开其现有SSH会话。`
         : mode.value === "blacklist"
           ? `确认删除黑名单节点账号 ${row.local_username}（节点 ${row.node_id}）吗？`
-          : `确认删除豁免账号 ${row.local_username}（节点 ${row.node_id}）吗？删除后将恢复正常SSH校验规则。`,
+          : mode.value === "exemptions"
+            ? `确认删除豁免账号 ${row.local_username}（节点 ${row.node_id}）吗？删除后将恢复正常SSH校验规则。`
+            : `确认删除临时用户 ${row.local_username}（节点 ${row.node_id}）吗？系统将立即刷新节点状态，并断开其现有SSH会话。`,
       "删除确认",
       { type: "warning", confirmButtonText: "确认删除", cancelButtonText: "取消" },
     );
@@ -465,9 +498,12 @@ async function remove(row: SSHWhitelistEntry | SSHBlacklistEntry | SSHExemptionE
     } else if (mode.value === "blacklist") {
       await client.adminDeleteBlacklist(row.node_id, row.local_username);
       ElMessage.success("黑名单删除成功");
-    } else {
+    } else if (mode.value === "exemptions") {
       await client.adminDeleteExemptions(row.node_id, row.local_username);
       ElMessage.success("豁免账号删除成功");
+    } else {
+      await client.adminDeleteTemporaryUsers(row.node_id, row.local_username);
+      ElMessage.success("临时用户删除成功，已刷新节点状态并下发断开SSH会话指令");
     }
     await loadSuggestions();
     await reload(true);

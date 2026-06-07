@@ -45,6 +45,8 @@ NODE_MAP_USER="${NODE_MAP_USER:-}"
 GO_PROXY="${GO_PROXY:-https://goproxy.cn,direct}"
 GO_SUMDB="${GO_SUMDB:-sum.golang.google.cn}"
 SERVICE_NAME="${SERVICE_NAME:-gpu-node-agent}"
+NODE_AGENT_ENV_FILE="${NODE_AGENT_ENV_FILE:-/etc/gpu-cluster/node-agent.env}"
+PUBLIC_ENV_FILE="${PUBLIC_ENV_FILE:-/etc/gpu-cluster/public.env}"
 ACTION_POLL_INTERVAL_SECONDS="${ACTION_POLL_INTERVAL_SECONDS:-2}"
 LOCAL_USERS_REFRESH_SECONDS="${LOCAL_USERS_REFRESH_SECONDS:-900}"
 LOCAL_USERS_COLLECT_TIMEOUT_SECONDS="${LOCAL_USERS_COLLECT_TIMEOUT_SECONDS:-8}"
@@ -99,6 +101,7 @@ else
   SYSTEM_MEMORY_RESERVE_GB="8"
 fi
 RESET_USER_CPU_QUOTA_ON_INSTALL="${RESET_USER_CPU_QUOTA_ON_INSTALL:-1}"
+CLEAR_USER_LIMITS="${CLEAR_USER_LIMITS:-}"
 
 NODE_ID="${NODE_ID:-}"
 CONTROLLER_URL="${CONTROLLER_URL:-}"
@@ -106,10 +109,22 @@ AGENT_TOKEN="${AGENT_TOKEN:-}"
 
 load_existing_service_env() {
   local svc=""
+  local env_file="${NODE_AGENT_ENV_FILE}"
   if [[ -f /etc/systemd/system/${SERVICE_NAME}.service ]]; then
     svc="/etc/systemd/system/${SERVICE_NAME}.service"
   elif [[ -f /lib/systemd/system/${SERVICE_NAME}.service ]]; then
     svc="/lib/systemd/system/${SERVICE_NAME}.service"
+  fi
+  if [[ -f "${env_file}" ]]; then
+    if [[ -z "${NODE_ID}" ]]; then
+      NODE_ID="$(awk -F'=' '/^[[:space:]]*NODE_ID=/{print $2; exit}' "${env_file}" | sed -e 's/^"//' -e 's/"$//')"
+    fi
+    if [[ -z "${CONTROLLER_URL}" ]]; then
+      CONTROLLER_URL="$(awk -F'=' '/^[[:space:]]*CONTROLLER_URL=/{print $2; exit}' "${env_file}" | sed -e 's/^"//' -e 's/"$//')"
+    fi
+    if [[ -z "${AGENT_TOKEN}" ]]; then
+      AGENT_TOKEN="$(awk -F'=' '/^[[:space:]]*AGENT_TOKEN=/{print $2; exit}' "${env_file}" | sed -e 's/^"//' -e 's/"$//')"
+    fi
   fi
   if [[ -z "${svc}" ]]; then
     return 0
@@ -202,6 +217,45 @@ cleanup_runtime_limit_residue() {
   # 清理旧状态文件，避免 agent 重启时先恢复过期的运行态限制。
   ${SUDO} find /home -mindepth 2 -maxdepth 2 -type f \( -name ".cpu_quota" -o -name ".memory_limit" \) -delete >/dev/null 2>&1 || true
   ${SUDO} systemctl daemon-reload >/dev/null 2>&1 || true
+}
+
+clear_single_user_limits() {
+  local username="$1"
+  username="$(echo "${username}" | xargs)"
+  if [[ -z "${username}" || "${username}" == "root" ]]; then
+    return 0
+  fi
+  local uid
+  uid="$(id -u "${username}" 2>/dev/null || true)"
+  if [[ -z "${uid}" || ! "${uid}" =~ ^[0-9]+$ ]]; then
+    echo "跳过：用户不存在 ${username}" >&2
+    return 0
+  fi
+
+  ${SUDO} rm -f \
+    "/etc/systemd/system/user-${uid}.slice.d/90-gpuops-cpu-quota.conf" \
+    "/etc/systemd/system/user-${uid}.slice.d/90-gpuops-memory-limit.conf" \
+    "/etc/systemd/system/user@${uid}.service.d/90-gpuops-memory-limit.conf" \
+    "/home/${username}/.cpu_quota" \
+    "/home/${username}/.memory_limit" >/dev/null 2>&1 || true
+  ${SUDO} rmdir "/etc/systemd/system/user-${uid}.slice.d" "/etc/systemd/system/user@${uid}.service.d" >/dev/null 2>&1 || true
+  ${SUDO} systemctl daemon-reload >/dev/null 2>&1 || true
+  ${SUDO} systemctl set-property --runtime "user-${uid}.slice" CPUQuota=infinity MemoryAccounting=yes MemoryHigh=infinity MemoryMax=infinity >/dev/null 2>&1 || true
+  ${SUDO} systemctl set-property --runtime "user@${uid}.service" MemoryAccounting=yes MemoryHigh=infinity MemoryMax=infinity >/dev/null 2>&1 || true
+
+  for p in "/sys/fs/cgroup/user.slice/user-${uid}.slice" "/sys/fs/cgroup/user-${uid}.slice"; do
+    [[ -d "${p}" ]] || continue
+    [[ -w "${p}/cpu.max" ]] && echo "max 100000" | ${SUDO} tee "${p}/cpu.max" >/dev/null || true
+    [[ -w "${p}/memory.high" ]] && echo "max" | ${SUDO} tee "${p}/memory.high" >/dev/null || true
+    [[ -w "${p}/memory.max" ]] && echo "max" | ${SUDO} tee "${p}/memory.max" >/dev/null || true
+  done
+  echo "已清理用户资源限制：${username} uid=${uid}"
+}
+
+harden_project_workspace() {
+  if [[ -d "${PROJECT_ROOT}" ]]; then
+    find "${PROJECT_ROOT}" -xdev \( -type d -o -type f \) -exec chmod 700 {} + 2>/dev/null || true
+  fi
 }
 
 build_agent_ldflags() {
@@ -353,6 +407,7 @@ usage() {
   ENABLE_USER_SLICE_MEMORY_RESERVE=1 兼容旧写法，等价于 ENABLE_SYSTEM_MEMORY_RESERVE
   USER_SLICE_MEMORY_RESERVE_GB=8   兼容旧写法，等价于 SYSTEM_MEMORY_RESERVE_GB
   RESET_USER_CPU_QUOTA_ON_INSTALL=1 安装时清理历史用户 CPU/内存运行态残留（默认 1）
+  CLEAR_USER_LIMITS="u1,u2"       只清理指定用户 CPU/内存限制并退出
 USAGE
 }
 
@@ -364,6 +419,20 @@ fi
 
 if [[ "${SHOW_USAGE}" == "1" ]]; then
   usage
+  exit 0
+fi
+
+if [[ "$(id -u)" -ne 0 ]]; then
+  SUDO="sudo"
+else
+  SUDO=""
+fi
+
+if [[ -n "${CLEAR_USER_LIMITS}" ]]; then
+  users_to_clear="${CLEAR_USER_LIMITS//,/ }"
+  for user_to_clear in ${users_to_clear}; do
+    clear_single_user_limits "${user_to_clear}"
+  done
   exit 0
 fi
 
@@ -396,12 +465,6 @@ fi
 if [[ ! -d "${NODE_AGENT_DIR}" ]]; then
   echo "node-agent 目录不存在：${NODE_AGENT_DIR}" >&2
   exit 2
-fi
-
-if [[ "$(id -u)" -ne 0 ]]; then
-  SUDO="sudo"
-else
-  SUDO=""
 fi
 
 echo "[1/9] 基础信息"
@@ -508,6 +571,28 @@ cleanup_runtime_limit_residue
 
 echo "[8/9] 安装 systemd 服务"
 ${SUDO} install -m 0755 node-agent /usr/local/bin/node-agent
+${SUDO} install -d -m 0755 /etc/gpu-cluster
+node_agent_env_tmp="$(mktemp)"
+cat >"${node_agent_env_tmp}" <<EOF_NODE_AGENT_ENV
+NODE_ID=${NODE_ID}
+CONTROLLER_URL=${CONTROLLER_URL}
+AGENT_TOKEN=${AGENT_TOKEN}
+ACTION_POLL_INTERVAL_SECONDS=${ACTION_POLL_INTERVAL_SECONDS}
+LOCAL_USERS_REFRESH_SECONDS=${LOCAL_USERS_REFRESH_SECONDS}
+LOCAL_USERS_COLLECT_TIMEOUT_SECONDS=${LOCAL_USERS_COLLECT_TIMEOUT_SECONDS}
+GPU_BUS_MAP_CACHE_SECONDS=${GPU_BUS_MAP_CACHE_SECONDS}
+GPU_INVENTORY_CACHE_SECONDS=${GPU_INVENTORY_CACHE_SECONDS}
+GPU_COMMAND_TIMEOUT_SECONDS=${GPU_COMMAND_TIMEOUT_SECONDS}
+EOF_NODE_AGENT_ENV
+${SUDO} install -m 0600 -o root -g root "${node_agent_env_tmp}" "${NODE_AGENT_ENV_FILE}"
+rm -f "${node_agent_env_tmp}"
+public_env_tmp="$(mktemp)"
+cat >"${public_env_tmp}" <<EOF_PUBLIC_ENV
+CONTROLLER_URL=${CONTROLLER_URL}
+NODE_ID=${NODE_ID}
+EOF_PUBLIC_ENV
+${SUDO} install -m 0644 -o root -g root "${public_env_tmp}" "${PUBLIC_ENV_FILE}"
+rm -f "${public_env_tmp}"
 ${SUDO} tee "/etc/systemd/system/${SERVICE_NAME}.service" >/dev/null <<EOF_SERVICE
 [Unit]
 Description=GPU Cluster Node Agent
@@ -516,15 +601,7 @@ After=network.target
 [Service]
 Type=simple
 User=root
-Environment=NODE_ID=${NODE_ID}
-Environment=CONTROLLER_URL=${CONTROLLER_URL}
-Environment=AGENT_TOKEN=${AGENT_TOKEN}
-Environment=ACTION_POLL_INTERVAL_SECONDS=${ACTION_POLL_INTERVAL_SECONDS}
-Environment=LOCAL_USERS_REFRESH_SECONDS=${LOCAL_USERS_REFRESH_SECONDS}
-Environment=LOCAL_USERS_COLLECT_TIMEOUT_SECONDS=${LOCAL_USERS_COLLECT_TIMEOUT_SECONDS}
-Environment=GPU_BUS_MAP_CACHE_SECONDS=${GPU_BUS_MAP_CACHE_SECONDS}
-Environment=GPU_INVENTORY_CACHE_SECONDS=${GPU_INVENTORY_CACHE_SECONDS}
-Environment=GPU_COMMAND_TIMEOUT_SECONDS=${GPU_COMMAND_TIMEOUT_SECONDS}
+EnvironmentFile=${NODE_AGENT_ENV_FILE}
 ExecStart=/usr/local/bin/node-agent
 Restart=always
 
@@ -546,6 +623,57 @@ echo "[9/9] 服务状态"
 ${SUDO} systemctl --no-pager --full status "${SERVICE_NAME}" || true
 ${SUDO} journalctl -u "${SERVICE_NAME}" -n 40 --no-pager || true
 
+${SUDO} tee /usr/local/bin/gpuops-claim >/dev/null <<'EOF_CLAIM'
+#!/bin/bash
+set -euo pipefail
+
+PUBLIC_CONF="/etc/gpu-cluster/public.env"
+if [[ -r "${PUBLIC_CONF}" ]]; then
+  # shellcheck disable=SC1090
+  source "${PUBLIC_CONF}"
+fi
+
+TOKEN="${1:-}"
+if [[ -z "${TOKEN}" ]]; then
+  echo "用法：gpuops-claim <challenge_token>" >&2
+  exit 2
+fi
+
+CONTROLLER_URL="${CONTROLLER_URL:-}"
+NODE_ID="${NODE_ID:-}"
+LOCAL_USER="$(id -un 2>/dev/null || whoami)"
+
+if [[ -z "${CONTROLLER_URL}" || -z "${NODE_ID}" || -z "${LOCAL_USER}" ]]; then
+  echo "缺少 CONTROLLER_URL/NODE_ID/LOCAL_USER，无法提交 challenge" >&2
+  exit 2
+fi
+
+api="${CONTROLLER_URL%/}/api/registry/bind-claim"
+payload="$(printf '{\"token\":\"%s\",\"node_id\":\"%s\",\"local_username\":\"%s\"}' "${TOKEN}" "${NODE_ID}" "${LOCAL_USER}")"
+tmp_resp="$(mktemp)"
+trap 'rm -f "${tmp_resp}"' EXIT
+http_code="$(curl -sS -o "${tmp_resp}" -w '%{http_code}' -H "Content-Type: application/json" --data "${payload}" "${api}")"
+resp="$(cat "${tmp_resp}")"
+if [[ ! "${http_code}" =~ ^2[0-9][0-9]$ ]]; then
+  if [[ -n "${resp}" ]]; then
+    echo "${resp}" >&2
+  fi
+  echo "gpuops-claim 失败：http ${http_code}" >&2
+  exit 1
+fi
+echo "${resp}"
+msg="$(echo "${resp}" | sed -n 's/.*"message":"\([^"]*\)".*/\1/p')"
+wait_s="$(echo "${resp}" | sed -n 's/.*"estimated_wait_seconds":\([0-9][0-9]*\).*/\1/p')"
+if [[ -n "${msg}" ]]; then
+  echo "提示：${msg}"
+fi
+if [[ -n "${wait_s}" ]]; then
+  echo "建议等待：${wait_s} 秒"
+fi
+echo
+EOF_CLAIM
+${SUDO} chmod 0755 /usr/local/bin/gpuops-claim
+
 if [[ "${ENABLE_SSH_GUARD}" == "1" ]]; then
   echo "[10/10] 安装 SSH Guard（PAM 登录拦截）"
   ${SUDO} mkdir -p /opt/gpu-cluster /etc/gpu-cluster /var/lib/gpu-cluster /etc/systemd/system
@@ -562,6 +690,8 @@ EXEMPT_FILE="${SSH_GUARD_EXEMPT_FILE}"
 GUARD_STATE_FILE="${SSH_GUARD_STATE_FILE}"
 REALTIME_LOOKUP="${SSH_GUARD_REALTIME_LOOKUP}"
 EOF_GUARD_CONF
+  ${SUDO} chmod 0600 /etc/gpu-cluster/ssh_guard.conf
+  ${SUDO} chown root:root /etc/gpu-cluster/ssh_guard.conf
 
   ${SUDO} tee /opt/gpu-cluster/sync_registered_users.sh >/dev/null <<'EOF_SYNC'
 #!/bin/bash
@@ -750,10 +880,10 @@ EOF_CHECK
 #!/bin/bash
 set -euo pipefail
 
-CONF="/etc/gpu-cluster/ssh_guard.conf"
-if [[ -f "${CONF}" ]]; then
+PUBLIC_CONF="/etc/gpu-cluster/public.env"
+if [[ -r "${PUBLIC_CONF}" ]]; then
   # shellcheck disable=SC1090
-  source "${CONF}"
+  source "${PUBLIC_CONF}"
 fi
 
 TOKEN="${1:-}"
@@ -1096,5 +1226,7 @@ EOF_USER_SLICE_MEM
 fi
 
 echo
+
+harden_project_workspace
 
 echo "部署完成。"

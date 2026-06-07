@@ -2,15 +2,21 @@
 **/*.test
 **/*.out
 **/bin/
+controller/controller
+node-agent/node-agent
 
 # 运行时数据/日志
 **/.DS_Store
 **/*.log
 **/state/
 **/tmp/
+计算节点部署情况.txt
+控制节点安全部署命令.md
+计算节点首次安装交接.md
 
 # IDE
 .idea/
+.codex
 
 # Web
 web/node_modules/
@@ -18,6 +24,11 @@ web/.vite/
 web/.env
 web/.env.*
 web/dist/
+
+# 本地生产配置与导出文件
+config/*.local.yaml
+config/*.local.env
+使用手册/*.pdf
 
 helloagents/
 .serena/

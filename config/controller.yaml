@@ -10,13 +10,21 @@ internal_tls_key_file: ""
 database_dsn: "postgres://gpuops:gpuops@127.0.0.1:5432/gpuops?sslmode=disable"
 
 # Agent 上报鉴权（header: X-Agent-Token）
-agent_token: "6af5911256a62c73d8ecaaf60ffec363f23247a0cf262a8f7c78b188fdeaaf4b"
+agent_token: "<replace-with-agent-token>"
+# Agent token 轮换窗口：先把旧 token 放这里，待所有节点更新后清空。
+agent_legacy_tokens: []
+# 每个计算节点的专属 token。迁移流程：
+# 1) 先填 agent_node_tokens，并保持 agent_node_token_enforce=false；
+# 2) 用 NODE_AGENT_TOKENS_FILE 下发到节点；
+# 3) 确认全部节点上报正常后，改为 true 并重启控制器。
+agent_node_token_enforce: false
+agent_node_tokens: {}
 
 # 管理员鉴权（header: Authorization: Bearer <token>）
-admin_token: "dec269fb577899977f9207585138cc8162ea9777945ac6465414a7519bdc7f28"
+admin_token: "<replace-with-admin-token>"
 
 # Web 登录会话签名密钥（用于 cookie）。建议上线时替换为强随机值。
-auth_secret: "76e96e86a6fa28441d219e0761687286e661b94f26dec6db1360af34fd36ed72"
+auth_secret: "<replace-with-auth-secret>"
 
 # 余额阈值
 warning_threshold: 100
@@ -72,8 +80,8 @@ web_dir: ""
 ha_enabled: true
 ha_node: "controller-primary"
 ha_role: "primary"
-ha_peer_url: "http://<60009-IP>:60039"
-ha_token: "c8a4b52c0dcbfdb6ca76769110f16d22c38851b8f6833f055908a920f8abc7e2"
+ha_peer_url: "http://<standby-controller-ip>:60039"
+ha_token: "<replace-with-ha-token>"
 
 # 共享工作目录（控制器直接在 NFS 服务端本地路径创建/chown 用户目录）
 shared_node_root: "/srv/gpu-ops/nodes"
