@@ -23,9 +23,17 @@ command -v docker >/dev/null 2>&1 || { echo "缺少 docker" >&2; exit 2; }
 command -v restic >/dev/null 2>&1 || { echo "缺少 restic" >&2; exit 2; }
 command -v jq >/dev/null 2>&1 || { echo "缺少 jq" >&2; exit 2; }
 
+restic_run() {
+  local backend_options=()
+  if [[ -n "${RESTIC_SFTP_COMMAND:-}" ]]; then
+    backend_options=(-o "sftp.command=${RESTIC_SFTP_COMMAND}")
+  fi
+  restic "${backend_options[@]}" "$@"
+}
+
 mkdir -p "$(dirname "${BACKUP_VERIFY_STATUS_FILE}")"
 started_at="$(date --iso-8601=seconds)"
-snapshot_id="$(restic snapshots --latest 1 --json --tag gpu-ops | jq -r '.[-1].short_id // .[-1].id // empty')"
+snapshot_id="$(restic_run snapshots --latest 1 --json --tag gpu-ops | jq -r '.[-1].short_id // .[-1].id // empty')"
 [[ -n "${snapshot_id}" ]] || { echo "没有可验证的备份快照" >&2; exit 3; }
 container="gpuops-restore-verify-$(date +%s)-$$"
 password="$(openssl rand -hex 24)"
@@ -80,7 +88,7 @@ done
 [[ "${ready}" == "1" ]] || { echo "演练数据库启动超时" >&2; exit 4; }
 
 dump_repo_path="${BACKUP_STAGING_ROOT}/database/gpuops.dump"
-restic dump "${snapshot_id}" "${dump_repo_path}" \
+restic_run dump "${snapshot_id}" "${dump_repo_path}" \
   | docker exec -i "${container}" pg_restore \
       --username=postgres \
       --dbname=postgres \
