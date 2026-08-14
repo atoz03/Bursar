@@ -5,7 +5,7 @@
         <div class="section-title-wrap">
           <span class="section-icon"><el-icon><DataBoard /></el-icon></span>
           <div>
-          <div class="title">进程记录</div>
+          <div class="title">进程审计</div>
           <div class="sub">查询、审计和导出节点进程记录</div>
           </div>
         </div>
@@ -158,14 +158,6 @@
         </el-table>
       </el-card>
 
-      <el-dialog v-model="userActionsVisible" title="平台账号操作" width="480px">
-        <div style="margin-bottom: 10px">当前账号：<b>{{ selectedPlatformUsername || "-" }}</b></div>
-        <el-space>
-          <el-button type="danger" @click="blockSelectedUser">拉黑</el-button>
-          <el-button type="success" @click="unblockSelectedUser">拉白</el-button>
-          <el-button type="warning" @click="deleteSelectedUser">删除</el-button>
-        </el-space>
-      </el-dialog>
       <PlatformUserDetailDialog v-model="profileVisible" :username="selectedProfileUsername" />
     </div>
   </el-card>
@@ -192,8 +184,6 @@ const availableDaysLoaded = ref(false);
 const estimatingRange = ref(false);
 const deletingRange = ref(false);
 const rangeEstimate = ref<{ records: number; estimated_csv_bytes: number; estimated_db_bytes: number } | null>(null);
-const userActionsVisible = ref(false);
-const selectedPlatformUsername = ref("");
 const profileVisible = ref(false);
 const selectedProfileUsername = ref("");
 
@@ -436,70 +426,10 @@ function rowClassName({ row }: { row: UsageRecord }) {
   return row.registered === false ? "unregistered-row" : "";
 }
 
-function openPlatformUserActions(username: string) {
-  selectedPlatformUsername.value = String(username || "").trim();
-  if (!selectedPlatformUsername.value) return;
-  userActionsVisible.value = true;
-}
-
 function openPlatformProfile(username: string) {
   selectedProfileUsername.value = String(username || "").trim();
   if (!selectedProfileUsername.value) return;
   profileVisible.value = true;
-}
-
-async function blockSelectedUser() {
-  const username = selectedPlatformUsername.value;
-  if (!username) return;
-  try {
-    await ElMessageBox.confirm(`确认拉黑平台账号 ${username} 吗？`, "二次确认", { type: "warning", confirmButtonText: "确认拉黑", cancelButtonText: "取消" });
-  } catch {
-    return;
-  }
-  try {
-    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
-    await client.adminBlockUser(username);
-    ElMessage.success(`已拉黑：${username}`);
-    userActionsVisible.value = false;
-  } catch (e: any) {
-    error.value = e?.message ?? String(e);
-  }
-}
-
-async function unblockSelectedUser() {
-  const username = selectedPlatformUsername.value;
-  if (!username) return;
-  try {
-    await ElMessageBox.confirm(`确认拉白平台账号 ${username} 吗？`, "二次确认", { type: "warning", confirmButtonText: "确认拉白", cancelButtonText: "取消" });
-  } catch {
-    return;
-  }
-  try {
-    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
-    await client.adminUnblockUser(username);
-    ElMessage.success(`已拉白：${username}`);
-    userActionsVisible.value = false;
-  } catch (e: any) {
-    error.value = e?.message ?? String(e);
-  }
-}
-
-async function deleteSelectedUser() {
-  const username = selectedPlatformUsername.value;
-  if (!username) return;
-  try {
-    await ElMessageBox.confirm(`确认删除平台账号 ${username} 吗？`, "二次确认", { type: "warning", confirmButtonText: "确认删除", cancelButtonText: "取消" });
-  } catch {
-    return;
-  }
-  try {
-    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
-    await client.adminDeleteUser(username, "从使用记录页面删除");
-    ElMessage.success(`已删除：${username}`);
-    userActionsVisible.value = false;
-  } catch (e: any) {
-    error.value = e?.message ?? String(e);
-  }
 }
 
 async function addUnregisteredToBlacklist(row: { local_username: string; nodes: string; node_ids?: string[] }) {

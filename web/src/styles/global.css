@@ -128,154 +128,18 @@ body {
 }
 
 .user-fun-page {
-  position: relative;
   min-height: 72vh;
-  overflow: hidden;
-  border-radius: 24px;
-  padding: 14px;
-  background:
-    radial-gradient(950px 520px at -8% -18%, rgba(249, 115, 22, 0.22), transparent 62%),
-    radial-gradient(900px 520px at 108% 118%, rgba(14, 165, 233, 0.2), transparent 62%),
-    linear-gradient(160deg, #fff7ed 0%, #fefce8 34%, #ecfeff 100%);
-  background-size: 120% 120%, 125% 125%, 180% 180%;
-  animation: userFunGradientShift 12s ease-in-out infinite;
-}
-
-.user-fun-bg {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  overflow: hidden;
-}
-
-.user-fun-bg::before {
-  content: "";
-  position: absolute;
-  inset: -20%;
-  background: conic-gradient(from 0deg, rgba(251, 113, 133, 0.1), rgba(34, 211, 238, 0.1), rgba(245, 158, 11, 0.1), rgba(251, 113, 133, 0.1));
-  filter: blur(24px);
-  animation: userFunSpin 24s linear infinite;
-}
-
-.user-fun-bg::after {
-  content: "";
-  position: absolute;
-  inset: -15%;
-  background:
-    repeating-linear-gradient(
-      120deg,
-      rgba(15, 118, 110, 0.07) 0 10px,
-      rgba(255, 255, 255, 0) 10px 24px
-    );
-  opacity: 0.55;
-  animation: userFunStream 16s linear infinite;
-}
-
-.user-fun-flow {
-  position: absolute;
-  border-radius: 999px;
-  filter: blur(38px);
-  opacity: 0.3;
-}
-
-.user-fun-flow.a {
-  width: 420px;
-  height: 110px;
-  left: -80px;
-  top: 23%;
-  transform: rotate(-18deg);
-  background: linear-gradient(90deg, #0ea5e9, #14b8a6);
-  animation: userFunWaveA 11s ease-in-out infinite;
-}
-
-.user-fun-flow.b {
-  width: 420px;
-  height: 110px;
-  right: -120px;
-  bottom: 18%;
-  transform: rotate(-22deg);
-  background: linear-gradient(90deg, #f59e0b, #f97316);
-  animation: userFunWaveB 12s ease-in-out infinite;
-}
-
-.user-fun-blob {
-  position: absolute;
-  border-radius: 50%;
-  filter: blur(30px);
-  opacity: 0.36;
-  animation: userFunFloat 13s ease-in-out infinite;
-}
-
-.user-fun-blob.a {
-  width: 220px;
-  height: 220px;
-  left: -46px;
-  top: 14%;
-  background: #fb7185;
-}
-
-.user-fun-blob.b {
-  width: 260px;
-  height: 260px;
-  right: -60px;
-  top: 38%;
-  background: #22d3ee;
-  animation-delay: 1.4s;
-}
-
-.user-fun-spark {
-  position: absolute;
-  width: 20px;
-  height: 20px;
-  border-radius: 6px;
-  transform: rotate(45deg);
-  background: rgba(255, 255, 255, 0.66);
-  opacity: 0.6;
-  animation: userFunSpark 4.6s ease-in-out infinite;
-}
-
-.user-fun-spark.a {
-  left: 16%;
-  bottom: 16%;
-}
-
-.user-fun-spark.b {
-  right: 18%;
-  top: 14%;
-  animation-delay: 0.7s;
-}
-
-.user-fun-sticker {
-  position: absolute;
-  z-index: 1;
-  padding: 8px 12px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 800;
-  color: #0f172a;
-  background: #ffffff;
-  border: 2px solid #e2e8f0;
-  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.12);
-}
-
-.user-fun-sticker.left {
-  left: 6%;
-  top: 9%;
-  transform: rotate(-8deg);
-}
-
-.user-fun-sticker.right {
-  right: 8%;
-  bottom: 8%;
-  transform: rotate(8deg);
+  padding: 12px;
+  border: 1px solid rgba(219, 227, 237, .8);
+  border-radius: 18px;
+  background: #f7f9fc;
 }
 
 .user-fun-card {
-  position: relative;
-  z-index: 2;
-  border-radius: 22px !important;
+  border: 1px solid #e0e7f0 !important;
+  border-radius: 18px !important;
   background: #ffffff !important;
-  box-shadow: 0 16px 34px rgba(15, 23, 42, 0.09) !important;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, .065) !important;
 }
 
 .user-fun-card .el-card__header {
@@ -285,9 +149,10 @@ body {
 
 .user-fun-head-title {
   margin: 0;
-  font-size: 28px;
+  font-size: clamp(24px, 2vw, 30px);
   font-weight: 800;
   line-height: 1.15;
+  letter-spacing: -.03em;
   color: #0f172a;
 }
 
@@ -301,49 +166,10 @@ body {
   margin: 14px 0;
 }
 
-@keyframes userFunFloat {
-  0%, 100% { transform: translateY(0) translateX(0); }
-  50% { transform: translateY(-16px) translateX(12px); }
-}
-
-@keyframes userFunGradientShift {
-  0%, 100% { background-position: 0% 0%, 100% 100%, 0% 50%; }
-  50% { background-position: 12% 12%, 86% 90%, 100% 50%; }
-}
-
-@keyframes userFunSpin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-
-@keyframes userFunStream {
-  from { transform: translateX(-5%) translateY(-3%); }
-  to { transform: translateX(5%) translateY(3%); }
-}
-
-@keyframes userFunWaveA {
-  0%, 100% { transform: translateX(0) translateY(0) rotate(-18deg); }
-  50% { transform: translateX(24px) translateY(-10px) rotate(-14deg); }
-}
-
-@keyframes userFunWaveB {
-  0%, 100% { transform: translateX(0) translateY(0) rotate(-22deg); }
-  50% { transform: translateX(-20px) translateY(10px) rotate(-26deg); }
-}
-
-@keyframes userFunSpark {
-  0%, 100% { transform: rotate(45deg) scale(1); opacity: 0.56; }
-  50% { transform: rotate(45deg) scale(1.2); opacity: 0.9; }
-}
-
 @media (max-width: 900px) {
   .user-fun-page {
     border-radius: 16px;
     padding: 10px;
-  }
-  .user-fun-sticker {
-    font-size: 10px;
-    padding: 5px 9px;
   }
   .user-fun-head-title {
     font-size: 24px;
@@ -450,25 +276,6 @@ body {
 .el-descriptions { overflow: hidden; border-radius: 11px; }
 .el-empty { padding: 28px 0; }
 .el-loading-mask { border-radius: inherit; background-color: rgba(255, 255, 255, .76); backdrop-filter: blur(2px); }
-
-/* 用户中心此前动画较强，统一收敛到清爽且不干扰阅读的背景。 */
-.user-fun-page {
-  padding: 12px;
-  border: 1px solid rgba(219, 227, 237, .8);
-  background:
-    radial-gradient(720px 340px at 0% 0%, rgba(59, 130, 246, .11), transparent 68%),
-    radial-gradient(680px 320px at 100% 100%, rgba(20, 184, 166, .09), transparent 70%),
-    #f7f9fc;
-  animation: none;
-}
-.user-fun-bg { opacity: .42; }
-.user-fun-bg::before,
-.user-fun-bg::after,
-.user-fun-flow,
-.user-fun-blob,
-.user-fun-spark { animation: none !important; }
-.user-fun-card { border: 1px solid #e0e7f0 !important; border-radius: 18px !important; box-shadow: 0 12px 30px rgba(15, 23, 42, .065) !important; }
-.user-fun-head-title { font-size: clamp(24px, 2vw, 30px); letter-spacing: -.03em; }
 
 @media (max-width: 720px) {
   .el-card__header { padding: 13px 14px; }

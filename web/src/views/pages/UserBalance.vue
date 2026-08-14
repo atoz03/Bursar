@@ -1,15 +1,5 @@
 <template>
   <div class="user-fun-page">
-    <div class="user-fun-bg">
-      <div class="user-fun-flow a" />
-      <div class="user-fun-flow b" />
-      <div class="user-fun-blob a" />
-      <div class="user-fun-blob b" />
-      <div class="user-fun-spark a" />
-      <div class="user-fun-spark b" />
-      <div class="user-fun-sticker left">积分中心</div>
-      <div class="user-fun-sticker right">节点账号别忘填</div>
-    </div>
     <el-card class="user-fun-card balance-card">
       <template #header>
         <div class="row">
@@ -22,7 +12,6 @@
             <p class="user-fun-head-sub">登录态自动识别平台账号，积分与状态实时展示</p>
           </div>
           <el-space>
-            <el-button @click="goProfile">个人信息修改</el-button>
             <el-button :loading="loading" type="primary" @click="query">刷新</el-button>
           </el-space>
         </div>
@@ -88,20 +77,6 @@
         :closable="false"
         style="margin-bottom: 12px; border: 2px solid #dc2626"
       />
-      <el-card v-if="announcements.length > 0" style="margin-bottom: 12px">
-        <template #header><b>公告</b></template>
-        <div v-for="a in announcements" :key="a.announcement_id" style="padding: 6px 0; border-bottom: 1px solid #eef2f7">
-          <div style="display:flex; align-items:center; justify-content:space-between; gap:8px">
-            <div style="font-weight: 600">{{ a.pinned ? "📌 " : "" }}{{ a.title }}</div>
-            <div style="font-size:12px; color:#64748b">发布时间：{{ fmtTime(a.created_at) }}</div>
-          </div>
-          <div class="md-body" v-html="renderMarkdown(a.content)" />
-          <el-link v-if="a.attachment_filename" type="primary" :href="announcementAttachmentUrl(a)" target="_blank">
-            下载附件：{{ a.attachment_filename }}
-          </el-link>
-        </div>
-      </el-card>
-
       <el-card style="margin-bottom: 12px">
         <template #header>
           <div class="row">
@@ -175,17 +150,15 @@
 
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { ApiClient, type Announcement, type BalanceResp, type PointsOperationRecord } from "../../lib/api";
+import { ApiClient, type BalanceResp, type PointsOperationRecord } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { useRouter } from "vue-router";
 import { authState } from "../../lib/authStore";
-import { renderMarkdown } from "../../lib/markdown";
 import { formatServerDate, formatServerDateTime, getServerTodayDateText } from "../../lib/time";
 
 const loading = ref(false);
 const error = ref("");
 const resp = ref<BalanceResp | null>(null);
-const announcements = ref<Announcement[]>([]);
 const accountCount = ref(0);
 const pointsRecords = ref<PointsOperationRecord[]>([]);
 const pointsUnreadCount = ref(0);
@@ -305,25 +278,19 @@ const totalUsedPointsLabel = computed(() => {
   return `累计使用积分（${from} 至 ${to}）`;
 });
 
-function announcementAttachmentUrl(row: Announcement): string {
-  return new ApiClient(settingsState.baseUrl).announcementAttachmentUrl(row.announcement_id);
-}
-
 async function query() {
   loading.value = true;
   error.value = "";
   try {
     const client = new ApiClient(settingsState.baseUrl);
     const seenID = loadSeenRechargeID();
-    const [balanceResp, ac, ar, pointResp] = await Promise.all([
+    const [balanceResp, ac, pointResp] = await Promise.all([
       client.userMyBalance(),
       client.userAccounts(),
-      client.announcements(10),
       client.userMyPointsIncrements({ sinceId: seenID, limit: 200 }),
     ]);
     resp.value = balanceResp;
     accountCount.value = (ac.accounts ?? []).length;
-    announcements.value = ar.announcements ?? [];
     pointsRecords.value = pointResp.records ?? [];
     pointsUnreadCount.value = Number(pointResp.unread_count || 0);
     pointsUnreadAmount.value = Number(pointResp.unread_amount || 0);
@@ -350,12 +317,6 @@ query();
 .empty-tip { color: #64748b; font-size: 13px; }
 .delta-plus { color: #15803d; font-weight: 700; }
 .delta-minus { color: #b91c1c; font-weight: 700; }
-.md-body :deep(p) { margin: 6px 0; color:#475569; }
-.md-body :deep(h1), .md-body :deep(h2), .md-body :deep(h3), .md-body :deep(h4) { margin: 8px 0; color: #0f172a; }
-.md-body :deep(ul) { padding-left: 18px; margin: 6px 0; color:#475569; }
-.md-body :deep(code) { background: #f1f5f9; padding: 1px 4px; border-radius: 4px; }
-.md-body :deep(blockquote) { margin: 6px 0; padding-left: 10px; color: #475569; border-left: 3px solid #cbd5e1; }
-
 @media (max-width: 900px) {
   .row {
     flex-wrap: wrap;

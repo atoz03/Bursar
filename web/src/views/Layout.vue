@@ -12,23 +12,20 @@
 
       <el-menu :default-active="activePath" :default-openeds="defaultOpeneds" router class="menu" @select="onMenuSelect">
         <template v-if="authState.role === 'admin'">
-          <el-sub-menu index="grp-ops">
-            <template #title><el-icon><DataBoard /></el-icon><span>{{ t("运营分析", "Operations") }}</span></template>
+          <el-sub-menu index="grp-overview">
+            <template #title><el-icon><DataBoard /></el-icon><span>{{ t("总览", "Overview") }}</span></template>
             <el-menu-item index="/admin/board">{{ t("运营看板", "Dashboard") }}</el-menu-item>
-            <el-menu-item index="/admin/usage">{{ t("进程记录", "Process Records") }}</el-menu-item>
+            <el-menu-item index="/admin/status">{{ t("集群总览", "Cluster Overview") }}</el-menu-item>
           </el-sub-menu>
           <el-sub-menu index="grp-resource">
-            <template #title><el-icon><Monitor /></el-icon><span>{{ t("资源管理", "Resources") }}</span></template>
-            <el-menu-item index="/admin/status">{{ t("状态总览", "Status Overview") }}</el-menu-item>
-            <el-menu-item index="/admin/nodes">{{ t("节点状态", "Node Status") }}</el-menu-item>
-          </el-sub-menu>
-          <el-sub-menu index="grp-points">
-            <template #title><el-icon><WalletFilled /></el-icon><span>{{ t("积分管理", "Points") }}</span></template>
+            <template #title><el-icon><Monitor /></el-icon><span>{{ t("资源与计费", "Resources & Billing") }}</span></template>
+            <el-menu-item index="/admin/nodes">{{ t("节点管理", "Node Management") }}</el-menu-item>
+            <el-menu-item index="/admin/usage">{{ t("进程审计", "Process Audit") }}</el-menu-item>
             <el-menu-item index="/admin/points">{{ t("积分管理", "Points") }}</el-menu-item>
           </el-sub-menu>
           <el-sub-menu index="grp-access">
             <template #title><el-icon><UserFilled /></el-icon><span>{{ t("账号与访问", "Accounts & Access") }}</span></template>
-            <el-menu-item index="/admin/users">{{ t("平台用户管理", "Platform Users") }}</el-menu-item>
+            <el-menu-item index="/admin/users">{{ t("平台用户", "Platform Users") }}</el-menu-item>
             <el-menu-item index="/admin/accounts">
               <el-badge :value="accountMappingTodoCount" :hidden="accountMappingTodoCount === 0">
                 <span>{{ t("账号映射", "Account Mapping") }}</span>
@@ -36,12 +33,12 @@
             </el-menu-item>
             <el-menu-item index="/admin/account-provision">
               <el-badge :value="accountProvisionTodoCount" :hidden="accountProvisionTodoCount === 0" type="danger">
-                <span>{{ t("节点账号开通", "Node Account Provision") }}</span>
+                <span>{{ t("账号开通", "Account Provision") }}</span>
               </el-badge>
             </el-menu-item>
             <el-menu-item index="/admin/requests">
               <el-badge :is-dot="reviewTodoCount > 0" type="danger">
-                <span>{{ t("平台账号注册审核", "Registration Review") }}</span>
+                <span>{{ t("注册与资料审核", "Account Review") }}</span>
               </el-badge>
             </el-menu-item>
             <el-menu-item index="/admin/power-users">{{ t("高级用户", "Power Users") }}</el-menu-item>
@@ -54,20 +51,18 @@
             <el-menu-item index="/admin/guideline">{{ t("用户准则", "Guidelines") }}</el-menu-item>
             <el-menu-item index="/admin/notebook">{{ t("管理员记事本", "Notebook") }}</el-menu-item>
             <el-menu-item index="/admin/mail">{{ t("邮件设置", "Mail Settings") }}</el-menu-item>
-            <el-menu-item index="/admin/profile">{{ t("个人信息", "Profile") }}</el-menu-item>
-            <el-menu-item index="/admin/change-password">{{ t("修改密码", "Change Password") }}</el-menu-item>
           </el-sub-menu>
         </template>
         <template v-else-if="authState.role === 'power_user'">
           <el-sub-menu index="grp-power">
             <template #title><el-icon><DataBoard /></el-icon><span>{{ t("授权功能", "Authorized") }}</span></template>
             <el-menu-item v-if="authState.canViewBoard" index="/admin/board">{{ t("运营看板", "Dashboard") }}</el-menu-item>
-            <el-menu-item v-if="authState.canViewNodes" index="/admin/nodes">{{ t("节点状态", "Node Status") }}</el-menu-item>
+            <el-menu-item v-if="authState.canViewNodes" index="/admin/nodes">{{ t("节点管理", "Node Management") }}</el-menu-item>
             <el-menu-item v-if="authState.canManagePoints || authState.canPointsUsers || authState.canPointsBatchFiltered || authState.canPointsBatchAll || authState.canPointsRecords || authState.canPointsMonthly || authState.canPointsSpecialRules" index="/admin/points">{{ t("积分管理", "Points") }}</el-menu-item>
             <el-menu-item v-if="authState.canManagePlatformUsers" index="/admin/users">{{ t("平台用户管理", "Platform Users") }}</el-menu-item>
             <el-menu-item v-if="authState.canReviewRequests" index="/admin/requests">
               <el-badge :is-dot="reviewTodoCount > 0" type="danger">
-                <span>{{ t("平台账号注册审核", "Registration Review") }}</span>
+                <span>{{ t("注册与资料审核", "Account Review") }}</span>
               </el-badge>
             </el-menu-item>
           </el-sub-menu>
@@ -84,13 +79,11 @@
               </el-badge>
             </el-menu-item>
             <el-menu-item index="/user/usage">{{ t("我的用量", "My Usage") }}</el-menu-item>
-            <el-menu-item index="/user/profile">{{ t("个人资料", "Profile") }}</el-menu-item>
             <el-menu-item index="/user/accounts">
               <el-badge :is-dot="userAccountProvisionHasNew" type="danger">
                 <span>{{ t("节点账号", "Node Accounts") }}</span>
               </el-badge>
             </el-menu-item>
-            <el-menu-item index="/user/change-password">{{ t("修改密码", "Change Password") }}</el-menu-item>
           </el-sub-menu>
         </template>
         <template v-else>
@@ -107,13 +100,11 @@
               </el-badge>
             </el-menu-item>
             <el-menu-item index="/user/usage">{{ t("我的用量", "My Usage") }}</el-menu-item>
-            <el-menu-item index="/user/profile">{{ t("个人资料", "Profile") }}</el-menu-item>
             <el-menu-item index="/user/accounts">
               <el-badge :is-dot="userAccountProvisionHasNew" type="danger">
                 <span>{{ t("节点账号", "Node Accounts") }}</span>
               </el-badge>
             </el-menu-item>
-            <el-menu-item index="/user/change-password">{{ t("修改密码", "Change Password") }}</el-menu-item>
           </el-sub-menu>
         </template>
       </el-menu>
@@ -129,7 +120,7 @@
           <template v-if="authState.role === 'admin'">
             <el-button text class="controller-toggle" @click="showControllerConfig = !showControllerConfig">
               <el-icon><Link /></el-icon>
-              <span>{{ showControllerConfig ? t("收起控制器地址", "Hide Controller URL") : t("控制器地址", "Controller URL") }}</span>
+              <span>{{ showControllerConfig ? t("收起连接设置", "Hide Connection Settings") : t("连接设置", "Connection Settings") }}</span>
             </el-button>
             <div v-if="showControllerConfig" class="controller-editor">
               <span class="muted">{{ t("控制器地址", "Controller URL") }}</span>
@@ -149,14 +140,23 @@
         </div>
         <div class="header-right">
           <el-button text @click="toggleUiLanguage">{{ uiLocaleState.language === "en" ? "中" : "EN" }}</el-button>
-          <el-tag type="success" effect="light">
-            {{ authState.role === 'admin' ? t('管理员', 'Admin') : (authState.role === 'power_user' ? t('高级用户', 'Power User') : t('用户', 'User')) }}
-          </el-tag>
-          <el-tag effect="plain">{{ authState.username }}</el-tag>
-          <el-button @click="doLogout">
-            <el-icon><SwitchButton /></el-icon>
-            {{ t("退出", "Logout") }}
-          </el-button>
+          <el-dropdown trigger="click" @command="onUserCommand">
+            <button type="button" class="user-menu-trigger">
+              <span class="user-avatar">{{ userInitial }}</span>
+              <span class="user-meta">
+                <strong>{{ authState.username }}</strong>
+                <small>{{ accountRoleLabel }}</small>
+              </span>
+              <el-icon><ArrowDown /></el-icon>
+            </button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="profile"><el-icon><User /></el-icon>{{ t("个人资料", "Profile") }}</el-dropdown-item>
+                <el-dropdown-item command="password"><el-icon><Key /></el-icon>{{ t("修改密码", "Change Password") }}</el-dropdown-item>
+                <el-dropdown-item divided command="logout"><el-icon><SwitchButton /></el-icon>{{ t("退出登录", "Logout") }}</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </div>
       </el-header>
 
@@ -181,18 +181,21 @@ import { useRoute, useRouter } from "vue-router";
 import { persistSettings, settingsState } from "../lib/settingsStore";
 import { authState, logout } from "../lib/authStore";
 import { ElMessage } from "element-plus";
-import { ApiClient, type UserNodeAccountMappingRisk, type UserRequest } from "../lib/api";
+import { ApiClient } from "../lib/api";
 import { toServerEpochMs } from "../lib/time";
 import { pickText, toggleUiLanguage, uiLocaleState } from "../lib/uiLocale";
 import {
+  ArrowDown,
   Check,
   Cpu,
   DataBoard,
+  Key,
   Link,
   Menu,
   Monitor,
   SwitchButton,
   Setting,
+  User,
   UserFilled,
   WalletFilled,
 } from "@element-plus/icons-vue";
@@ -200,14 +203,17 @@ import {
 const route = useRoute();
 const router = useRouter();
 const activePath = computed(() => route.path);
-const defaultOpeneds = computed(() => ["grp-ops", "grp-resource", "grp-points", "grp-access", "grp-system", "grp-user", "grp-power"]);
+const defaultOpeneds = computed(() => {
+  if (authState.role === "admin") {
+    return ["grp-overview", "grp-resource", "grp-access", "grp-system"];
+  }
+  if (authState.role === "power_user") return ["grp-power", "grp-user"];
+  return ["grp-user"];
+});
 const reviewTodoCount = ref(0);
 const accountOpenTodoCount = ref(0);
-const accountRiskTodoCount = ref(0);
 const accountUnbindTodoCount = ref(0);
-const accountMappingTodoCount = computed(() =>
-  Number(accountRiskTodoCount.value || 0) + Number(accountUnbindTodoCount.value || 0),
-);
+const accountMappingTodoCount = computed(() => Number(accountUnbindTodoCount.value || 0));
 const accountProvisionTodoCount = computed(() => Number(accountOpenTodoCount.value || 0));
 const effectiveApiBase = computed(() => settingsState.baseUrl?.trim() || window.location.origin);
 const showApiBaseWarning = computed(() => {
@@ -226,6 +232,12 @@ let userNoticeTimer: ReturnType<typeof setInterval> | null = null;
 let userPointsTimer: ReturnType<typeof setInterval> | null = null;
 let userAccountProvisionTimer: ReturnType<typeof setInterval> | null = null;
 const NAV_POLL_INTERVAL_MS = 60 * 1000;
+const accountRoleLabel = computed(() => authState.role === "admin"
+  ? t("管理员", "Admin")
+  : authState.role === "power_user"
+    ? t("高级用户", "Power User")
+    : t("用户", "User"));
+const userInitial = computed(() => String(authState.username || "U").trim().slice(0, 1).toUpperCase());
 
 function t(zh: string, en: string): string {
   return pickText(zh, en);
@@ -239,6 +251,20 @@ function persist() {
 async function doLogout() {
   await logout();
   await router.push("/login");
+}
+
+async function onUserCommand(command: string) {
+  if (command === "logout") {
+    await doLogout();
+    return;
+  }
+  if (command === "profile") {
+    await router.push(authState.role === "admin" ? "/admin/profile" : "/user/profile");
+    return;
+  }
+  if (command === "password") {
+    await router.push("/user/change-password");
+  }
 }
 
 function syncMobileState() {
@@ -330,61 +356,34 @@ async function loadReviewTodoCount() {
     reviewTodoCount.value = 0;
     if (!canLoadAccountOpenTodo()) {
       accountOpenTodoCount.value = 0;
-      accountRiskTodoCount.value = 0;
       accountUnbindTodoCount.value = 0;
     }
     return;
   }
   try {
     const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
-    const [regRes, profileRes, openRes, riskRes] = await Promise.allSettled([
+    try {
+      const summary = await client.adminNavigationSummary();
+      reviewTodoCount.value = Math.max(0, Number(summary.review_pending || 0));
+      accountOpenTodoCount.value = canLoadAccountOpenTodo() ? Math.max(0, Number(summary.open_pending || 0)) : 0;
+      accountUnbindTodoCount.value = canLoadAccountOpenTodo() ? Math.max(0, Number(summary.unbind_pending || 0)) : 0;
+      return;
+    } catch (e: any) {
+      if (e?.status !== 404) throw e;
+    }
+
+    const [registration, profile, accountRequests] = await Promise.all([
       client.adminRegistrationRequestsOverview({ limit: 2000 }),
       client.adminProfileChangeRequests({ status: "pending", limit: 2000 }),
-      canLoadAccountOpenTodo()
-        ? client.adminRequests({ status: "pending", limit: 5000 })
-        : Promise.resolve<{ requests: UserRequest[] }>({ requests: [] }),
-      canLoadAccountOpenTodo()
-        ? client.adminAccountMappingRisks({ days: 30, min_switches: 2, limit: 5000 })
-        : Promise.resolve<{ days: number; min_switches: number; total_risky: number; risky_accounts: UserNodeAccountMappingRisk[] }>({
-            days: 30,
-            min_switches: 2,
-            total_risky: 0,
-            risky_accounts: [],
-          }),
+      canLoadAccountOpenTodo() ? client.adminRequests({ status: "pending", limit: 5000 }) : Promise.resolve({ requests: [] }),
     ]);
-    let total = 0;
-    if (regRes.status === "fulfilled") {
-      total += Number((regRes.value.pending ?? []).length + (regRes.value.conflicts ?? []).length);
-    }
-    if (profileRes.status === "fulfilled") {
-      total += Number((profileRes.value.requests ?? []).length);
-    }
-    reviewTodoCount.value = total;
-    if (openRes.status === "fulfilled") {
-      accountOpenTodoCount.value = Number((openRes.value.requests ?? []).filter((x) => String(x.request_type || "").trim() === "open").length);
-      accountUnbindTodoCount.value = Number((openRes.value.requests ?? []).filter((x) => String(x.request_type || "").trim() === "unbind").length);
-    } else if (!canLoadAccountOpenTodo()) {
-      accountOpenTodoCount.value = 0;
-      accountUnbindTodoCount.value = 0;
-    } else {
-      accountOpenTodoCount.value = 0;
-      accountUnbindTodoCount.value = 0;
-    }
-    if (riskRes.status === "fulfilled") {
-      const totalRisk = Number(riskRes.value.total_risky || 0);
-      accountRiskTodoCount.value = Number.isFinite(totalRisk)
-        ? Math.max(0, Math.floor(totalRisk))
-        : Number((riskRes.value.risky_accounts ?? []).length);
-    } else if (!canLoadAccountOpenTodo()) {
-      accountRiskTodoCount.value = 0;
-    } else {
-      accountRiskTodoCount.value = 0;
-    }
+    reviewTodoCount.value = Number((registration.pending ?? []).length + (registration.conflicts ?? []).length + (profile.requests ?? []).length);
+    accountOpenTodoCount.value = Number((accountRequests.requests ?? []).filter((row) => String(row.request_type || "").trim() === "open").length);
+    accountUnbindTodoCount.value = Number((accountRequests.requests ?? []).filter((row) => String(row.request_type || "").trim() === "unbind").length);
   } catch (e: any) {
     if (e?.status === 404 || e?.status === 403 || e?.status === 401) {
       reviewTodoCount.value = 0;
       accountOpenTodoCount.value = 0;
-      accountRiskTodoCount.value = 0;
       accountUnbindTodoCount.value = 0;
       return;
     }
@@ -611,12 +610,28 @@ onBeforeUnmount(() => {
 .menu {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
+  overflow-y: scroll;
   border-right: none;
   padding: 10px 9px 24px;
   background: transparent;
   scrollbar-width: thin;
   scrollbar-color: rgba(148, 163, 184, .28) transparent;
+}
+.menu::-webkit-scrollbar {
+  width: 8px;
+}
+.menu::-webkit-scrollbar-track {
+  background: transparent;
+}
+.menu::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, .42);
+  background-clip: padding-box;
+}
+.menu::-webkit-scrollbar-thumb:hover {
+  background: rgba(191, 219, 254, .62);
+  background-clip: padding-box;
 }
 .menu :deep(.el-menu) {
   border-right: none !important;
@@ -699,6 +714,56 @@ onBeforeUnmount(() => {
   gap: 8px;
   align-items: center;
 }
+.user-menu-trigger {
+  min-width: 148px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 10px 6px 7px;
+  border: 1px solid #dbe3ef;
+  border-radius: 12px;
+  color: #0f172a;
+  background: rgba(255, 255, 255, .88);
+  cursor: pointer;
+  transition: border-color .2s ease, box-shadow .2s ease;
+}
+.user-menu-trigger:hover {
+  border-color: #93b4e8;
+  box-shadow: 0 5px 16px rgba(37, 99, 235, .1);
+}
+.user-avatar {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 9px;
+  color: #fff;
+  background: linear-gradient(135deg, #2563eb, #38bdf8);
+  font-size: 13px;
+  font-weight: 800;
+}
+.user-meta {
+  min-width: 0;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.2;
+}
+.user-meta strong {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.user-meta small {
+  margin-top: 2px;
+  color: #64748b;
+  font-size: 11px;
+}
 .main {
   width: 100%;
   min-width: 0;
@@ -753,6 +818,13 @@ onBeforeUnmount(() => {
   .header-right {
     justify-content: space-between;
     overflow-x: auto;
+  }
+  .user-menu-trigger {
+    min-width: 0;
+    padding-right: 7px;
+  }
+  .user-meta {
+    display: none;
   }
   .controller-editor {
     width: 100%;

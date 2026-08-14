@@ -5,9 +5,10 @@
         <div class="head">
           <div class="section-title-wrap">
             <span class="section-icon tone-provision"><el-icon><Key /></el-icon></span>
-            <span>节点账号开通</span>
+            <span>账号开通</span>
           </div>
           <div class="head-actions">
+            <el-button @click="toggleProvisionHistory">{{ showProvisionHistory ? "收起历史" : "开通历史" }}</el-button>
             <el-button :loading="pageLoading" @click="reloadAll">刷新</el-button>
           </div>
         </div>
@@ -20,7 +21,7 @@
       <template #header>
         <div class="section-title-wrap provision-head">
           <span class="section-icon tone-provision"><el-icon><Key /></el-icon></span>
-          <span>节点账号开通</span>
+          <span>手动开通</span>
         </div>
       </template>
       <el-form label-position="top">
@@ -171,7 +172,7 @@
         <div class="head">
           <div class="section-title-wrap">
             <span class="section-icon tone-note"><el-icon><Document /></el-icon></span>
-            <span>节点账号开通申请审核</span>
+            <span>开通申请</span>
             <el-badge
               :value="pendingOpenRequestCount"
               :hidden="pendingOpenRequestCount <= 0"
@@ -191,20 +192,6 @@
           </div>
         </div>
       </template>
-      <el-alert
-        title="这里集中展示“节点账号开通申请”。用户自助发起的绑定 challenge 不在这里审核。"
-        type="info"
-        :closable="false"
-        show-icon
-        class="mb"
-      />
-      <el-alert v-if="pendingOpenRequestCount > 0" type="warning" :closable="false" show-icon class="mb pending-open-banner">
-        <template #title>{{ pendingAlertTitle }}</template>
-        <div class="pending-open-actions">
-          <el-button size="small" type="warning" plain @click="focusPendingRequests">只看待处理</el-button>
-          <el-button size="small" @click="reloadOpenRequests">立即刷新</el-button>
-        </div>
-      </el-alert>
       <el-table :data="openRequests" stripe size="small" max-height="420">
         <el-table-column type="expand" width="44">
           <template #default="{ row }">
@@ -309,7 +296,7 @@
       </el-table>
     </el-card>
 
-    <el-card class="section-card provision-history-card">
+    <el-card v-if="showProvisionHistory" class="section-card provision-history-card">
       <template #header>
         <div class="head-actions section-title-wrap provision-history-head">
           <span class="section-icon tone-history"><el-icon><Clock /></el-icon></span>
@@ -440,6 +427,8 @@ import PlatformUserDetailDialog from "../../components/PlatformUserDetailDialog.
 import { Clock, Document, Key, Monitor, UserFilled } from "@element-plus/icons-vue";
 
 const pageLoading = ref(false);
+const showProvisionHistory = ref(false);
+const provisionHistoryLoaded = ref(false);
 const provisioning = ref(false);
 const error = ref("");
 const success = ref("");
@@ -489,18 +478,6 @@ const provisionForm = reactive({
 });
 
 const pendingOpenRequestCount = computed(() => pendingOpenRequests.value.length);
-const pendingOpenRequestUsersText = computed(() => {
-  const users = uniqSorted(pendingOpenRequests.value.map((x) => String(x.billing_username || "").trim()).filter(Boolean));
-  if (!users.length) return "";
-  const names = users.slice(0, 4).join("、");
-  return users.length > 4 ? `${names} 等 ${users.length} 人` : names;
-});
-const pendingAlertTitle = computed(() => {
-  if (pendingOpenRequestCount.value <= 0) return "";
-  const base = `当前有 ${pendingOpenRequestCount.value} 条待处理的节点账号开通申请`;
-  const users = pendingOpenRequestUsersText.value;
-  return users ? `${base}（申请人：${users}）` : base;
-});
 const selectedProvisionNode = computed<NodeStatus | null>(() => {
   const nodeID = String(provisionForm.node_id || "").trim();
   if (!nodeID) return null;
@@ -849,10 +826,18 @@ async function reloadProvisionLogs() {
   try {
     const r = await client().adminProvisionLogs({ limit: 500 });
     provisionLogs.value = r.logs ?? [];
+    provisionHistoryLoaded.value = true;
   } catch (e: any) {
     error.value = e?.message ?? String(e);
   } finally {
     provisionLogsLoading.value = false;
+  }
+}
+
+async function toggleProvisionHistory() {
+  showProvisionHistory.value = !showProvisionHistory.value;
+  if (showProvisionHistory.value && !provisionHistoryLoaded.value) {
+    await reloadProvisionLogs();
   }
 }
 
@@ -899,11 +884,6 @@ async function reloadOpenRejectHistory() {
 async function openOpenRejectHistoryDialog() {
   openRejectHistoryVisible.value = true;
   await reloadOpenRejectHistory();
-}
-
-function focusPendingRequests() {
-  openRequestStatus.value = "pending";
-  void reloadOpenRequests();
 }
 
 function applyOpenRequestToProvision(row: UserRequest) {
@@ -1190,12 +1170,9 @@ async function reloadAll() {
   pageLoading.value = true;
   error.value = "";
   try {
-    await Promise.all([
-      loadPlatformUsers(),
-      loadNodeOptions(),
-      reloadProvisionLogs(),
-      reloadOpenRequests(),
-    ]);
+    const tasks = [loadPlatformUsers(), loadNodeOptions(), reloadOpenRequests()];
+    if (showProvisionHistory.value) tasks.push(reloadProvisionLogs());
+    await Promise.all(tasks);
   } catch (e: any) {
     error.value = e?.message ?? String(e);
   } finally {
@@ -1218,7 +1195,6 @@ reloadAll();
 .section-title-wrap,
 .preview-head,
 .provision-actions,
-.pending-open-actions,
 .kv-row {
   display: flex;
   align-items: center;
@@ -1231,7 +1207,6 @@ reloadAll();
 }
 
 .head-actions,
-.pending-open-actions,
 .provision-actions {
   gap: 8px;
   flex-wrap: wrap;
@@ -1288,7 +1263,6 @@ reloadAll();
 .preview-desc,
 .provision-node-preview,
 .provision-user-preview,
-.pending-open-banner,
 .note-user-detail {
   margin-bottom: 12px;
 }

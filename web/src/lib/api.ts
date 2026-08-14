@@ -2383,6 +2383,16 @@ export class ApiClient {
     return await this.getJson(`/api/admin/requests?${q.toString()}`, this.adminHeaders());
   }
 
+  async adminNavigationSummary(): Promise<{
+    review_pending: number;
+    registration_pending: number;
+    profile_pending: number;
+    open_pending: number;
+    unbind_pending: number;
+  }> {
+    return await this.getJson("/api/admin/navigation-summary", this.adminHeaders());
+  }
+
   async adminRegistrationRequestsOverview(params: { limit?: number; field?: string; keyword?: string } = {}): Promise<{
     pending: RegistrationRequestView[];
     conflicts: RegistrationRequestView[];

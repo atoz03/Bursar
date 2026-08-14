@@ -16,10 +16,18 @@
 
       <el-alert v-if="error" :title="error" type="error" show-icon class="mb" />
       <el-alert v-if="success" :title="success" type="success" show-icon class="mb" />
-      <el-alert title="一个平台账号可关联多个节点账号。" type="info" show-icon class="mb" />
     </el-card>
 
-    <el-card class="section-card bind-policy-card">
+    <el-card class="section-card workspace-nav-card">
+      <el-tabs v-model="activeSection" class="workspace-tabs" @tab-change="onSectionChange">
+        <el-tab-pane label="账号映射" name="mapping" />
+        <el-tab-pane label="绑定安全" name="security" />
+        <el-tab-pane label="资源限制" name="restricted" />
+        <el-tab-pane :label="pendingUnbindRequestCount > 0 ? `解绑记录 ${pendingUnbindRequestCount}` : '解绑记录'" name="unbind" />
+      </el-tabs>
+    </el-card>
+
+    <el-card v-show="activeSection === 'security'" class="section-card bind-policy-card">
       <template #header>
         <div class="head">
           <div class="section-title-wrap">
@@ -137,25 +145,6 @@
                 <el-input-number v-model="bindPolicy.repeat_failure_cooldown_minutes" :min="1" :max="4320" style="width: 100%" />
               </el-form-item>
             </el-col>
-            <el-col :span="8">
-              <el-form-item>
-                <template #label>
-                  <span class="policy-label">
-                    <span>并发申请策略</span>
-                    <el-tooltip placement="top">
-                      <template #content>
-                        <div class="policy-help-tip">
-                          <div>当前策略为“先到先得”：同一目标账号已有进行中的 challenge 时，后续申请会直接失败。</div>
-                          <div>该参数目前不参与生效判定，保留仅为兼容历史配置。</div>
-                        </div>
-                      </template>
-                      <el-icon class="policy-help-icon"><InfoFilled /></el-icon>
-                    </el-tooltip>
-                  </span>
-                </template>
-                <el-input-number v-model="bindPolicy.contention_freeze_minutes" :min="1" :max="1440" style="width: 100%" />
-              </el-form-item>
-            </el-col>
           </el-row>
           <el-row :gutter="12">
             <el-col :span="8">
@@ -201,7 +190,7 @@
       </template>
     </el-card>
 
-    <el-card class="section-card">
+    <el-card v-show="activeSection === 'security'" class="section-card">
       <template #header>
         <div class="head">
           <div class="section-title-wrap">
@@ -258,7 +247,7 @@
       </el-table>
     </el-card>
 
-    <el-card class="section-card risk-card">
+    <el-card v-show="activeSection === 'security'" class="section-card risk-card">
       <template #header>
         <div class="head">
           <div class="section-title-wrap">
@@ -342,7 +331,7 @@
       </el-table>
     </el-card>
 
-    <el-card class="section-card mapping-query-card">
+    <el-card v-show="activeSection === 'mapping'" class="section-card mapping-query-card">
       <template #header>
         <div class="section-title-wrap">
           <span class="section-icon tone-query"><el-icon><Search /></el-icon></span>
@@ -405,7 +394,7 @@
       </div>
     </el-card>
 
-    <el-card class="section-card mapping-list-card">
+    <el-card v-show="activeSection === 'mapping'" class="section-card mapping-list-card">
       <template #header>
         <div class="head">
           <div class="section-title-wrap">
@@ -452,7 +441,7 @@
       </el-table>
     </el-card>
 
-    <el-card class="section-card restricted-card">
+    <el-card v-show="activeSection === 'restricted'" class="section-card restricted-card">
       <template #header>
         <div class="head">
           <div class="section-title-wrap">
@@ -575,7 +564,7 @@
       </el-table>
     </el-card>
 
-    <el-card class="section-card unbind-records-card">
+    <el-card v-show="activeSection === 'unbind'" class="section-card unbind-records-card">
       <template #header>
         <div class="head">
           <div class="section-title-wrap">
@@ -880,12 +869,9 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import {
   type AdminUserNodeBindCooldownRow,
   ApiClient,
-  type AdminAccountProvisionLog,
-  type AdminAccountProvisionResp,
   type AdminUserDetail,
   type NodeBindSecurityPolicy,
   type NodeUserGPUVisibility,
-  type PlatformUserDetail,
   type SSHBlacklistEntry,
   type UserRequest,
   type UserNodeAccount,
@@ -895,15 +881,14 @@ import {
 import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
 import { formatServerDateTime, toServerEpochMs } from "../../lib/time";
-import { writeClipboardText } from "../../lib/clipboard";
 import PlatformUserDetailDialog from "../../components/PlatformUserDetailDialog.vue";
-import { Clock, Connection, Document, InfoFilled, Key, List, Search, UserFilled, WarningFilled } from "@element-plus/icons-vue";
+import { Clock, Connection, Document, InfoFilled, List, Search, WarningFilled } from "@element-plus/icons-vue";
 
 const loading = ref(false);
 const saving = ref(false);
-const provisioning = ref(false);
 const error = ref("");
 const success = ref("");
+const activeSection = ref<"mapping" | "security" | "restricted" | "unbind">("mapping");
 const rows = ref<UserNodeAccount[]>([]);
 const mappingListCollapseThreshold = 18;
 const mappingListExpanded = ref(false);
@@ -985,7 +970,6 @@ const localUserOptions = ref<string[]>([]);
 const mappingListNeedsCollapse = computed(() => rows.value.length > mappingListCollapseThreshold);
 const mappingListVisible = computed(() => !mappingListNeedsCollapse.value || mappingListExpanded.value);
 const nodeOptions = ref<string[]>([]);
-const nodeIPByID = ref<Record<string, string>>({});
 const nodeGPUCountByID = ref<Record<string, number>>({});
 const platformUsers = ref<AdminUserDetail[]>([]);
 const profileVisible = ref(false);
@@ -994,68 +978,14 @@ const editVisible = ref(false);
 const editMode = ref<"create" | "edit">("create");
 const old = ref<{ billing: string; node: string; local: string } | null>(null);
 
-const provisionResultVisible = ref(false);
-const provisionResult = ref<AdminAccountProvisionResp | null>(null);
-const provisionLogsLoading = ref(false);
-const provisionLogs = ref<AdminAccountProvisionLog[]>([]);
-const openRequestsLoading = ref(false);
-const openRequests = ref<UserRequest[]>([]);
-const openRejectHistoryVisible = ref(false);
-const openRejectHistoryLoading = ref(false);
-const openRejectHistoryRows = ref<UserRequest[]>([]);
 const unbindRecordsLoading = ref(false);
 const unbindRecords = ref<UserNodeUnbindRecord[]>([]);
 const unbindRejectHistoryVisible = ref(false);
 const unbindRejectHistoryLoading = ref(false);
 const unbindRejectHistoryRows = ref<UserNodeUnbindRecord[]>([]);
-const openRequestStatus = ref<"pending" | "approved" | "rejected" | "">("pending");
-const openRequestActionLoadingId = ref(0);
 const unbindRecordActionLoadingRequestId = ref(0);
-const pendingOpenRequests = ref<UserRequest[]>([]);
 const pendingUnbindRequests = ref<UserRequest[]>([]);
 const blockedIdentities = ref<Set<string>>(new Set());
-const provisionUserLoading = ref(false);
-const provisionUserError = ref("");
-const provisionActionError = ref("");
-const provisionActionSuccess = ref("");
-const provisionUserDetail = ref<PlatformUserDetail | null>(null);
-const provisionUserLastFetched = ref("");
-let provisionUserFetchSeq = 0;
-const DEFAULT_PROVISION_SSH_HOST = "controller.example.org";
-const PROVISION_SSH_HOST_STORAGE_KEY = "gpuops.provision.last_ssh_host";
-
-function loadProvisionSSHHostDefault(): string {
-  try {
-    const v = String(localStorage.getItem(PROVISION_SSH_HOST_STORAGE_KEY) || "").trim();
-    return v || DEFAULT_PROVISION_SSH_HOST;
-  } catch {
-    return DEFAULT_PROVISION_SSH_HOST;
-  }
-}
-
-function rememberProvisionSSHHost(host: string) {
-  const v = String(host || "").trim();
-  if (!v) return;
-  try {
-    localStorage.setItem(PROVISION_SSH_HOST_STORAGE_KEY, v);
-  } catch {
-    // ignore storage errors
-  }
-}
-
-function rememberProvisionSSHHostFromForm() {
-  rememberProvisionSSHHost(provisionForm.ssh_host);
-}
-
-const provisionForm = reactive({
-  billing_username: "",
-  node_id: "",
-  local_username: "",
-  ssh_host: loadProvisionSSHHostDefault(),
-  ssh_port: 0,
-});
-
-const pendingOpenRequestCount = computed(() => pendingOpenRequests.value.length);
 const pendingUnbindRequestCount = computed(() => pendingUnbindRequests.value.length);
 const accountReadinessDistinctUserCount = computed(() => {
   const set = new Set<string>();
@@ -1110,20 +1040,6 @@ const displayUnbindRecords = computed<UserNodeUnbindRecord[]>(() => {
     if (Number.isFinite(tb) && Number.isFinite(ta) && tb !== ta) return tb - ta;
     return Number(b.record_id || 0) - Number(a.record_id || 0);
   });
-});
-
-const pendingOpenRequestUsersText = computed(() => {
-  const users = uniqSorted(pendingOpenRequests.value.map((x) => String(x.billing_username || "").trim()).filter(Boolean));
-  if (!users.length) return "";
-  const names = users.slice(0, 4).join("、");
-  return users.length > 4 ? `${names} 等 ${users.length} 人` : names;
-});
-
-const pendingAlertTitle = computed(() => {
-  if (pendingOpenRequestCount.value <= 0) return "";
-  const base = `当前有 ${pendingOpenRequestCount.value} 条待处理的节点账号开通申请`;
-  const users = pendingOpenRequestUsersText.value;
-  return users ? `${base}（申请人：${users}）` : base;
 });
 
 const blacklistedPlatformUserSet = computed(() => {
@@ -1276,25 +1192,6 @@ function queryLocalUserOptions(queryString: string, cb: (items: Array<{ value: s
   queryOptions(localUserOptions.value, queryString, cb);
 }
 
-function parseNodePort(node: string): number {
-  const n = Number(String(node || "").trim());
-  if (!Number.isFinite(n) || n <= 0 || n > 65535) return 0;
-  return Math.floor(n);
-}
-
-function applyProvisionNodeDefaults(node: string) {
-  const id = String(node || "").trim();
-  if (!id) return;
-  const ip = String(nodeIPByID.value[id] || "").trim();
-  if (ip && !String(provisionForm.ssh_host || "").trim()) {
-    provisionForm.ssh_host = ip;
-  }
-  if (!provisionForm.ssh_port || provisionForm.ssh_port <= 0) {
-    const p = parseNodePort(id);
-    provisionForm.ssh_port = p > 0 ? p : 22;
-  }
-}
-
 function onFilterBillingSelect(item: { value?: string }) {
   filterBilling.value = String(item?.value || "").trim();
 }
@@ -1319,31 +1216,6 @@ function onLocalUserSelect(item: { value?: string }) {
   localUsername.value = String(item?.value || "").trim();
 }
 
-function onProvisionBillingSelect(item: { value?: string }) {
-  provisionForm.billing_username = String(item?.value || "").trim();
-  provisionActionError.value = "";
-  provisionActionSuccess.value = "";
-  syncProvisionUserPreviewFromLocal();
-  void fetchProvisionUserDetail(true);
-}
-
-function onProvisionBillingChange() {
-  provisionActionError.value = "";
-  provisionActionSuccess.value = "";
-  syncProvisionUserPreviewFromLocal();
-}
-
-function onProvisionBillingBlur() {
-  void fetchProvisionUserDetail(false);
-}
-
-function onProvisionNodeSelect(item: { value?: string }) {
-  provisionForm.node_id = String(item?.value || "").trim();
-  provisionActionError.value = "";
-  provisionActionSuccess.value = "";
-  applyProvisionNodeDefaults(provisionForm.node_id);
-}
-
 function currentMappingFilters() {
   return {
     billing_username: String(filterBilling.value || "").trim(),
@@ -1356,70 +1228,6 @@ function openProfile(username: string) {
   selectedProfileUsername.value = String(username || "").trim();
   if (!selectedProfileUsername.value) return;
   profileVisible.value = true;
-}
-
-function fmt2(v: number): string {
-  return Number(v || 0).toFixed(2);
-}
-
-function fmtGrad(year: number, month: number): string {
-  if (!year || !month) return "-";
-  return `${year}-${String(month).padStart(2, "0")}`;
-}
-
-function roleText(role: string): string {
-  const r = String(role || "").trim();
-  if (r === "admin") return "管理员";
-  if (r === "power_user") return "高级用户";
-  return "普通用户";
-}
-
-function statusText(status: string): string {
-  const s = String(status || "").trim();
-  if (s === "blocked") return "已封禁";
-  if (s === "limited") return "受限";
-  if (s === "warning") return "告警";
-  return "正常";
-}
-
-function statusTagType(status: string): "success" | "warning" | "danger" | "info" {
-  const s = String(status || "").trim();
-  if (s === "blocked") return "danger";
-  if (s === "limited" || s === "warning") return "warning";
-  if (s === "normal") return "success";
-  return "info";
-}
-
-function requestStatusText(status: string): string {
-  const s = String(status || "").trim();
-  if (s === "approved") return "已处理";
-  if (s === "rejected") return "已拒绝";
-  if (s === "pending") return "待处理";
-  return s || "-";
-}
-
-function requestStatusTagType(status: string): "success" | "warning" | "danger" | "info" {
-  const s = String(status || "").trim();
-  if (s === "approved") return "success";
-  if (s === "rejected") return "danger";
-  if (s === "pending") return "warning";
-  return "info";
-}
-
-function requestTypeText(requestType: string): string {
-  const t = String(requestType || "").trim();
-  if (t === "open") return "开通";
-  if (t === "bind") return "绑定";
-  if (t === "unbind") return "解绑";
-  return t || "-";
-}
-
-function requestTypeTagType(requestType: string): "success" | "warning" | "danger" | "info" {
-  const t = String(requestType || "").trim();
-  if (t === "open") return "success";
-  if (t === "bind") return "warning";
-  if (t === "unbind") return "danger";
-  return "info";
 }
 
 function unbindStatusText(status: string): string {
@@ -1438,103 +1246,6 @@ function unbindStatusTagType(status: string): "success" | "warning" | "danger" |
   if (s === "rejected") return "info";
   if (s === "pending") return "warning";
   return "info";
-}
-
-function findApplicant(username: string): AdminUserDetail | null {
-  const u = String(username || "").trim();
-  if (!u) return null;
-  return (platformUsers.value || []).find((x) => String(x.username || "").trim() === u) || null;
-}
-
-function applicantSummary(username: string): string {
-  const user = findApplicant(username);
-  if (!user) return "未命中本地缓存，请点击平台账号查看完整信息";
-  const realName = String(user.real_name || "").trim() || "-";
-  const studentID = String(user.student_id || "").trim() || "-";
-  const role = roleText(user.role);
-  return `${realName}｜学号 ${studentID}｜级别 ${role}`;
-}
-
-function applicantContact(username: string): string {
-  const user = findApplicant(username);
-  if (!user) return "联系方式：-";
-  const email = String(user.email || "").trim() || "-";
-  const phone = String(user.phone || "").trim() || "-";
-  return `邮箱 ${email}｜电话 ${phone}`;
-}
-
-function applicantAdvisor(username: string): string {
-  const user = findApplicant(username);
-  if (!user) return "导师/毕业时间：-";
-  const advisor = String(user.advisor || "").trim() || "-";
-  const grad = fmtGrad(user.expected_graduation_year, user.expected_graduation_month);
-  return `导师 ${advisor}｜预计毕业 ${grad}`;
-}
-
-function toPlatformUserDetailFromAdminRow(row: AdminUserDetail): PlatformUserDetail {
-  return {
-    username: row.username,
-    email: row.email,
-    real_name: row.real_name,
-    student_id: row.student_id,
-    advisor: row.advisor,
-    expected_graduation_year: row.expected_graduation_year,
-    expected_graduation_month: row.expected_graduation_month,
-    phone: row.phone,
-    role: row.role,
-    balance: Number(row.balance || 0),
-    general_balance: Number(row.balance || 0),
-    exclusive_balance: Number(row.exclusive_balance || 0),
-    total_balance: Number(row.total_balance || (Number(row.balance || 0) + Number(row.exclusive_balance || 0))),
-    status: row.status,
-    node_accounts: row.node_accounts || [],
-  };
-}
-
-function syncProvisionUserPreviewFromLocal() {
-  const username = String(provisionForm.billing_username || "").trim();
-  provisionUserError.value = "";
-  if (!username) {
-    provisionUserDetail.value = null;
-    provisionUserLastFetched.value = "";
-    return;
-  }
-  const row = (platformUsers.value || []).find((u) => String(u.username || "").trim() === username);
-  if (row) {
-    provisionUserDetail.value = toPlatformUserDetailFromAdminRow(row);
-    return;
-  }
-  provisionUserDetail.value = null;
-}
-
-async function fetchProvisionUserDetail(force: boolean) {
-  const username = String(provisionForm.billing_username || "").trim();
-  if (!username) {
-    provisionUserError.value = "";
-    provisionUserDetail.value = null;
-    provisionUserLastFetched.value = "";
-    return;
-  }
-  if (!force && provisionUserLastFetched.value === username && provisionUserDetail.value?.username === username) {
-    return;
-  }
-  const seq = ++provisionUserFetchSeq;
-  provisionUserLoading.value = true;
-  provisionUserError.value = "";
-  try {
-    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
-    const r = await client.adminPlatformUserDetail(username);
-    if (seq !== provisionUserFetchSeq) return;
-    provisionUserDetail.value = r.user;
-    provisionUserLastFetched.value = username;
-  } catch (e: any) {
-    if (seq !== provisionUserFetchSeq) return;
-    provisionUserError.value = e?.message ?? String(e);
-  } finally {
-    if (seq === provisionUserFetchSeq) {
-      provisionUserLoading.value = false;
-    }
-  }
 }
 
 function resetFilter() {
@@ -1581,17 +1292,14 @@ async function loadNodeOptions() {
   const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
   const r = await client.adminNodes(3000);
   const ids: string[] = [];
-  const ipMap: Record<string, string> = {};
   const gpuCountMap: Record<string, number> = {};
   for (const n of r.nodes ?? []) {
     const id = String(n.node_id || "").trim();
     if (!id) continue;
     ids.push(id);
-    ipMap[id] = String(n.node_ip || "").trim();
     gpuCountMap[id] = Math.max(0, Number(n.gpu_count || 0));
   }
   nodeOptions.value = uniqSorted(ids);
-  nodeIPByID.value = ipMap;
   nodeGPUCountByID.value = gpuCountMap;
 }
 
@@ -1599,33 +1307,33 @@ async function loadPlatformUsers() {
   const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
   const r = await client.adminUsersDetails(3000);
   platformUsers.value = r.users ?? [];
-  syncProvisionUserPreviewFromLocal();
 }
 
 async function reload() {
   loading.value = true;
   error.value = "";
   try {
-    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
-    const filters = currentMappingFilters();
-    const r = await client.adminAccounts({
-      billing_username: filters.billing_username || undefined,
-      node_id: filters.node_id || undefined,
-      local_username: filters.local_username || undefined,
-    });
-    rows.value = r.accounts ?? [];
-    refreshLocalOptions(rows.value);
-    mergeBillingOptions(rows.value, platformUsers.value);
-    await Promise.all([
-      reloadAccountReadiness(),
-      reloadProvisionLogs(),
-      reloadOpenRequests(),
-      reloadUnbindRecords(),
-      reloadBindCooldowns(),
-      reloadMappingRisks(),
-      reloadBlockedIdentities(),
-      reloadRestrictedRows(),
-    ]);
+    if (activeSection.value === "mapping") {
+      const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+      const filters = currentMappingFilters();
+      const r = await client.adminAccounts({
+        billing_username: filters.billing_username || undefined,
+        node_id: filters.node_id || undefined,
+        local_username: filters.local_username || undefined,
+      });
+      rows.value = r.accounts ?? [];
+      refreshLocalOptions(rows.value);
+      mergeBillingOptions(rows.value, platformUsers.value);
+      if (!accountReadinessLoaded.value && !accountReadinessLoading.value) {
+        void reloadAccountReadiness();
+      }
+    } else if (activeSection.value === "security") {
+      await Promise.all([reloadBindPolicy(), reloadBindCooldowns(), reloadMappingRisks(), reloadBlockedIdentities()]);
+    } else if (activeSection.value === "restricted") {
+      await Promise.all([reloadBlockedIdentities(), reloadRestrictedRows()]);
+    } else {
+      await reloadUnbindRecords();
+    }
   } catch (e: any) {
     error.value = e?.message ?? String(e);
   } finally {
@@ -1633,11 +1341,15 @@ async function reload() {
   }
 }
 
+function onSectionChange() {
+  void reload();
+}
+
 async function reloadAccountReadiness() {
   accountReadinessLoading.value = true;
   try {
     const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
-    const r = await client.adminAccountsNotReady({ status: "all", limit: 20000 });
+    const r = await client.adminAccountsNotReady({ status: "all", limit: 500 });
     accountReadinessRows.value = Array.isArray(r.accounts) ? (r.accounts ?? []) : [];
     accountReadinessTotal.value = Number(r.total_not_ready ?? accountReadinessRows.value.length ?? 0);
     accountReadinessInitializingCount.value = Number(r.total_initializing ?? 0);
@@ -2232,141 +1944,43 @@ async function toggleRiskUserBlock(username: string, row: UserNodeAccountMapping
   }
 }
 
-async function reloadProvisionLogs() {
-  provisionLogsLoading.value = true;
-  try {
-    const filters = currentMappingFilters();
-    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
-    const r = await client.adminProvisionLogs({
-      billing_username: filters.billing_username || undefined,
-      node_id: filters.node_id || undefined,
-      local_username: filters.local_username || undefined,
-      limit: 200,
-    });
-    provisionLogs.value = r.logs ?? [];
-  } catch (e: any) {
-    error.value = e?.message ?? String(e);
-  } finally {
-    provisionLogsLoading.value = false;
-  }
-}
-
 async function reloadUnbindRecords() {
   unbindRecordsLoading.value = true;
   try {
     const filters = currentMappingFilters();
     const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
-    const r = await client.adminUnbindRecords({
-      billing_username: filters.billing_username || undefined,
-      node_id: filters.node_id || undefined,
-      local_username: filters.local_username || undefined,
-      limit: 300,
+    const [recordResp, requestResp] = await Promise.all([
+      client.adminUnbindRecords({
+        billing_username: filters.billing_username || undefined,
+        node_id: filters.node_id || undefined,
+        local_username: filters.local_username || undefined,
+        limit: 300,
+      }),
+      client.adminRequests({ status: "pending", limit: 1000 }),
+    ]);
+    unbindRecords.value = recordResp.records ?? [];
+    const billingKw = filters.billing_username.toLowerCase();
+    const nodeKw = filters.node_id.toLowerCase();
+    const localKw = filters.local_username.toLowerCase();
+    pendingUnbindRequests.value = (requestResp.requests ?? []).filter((row) => {
+      if (String(row.request_type || "").trim() !== "unbind") return false;
+      if (billingKw && !String(row.billing_username || "").toLowerCase().includes(billingKw)) return false;
+      if (nodeKw && !String(row.node_id || "").toLowerCase().includes(nodeKw)) return false;
+      if (localKw && !String(row.local_username || "").toLowerCase().includes(localKw)) return false;
+      return true;
     });
-    unbindRecords.value = r.records ?? [];
   } catch (e: any) {
     if (e?.status === 404) {
       // 兼容旧控制器：未升级到解绑记录接口时不阻塞页面其余功能。
       unbindRecords.value = [];
+      pendingUnbindRequests.value = [];
       return;
     }
+    pendingUnbindRequests.value = [];
     error.value = e?.message ?? String(e);
   } finally {
     unbindRecordsLoading.value = false;
   }
-}
-
-async function reloadOpenRequests() {
-  openRequestsLoading.value = true;
-  try {
-    const filters = currentMappingFilters();
-    const billingKw = filters.billing_username.toLowerCase();
-    const nodeKw = filters.node_id.toLowerCase();
-    const localKw = filters.local_username.toLowerCase();
-    const matchMappingFilters = (x: UserRequest): boolean => {
-      const billing = String(x.billing_username || "").toLowerCase();
-      const node = String(x.node_id || "").toLowerCase();
-      const local = String(x.local_username || "").toLowerCase();
-      if (billingKw && !billing.includes(billingKw)) return false;
-      if (nodeKw && !node.includes(nodeKw)) return false;
-      if (localKw && !local.includes(localKw)) return false;
-      return true;
-    };
-    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
-    const r = await client.adminRequests({ status: openRequestStatus.value || "", limit: 5000 });
-    const allCurrent = r.requests ?? [];
-    const current = allCurrent.filter((x) => {
-      const requestType = String(x.request_type || "").trim();
-      return requestType === "open" && matchMappingFilters(x);
-    });
-    openRequests.value = current;
-    if (!openRequestStatus.value || openRequestStatus.value === "pending") {
-      pendingOpenRequests.value = allCurrent.filter(
-        (x) => {
-          const requestType = String(x.request_type || "").trim();
-          return requestType === "open" && String(x.status || "").trim() === "pending" && matchMappingFilters(x);
-        },
-      );
-      pendingUnbindRequests.value = allCurrent.filter(
-        (x) => String(x.request_type || "").trim() === "unbind" && String(x.status || "").trim() === "pending" && matchMappingFilters(x),
-      );
-      return;
-    }
-    const pendingResp = await client.adminRequests({ status: "pending", limit: 5000 });
-    const pendingAll = pendingResp.requests ?? [];
-    pendingOpenRequests.value = pendingAll.filter((x) => {
-      const requestType = String(x.request_type || "").trim();
-      return requestType === "open" && matchMappingFilters(x);
-    });
-    pendingUnbindRequests.value = pendingAll.filter(
-      (x) => String(x.request_type || "").trim() === "unbind" && matchMappingFilters(x),
-    );
-  } catch (e: any) {
-    pendingOpenRequests.value = [];
-    pendingUnbindRequests.value = [];
-    error.value = e?.message ?? String(e);
-  } finally {
-    openRequestsLoading.value = false;
-  }
-}
-
-async function reloadOpenRejectHistory() {
-  openRejectHistoryLoading.value = true;
-  try {
-    const filters = currentMappingFilters();
-    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
-    const r = await client.adminRequests({ status: "rejected", limit: 5000 });
-    const billingKw = filters.billing_username.toLowerCase();
-    const nodeKw = filters.node_id.toLowerCase();
-    const localKw = filters.local_username.toLowerCase();
-    openRejectHistoryRows.value = (r.requests ?? [])
-      .filter((x) => {
-        const requestType = String(x.request_type || "").trim();
-        if (requestType !== "open") return false;
-        const billing = String(x.billing_username || "").toLowerCase();
-        const node = String(x.node_id || "").toLowerCase();
-        const local = String(x.local_username || "").toLowerCase();
-        if (billingKw && !billing.includes(billingKw)) return false;
-        if (nodeKw && !node.includes(nodeKw)) return false;
-        if (localKw && !local.includes(localKw)) return false;
-        return true;
-      })
-      .sort((a, b) => {
-        const ta = toServerEpochMs(String(a.reviewed_at || a.updated_at || a.created_at || ""));
-        const tb = toServerEpochMs(String(b.reviewed_at || b.updated_at || b.created_at || ""));
-        if (Number.isFinite(tb) && Number.isFinite(ta) && tb !== ta) return tb - ta;
-        return Number(b.request_id || 0) - Number(a.request_id || 0);
-      });
-  } catch (e: any) {
-    error.value = e?.message ?? String(e);
-    openRejectHistoryRows.value = [];
-  } finally {
-    openRejectHistoryLoading.value = false;
-  }
-}
-
-async function openOpenRejectHistoryDialog() {
-  openRejectHistoryVisible.value = true;
-  await reloadOpenRejectHistory();
 }
 
 async function reloadUnbindRejectHistory() {
@@ -2398,125 +2012,6 @@ async function reloadUnbindRejectHistory() {
 async function openUnbindRejectHistoryDialog() {
   unbindRejectHistoryVisible.value = true;
   await reloadUnbindRejectHistory();
-}
-
-function focusPendingRequests() {
-  openRequestStatus.value = "pending";
-  void reloadOpenRequests();
-}
-
-function applyOpenRequestToProvision(row: UserRequest) {
-  if (String(row.request_type || "").trim() !== "open") {
-    ElMessage.info("仅“开通申请”支持带入开通表单");
-    return;
-  }
-  const billing = String(row.billing_username || "").trim();
-  if (!billing) return;
-  provisionForm.billing_username = billing;
-  const node = String(row.node_id || "").trim();
-  const local = String(row.local_username || "").trim();
-  if (node && node !== "待分配") {
-    provisionForm.node_id = node;
-    applyProvisionNodeDefaults(node);
-  }
-  if (local && local !== "待分配") {
-    provisionForm.local_username = local;
-  }
-  syncProvisionUserPreviewFromLocal();
-  void fetchProvisionUserDetail(true);
-  provisionActionError.value = "";
-  provisionActionSuccess.value = `已将申请 ${row.request_id} 带入开通表单，请核对后执行开通`;
-  ElMessage.success("已带入开通表单，请在当前区域核对后执行开通");
-}
-
-async function markOpenRequestProcessed(row: UserRequest) {
-  const requestID = Number(row.request_id || 0);
-  if (!requestID || String(row.status || "").trim() !== "pending") return;
-  try {
-    await ElMessageBox.confirm(
-      `确认将申请 ${requestID} 标记为“已处理”吗？\n平台账号：${row.billing_username}\n\n建议在节点账号开通完成后再标记。`,
-      "标记已处理",
-      { type: "warning", confirmButtonText: "确认标记", cancelButtonText: "取消" },
-    );
-  } catch {
-    return;
-  }
-  openRequestActionLoadingId.value = requestID;
-  error.value = "";
-  success.value = "";
-  try {
-    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
-    await client.adminApproveRequest(requestID);
-    success.value = `申请 ${requestID} 已标记为已处理`;
-    await reloadOpenRequests();
-  } catch (e: any) {
-    error.value = e?.message ?? String(e);
-  } finally {
-    openRequestActionLoadingId.value = 0;
-  }
-}
-
-async function markOpenRequestPending(row: UserRequest) {
-  const requestID = Number(row.request_id || 0);
-  if (!requestID || String(row.status || "").trim() === "pending") return;
-  try {
-    await ElMessageBox.confirm(
-      `确认将申请 ${requestID} 恢复为“待处理”吗？\n平台账号：${row.billing_username}\n当前状态：${requestStatusText(row.status)}\n\n适用于误点“标记已处理”的情况。`,
-      "恢复待处理",
-      { type: "warning", confirmButtonText: "确认恢复", cancelButtonText: "取消" },
-    );
-  } catch {
-    return;
-  }
-  openRequestActionLoadingId.value = requestID;
-  error.value = "";
-  success.value = "";
-  try {
-    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
-    await client.adminReopenRequest(requestID);
-    success.value = `申请 ${requestID} 已恢复为待处理`;
-    await reloadOpenRequests();
-  } catch (e: any) {
-    error.value = e?.message ?? String(e);
-  } finally {
-    openRequestActionLoadingId.value = 0;
-  }
-}
-
-async function markOpenRequestRejected(row: UserRequest) {
-  const requestID = Number(row.request_id || 0);
-  if (!requestID || String(row.status || "").trim() !== "pending") return;
-  let reason = "";
-  try {
-    const input: any = await ElMessageBox.prompt(
-      `请填写拒绝理由（必填，用户端可见）：\n平台账号：${row.billing_username}\n申请类型：${requestTypeText(row.request_type)}\n节点：${row.node_id || "-"}\n节点账号：${row.local_username || "-"}`,
-      "拒绝申请",
-      {
-        type: "warning",
-        confirmButtonText: "确认拒绝",
-        cancelButtonText: "取消",
-        inputType: "textarea",
-        inputPlaceholder: "例如：申请信息不完整，请补充后重提",
-        inputValidator: (v: string) => String(v || "").trim().length > 0 || "拒绝理由不能为空",
-      },
-    );
-    reason = String(input?.value || "").trim();
-  } catch {
-    return;
-  }
-  openRequestActionLoadingId.value = requestID;
-  error.value = "";
-  success.value = "";
-  try {
-    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
-    await client.adminRejectRequest(requestID, reason);
-    success.value = `申请 ${requestID} 已拒绝`;
-    await reloadOpenRequests();
-  } catch (e: any) {
-    error.value = e?.message ?? String(e);
-  } finally {
-    openRequestActionLoadingId.value = 0;
-  }
 }
 
 function canReviewUnbindRecord(row: UserNodeUnbindRecord): boolean {
@@ -2675,7 +2170,7 @@ async function submitUnbindRequest(row: UserNodeAccount) {
       reason,
     });
     success.value = `已代提交解绑申请（ID ${r.request_id}），等待审批`;
-    await Promise.all([reloadOpenRequests(), reloadUnbindRecords()]);
+    await reloadUnbindRecords();
   } catch (e: any) {
     error.value = e?.message ?? String(e);
   }
@@ -2737,178 +2232,6 @@ async function remove(row: UserNodeAccount) {
   }
 }
 
-async function copyText(text: string) {
-  const value = String(text || "").trim();
-  if (!value) return;
-  try {
-    await writeClipboardText(value);
-    ElMessage.success("已复制");
-  } catch {
-    ElMessage.error("复制失败，请手动复制");
-  }
-}
-
-async function provisionAccount() {
-  provisionActionError.value = "";
-  provisionActionSuccess.value = "";
-  const billing = provisionForm.billing_username.trim();
-  const node = provisionForm.node_id.trim();
-  const local = provisionForm.local_username.trim();
-  if (!billing || !node || !local) {
-    provisionActionError.value = "平台账号、节点编号、节点账号不能为空";
-    await ElMessageBox.alert(provisionActionError.value, "开通失败", { type: "error", confirmButtonText: "我知道了" });
-    return;
-  }
-  await fetchProvisionUserDetail(false);
-  if (!provisionUserDetail.value || String(provisionUserDetail.value.username || "").trim() !== billing) {
-    provisionActionError.value = provisionUserError.value || "请先确认平台账号详细信息，确认无误后再开通";
-    await ElMessageBox.alert(provisionActionError.value, "开通失败", { type: "error", confirmButtonText: "我知道了" });
-    return;
-  }
-  if (!/^[a-z_][a-z0-9_-]{0,31}$/.test(local)) {
-    provisionActionError.value = "节点账号格式不合法：需以小写字母或下划线开头，只能包含小写字母、数字、下划线、短横线";
-    await ElMessageBox.alert(provisionActionError.value, "开通失败", { type: "error", confirmButtonText: "我知道了" });
-    return;
-  }
-  const sshHost = provisionForm.ssh_host.trim();
-  const sshPort = Number(provisionForm.ssh_port || 0);
-  rememberProvisionSSHHost(sshHost);
-  try {
-    await ElMessageBox.confirm(
-      `请确认本次开通绑定信息：\n平台账号：${billing}\n节点编号：${node}\n节点账号：${local}\n\n确认后将生成密钥并发送邮件，绑定错误会影响用户登录。`,
-      "二次确认",
-      { type: "warning", confirmButtonText: "确认开通并绑定", cancelButtonText: "取消" },
-    );
-  } catch {
-    return;
-  }
-  const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
-  const applyProvisionSuccess = async (r: AdminAccountProvisionResp, forceReissued = false) => {
-    provisionResult.value = r;
-    provisionResultVisible.value = true;
-    const isReissued = !!r.reissued_key || forceReissued;
-    const reusedExistingLocalUser = !!r.local_user_existed && !isReissued;
-    if (r.mail_sent) {
-      provisionActionSuccess.value = isReissued
-        ? `新密钥已重新生成；密文已发平台内通知，提取码已发送到 ${r.email}`
-        : reusedExistingLocalUser
-          ? `已复用节点上的现有账号并刷新密钥；密文已发平台内通知，提取码已发送到 ${r.email}`
-        : `节点账号已开通；密文已发平台内通知，提取码已发送到 ${r.email}`;
-    } else {
-      provisionActionSuccess.value = isReissued
-        ? "新密钥已重新生成，平台内密文通知已生成，但提取码邮件发送失败"
-        : reusedExistingLocalUser
-          ? "已复用节点上的现有账号并刷新密钥，平台内密文通知已生成，但提取码邮件发送失败"
-        : "节点账号已开通，平台内密文通知已生成，但提取码邮件发送失败";
-    }
-    await reload();
-    await reloadProvisionLogs();
-  };
-
-  const parseProvisionConflict = (e: any): { shouldOfferRotate: boolean; shouldConfirmExistingLocalUser: boolean; mappedBilling: string } => {
-    const status = Number(e?.status || 0);
-    if (status !== 409) return { shouldOfferRotate: false, shouldConfirmExistingLocalUser: false, mappedBilling: "" };
-    const msg = String(e?.message || "").trim();
-    let reason = "";
-    let mappedBilling = "";
-    const bodyText = String(e?.body || "").trim();
-    if (bodyText) {
-      try {
-        const j = JSON.parse(bodyText);
-        reason = String(j?.reason || "").trim();
-        mappedBilling = String(j?.mapped_billing_username || "").trim();
-      } catch {
-        // ignore parse failure and fallback to message matching
-      }
-    }
-    if (reason === "local_user_exists_unmapped") {
-      return { shouldOfferRotate: false, shouldConfirmExistingLocalUser: true, mappedBilling };
-    }
-    if (reason === "mapping_exists_other_user") {
-      return { shouldOfferRotate: false, shouldConfirmExistingLocalUser: false, mappedBilling };
-    }
-    const sameUserReason = reason === "mapping_exists_same_user";
-    const compatibleLegacyReason = reason === "mapping_exists" && (!mappedBilling || mappedBilling === billing);
-    const legacyMsgHint = !reason && (msg.includes("已有平台映射") || msg.includes("已绑定到平台账号"));
-    return {
-      shouldOfferRotate: sameUserReason || compatibleLegacyReason || legacyMsgHint,
-      shouldConfirmExistingLocalUser: false,
-      mappedBilling,
-    };
-  };
-
-  provisioning.value = true;
-  try {
-    const r = await client.adminProvisionAccount({
-      billing_username: billing,
-      node_id: node,
-      local_username: local,
-      ssh_host: sshHost || undefined,
-      ssh_port: sshPort > 0 ? sshPort : undefined,
-    });
-    await applyProvisionSuccess(r, false);
-  } catch (e: any) {
-    const conflict = parseProvisionConflict(e);
-    if (conflict.shouldConfirmExistingLocalUser) {
-      try {
-        await ElMessageBox.confirm(
-          `高风险提醒：节点上已经存在这个本地账号，但平台当前没有该账号映射。\n\n节点编号：${node}\n节点账号：${local}\n平台账号：${billing}\n\n继续后系统会复用节点上的现有账号，并把该账号的 authorized_keys 覆盖为新生成的公钥；旧私钥可能无法继续登录。请确认你已经核对过该账号归属。`,
-          "高风险确认：复用现有节点账号",
-          { type: "error", confirmButtonText: "确认复用并覆盖 authorized_keys", cancelButtonText: "取消" },
-        );
-      } catch {
-        return;
-      }
-      try {
-        const r2 = await client.adminProvisionAccount({
-          billing_username: billing,
-          node_id: node,
-          local_username: local,
-          ssh_host: sshHost || undefined,
-          ssh_port: sshPort > 0 ? sshPort : undefined,
-          confirm_existing_local_user: true,
-        });
-        await applyProvisionSuccess(r2, false);
-      } catch (e2: any) {
-        provisionActionError.value = e2?.message ?? String(e2);
-        await ElMessageBox.alert(provisionActionError.value, "开通失败", { type: "error", confirmButtonText: "我知道了" });
-      }
-      return;
-    }
-    if (!conflict.shouldOfferRotate) {
-      provisionActionError.value = e?.message ?? String(e);
-      await ElMessageBox.alert(provisionActionError.value, "开通失败", { type: "error", confirmButtonText: "我知道了" });
-      return;
-    }
-    const mapped = conflict.mappedBilling || billing;
-    try {
-      await ElMessageBox.confirm(
-        `检测到该节点账号已存在映射。\n节点编号：${node}\n节点账号：${local}\n平台账号：${mapped}\n\n该用户可能是丢失了旧密钥。是否立即重新生成新密钥，并重新发送“平台内密文 + 邮件提取码”？`,
-        "二次提醒：是否重发新密钥",
-        { type: "warning", confirmButtonText: "重新生成并重发", cancelButtonText: "取消" },
-      );
-    } catch {
-      return;
-    }
-    try {
-      const r2 = await client.adminProvisionAccount({
-        billing_username: billing,
-        node_id: node,
-        local_username: local,
-        ssh_host: sshHost || undefined,
-        ssh_port: sshPort > 0 ? sshPort : undefined,
-        rotate_key: true,
-      });
-      await applyProvisionSuccess(r2, true);
-    } catch (e2: any) {
-      provisionActionError.value = e2?.message ?? String(e2);
-      await ElMessageBox.alert(provisionActionError.value, "开通失败", { type: "error", confirmButtonText: "我知道了" });
-    }
-  } finally {
-    provisioning.value = false;
-  }
-}
-
 async function init() {
   try {
     await loadPlatformUsers();
@@ -2919,12 +2242,6 @@ async function init() {
     await loadNodeOptions();
   } catch {
     nodeOptions.value = [];
-    nodeIPByID.value = {};
-  }
-  try {
-    await reloadBindPolicy();
-  } catch {
-    // ignore
   }
   await reload();
 }
@@ -2949,16 +2266,12 @@ init();
   background: #f7fbff;
   border-bottom: 1px solid var(--border-color);
 }
-.overview-card { order: 1; }
-.mapping-query-card { order: 2; }
-.mapping-list-card { order: 3; }
-.restricted-card { order: 4; }
-.mapping-review-card { order: 5; }
-.unbind-records-card { order: 6; }
-.provision-card { order: 7; }
-.provision-history-card { order: 8; }
-.bind-policy-card { order: 9; }
-.risk-card { order: 10; }
+.workspace-nav-card :deep(.el-card__body) {
+  padding: 0 16px;
+}
+.workspace-tabs :deep(.el-tabs__header) {
+  margin: 0;
+}
 
 .head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 .head-actions { display: flex; gap: 8px; }
@@ -2988,14 +2301,6 @@ init();
   background: linear-gradient(135deg, #0f766e, #0d9488);
   color: #ccfbf1;
 }
-.tone-provision {
-  background: linear-gradient(135deg, #4f46e5, #4338ca);
-  color: #e0e7ff;
-}
-.tone-history {
-  background: linear-gradient(135deg, #b45309, #d97706);
-  color: #fef3c7;
-}
 .tone-query {
   background: linear-gradient(135deg, #0369a1, #0284c7);
   color: #e0f2fe;
@@ -3011,10 +2316,6 @@ init();
 .tone-risk {
   background: linear-gradient(135deg, #b91c1c, #ef4444);
   color: #fee2e2;
-}
-.tone-user {
-  background: linear-gradient(135deg, #1d4ed8, #2563eb);
-  color: #dbeafe;
 }
 .mapping-list-folded {
   padding: 14px 16px;
@@ -3134,26 +2435,6 @@ init();
   display: inline-flex;
   align-items: center;
 }
-.provision-card :deep(.el-card__body) { padding-top: 14px; }
-.provision-head { font-weight: 700; }
-.provision-user-preview {
-  margin: 8px 0 12px;
-  padding: 10px 12px;
-  border: 1px solid var(--border-color);
-  border-radius: 10px;
-  background: linear-gradient(180deg, rgba(148, 163, 184, 0.08), rgba(148, 163, 184, 0.02));
-}
-.preview-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 8px;
-}
-.preview-desc :deep(.el-descriptions__label) {
-  min-width: 90px;
-}
-.provision-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .query-form {
   margin-bottom: -2px;
 }
@@ -3164,51 +2445,11 @@ init();
   color: #475569;
   font-size: 12px;
 }
-.kv-row {
-  margin-top: 12px;
-  display: grid;
-  grid-template-columns: 90px 1fr auto;
-  gap: 8px;
-  align-items: center;
-}
-.kv-label { color: #475569; font-size: 13px; }
-.payload-actions {
-  margin-top: 8px;
-  display: flex;
-  gap: 8px;
-}
-.note-user-detail {
-  margin: 4px 0;
-}
-.note-user-lines {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.note-user-lines .line-1 {
-  color: #0f172a;
-  font-weight: 600;
-}
-.note-user-lines .line-2,
-.note-user-lines .line-3 {
-  color: #475569;
-  font-size: 12px;
-}
 .pending-count-badge {
   margin-left: 2px;
 }
 .pending-count-badge :deep(.el-badge__content) {
   font-weight: 700;
-}
-.pending-open-banner {
-  border: 1px solid #f59e0b;
-  background: linear-gradient(180deg, rgba(245, 158, 11, 0.12), rgba(245, 158, 11, 0.04));
-}
-.pending-open-actions {
-  margin-top: 6px;
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
 }
 
 @media (max-width: 900px) {

@@ -404,6 +404,7 @@ import { ElMessageBox } from "element-plus";
 import { ApiClient, type PointsUser, type PointsOperationRecord, type SpecialMonthlyPointsRule, type MonthlyPointsResetRun } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
+import { useRoute } from "vue-router";
 import { formatServerDateTime } from "../../lib/time";
 import PlatformUserDetailDialog from "../../components/PlatformUserDetailDialog.vue";
 import { Clock, Coin, DataBoard, Document, UserFilled } from "@element-plus/icons-vue";
@@ -426,6 +427,7 @@ type PointsUserSortKey =
   | "phone";
 
 const loading = ref(false);
+const route = useRoute();
 const batchLoading = ref(false);
 const monthlyResetLoading = ref(false);
 const configSaving = ref(false);
@@ -1376,7 +1378,16 @@ async function removeRule(username: string) {
 }
 
 onMounted(async () => {
+  const requestedUsername = String(route.query.username || "").trim();
+  if (requestedUsername && allowPointsUsers.value) {
+    keywordField.value = "username";
+    keyword.value = requestedUsername;
+  }
   await reloadAll();
+  if (requestedUsername && allowPointsUsers.value) {
+    const target = (users.value || []).find((row) => String(row.username || "").trim() === requestedUsername);
+    if (target) openAdjust(target);
+  }
 });
 
 watch(

@@ -1,15 +1,5 @@
 <template>
   <div class="user-fun-page">
-    <div class="user-fun-bg">
-      <div class="user-fun-flow a" />
-      <div class="user-fun-flow b" />
-      <div class="user-fun-blob a" />
-      <div class="user-fun-blob b" />
-      <div class="user-fun-spark a" />
-      <div class="user-fun-spark b" />
-      <div class="user-fun-sticker left">账单明细</div>
-      <div class="user-fun-sticker right">按需刷新</div>
-    </div>
     <el-card class="user-fun-card usage-card">
       <template #header>
         <div class="row">

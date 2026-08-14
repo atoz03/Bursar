@@ -35,21 +35,21 @@
 
 ## 2. 后台模块速览
 
-### 📊 运营分析
+### 📊 总览
 - 运营看板：`/admin/board`
-- 进程记录：`/admin/usage`
+- 集群总览：`/admin/status`
 
-### 🖥️ 资源管理
-- 节点状态：`/admin/nodes`
-
-### 💰 积分管理
+### 🖥️ 资源与计费
+- 节点管理：`/admin/nodes`
+- 进程审计：`/admin/usage`
 - 积分管理：`/admin/points`
 
 ### 👥 账号与访问
-- 平台用户管理：`/admin/users`
+- 平台用户：`/admin/users`
 - 账号映射：`/admin/accounts`
-- 平台账号注册审核：`/admin/requests`
-- 高级用户管理：`/admin/power-users`
+- 账号开通：`/admin/account-provision`
+- 注册与资料审核：`/admin/requests`
+- 高级用户：`/admin/power-users`
 - SSH 名单（白名单/黑名单/豁免）：`/admin/whitelist`
 
 ### ⚙️ 系统与容灾
@@ -58,18 +58,19 @@
 - 用户准则：`/admin/guideline`
 - 管理员记事本：`/admin/notebook`
 - 邮件设置：`/admin/mail`
-- 个人信息：`/admin/profile`
-- 修改密码：`/admin/change-password`
+- 个人资料：右上角账号菜单
+- 修改密码：右上角账号菜单
 
 ---
 
 ## 3. 各模块功能说明
 
-### 📊 运营分析
+### 📊 总览
 - 运营看板：看总体用户、节点、用量、积分变化趋势。
-- 进程记录：按平台账号/节点账号筛选，查看进程使用记录与强制终止记录；支持按日期范围导出/删除，并在删除前估算记录数与体积。
+- 集群总览：集中查看节点 CPU、GPU、内存、磁盘与在线状态。
 
-### 🖥️ 节点状态（重点）
+### 🖥️ 资源与计费
+- 进程审计：按平台账号/节点账号筛选进程与强制终止记录；支持区间导出、估算与删除。
 - 节点在线与资源监控：心跳、CPU/GPU 进程数、磁盘与流量。
 - 节点策略开关：
   - SSH 拦截（未注册拦截）
