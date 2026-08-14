@@ -196,8 +196,7 @@ onMounted(() => {
 .aurora {
   position: absolute;
   border-radius: 999px;
-  filter: blur(40px);
-  opacity: 0.45;
+  opacity: 0.62;
   pointer-events: none;
 }
 .aurora-a {
@@ -205,16 +204,14 @@ onMounted(() => {
   height: 360px;
   left: -80px;
   top: -90px;
-  background: #34d399;
-  animation: flow 12s ease-in-out infinite;
+  background: radial-gradient(circle, rgba(52, 211, 153, .72), rgba(52, 211, 153, .2) 52%, transparent 72%);
 }
 .aurora-b {
   width: 420px;
   height: 420px;
   right: -110px;
   bottom: -130px;
-  background: #f59e0b;
-  animation: flow 14s ease-in-out infinite reverse;
+  background: radial-gradient(circle, rgba(245, 158, 11, .68), rgba(245, 158, 11, .16) 54%, transparent 73%);
 }
 .login-layout {
   position: relative;
@@ -227,10 +224,10 @@ onMounted(() => {
 .intro {
   padding: 42px 34px;
   border-radius: 24px;
-  background: rgba(255, 255, 255, 0.16);
+  background: linear-gradient(145deg, rgba(255, 255, 255, .22), rgba(255, 255, 255, .1));
   border: 1px solid rgba(255, 255, 255, 0.28);
   color: #f8fafc;
-  backdrop-filter: blur(6px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .34);
 }
 .intro-badge {
   display: inline-block;
@@ -262,8 +259,7 @@ onMounted(() => {
 .panel {
   padding: 28px 24px 22px;
   border-radius: 24px;
-  background: rgba(255, 255, 255, 0.92);
-  backdrop-filter: blur(8px);
+  background: linear-gradient(145deg, rgba(255, 255, 255, .98), rgba(241, 248, 247, .95));
   box-shadow: 0 20px 50px rgba(2, 6, 23, 0.22);
 }
 .brand {
@@ -344,15 +340,6 @@ onMounted(() => {
 }
 .actions a:hover {
   text-decoration: underline;
-}
-@keyframes flow {
-  0%,
-  100% {
-    transform: translate(0, 0);
-  }
-  50% {
-    transform: translate(18px, -12px);
-  }
 }
 @media (max-width: 920px) {
   .login-layout {

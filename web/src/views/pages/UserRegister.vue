@@ -822,8 +822,7 @@ onBeforeUnmount(() => {
     radial-gradient(1200px 600px at -10% -20%, rgba(249, 115, 22, 0.25), transparent 65%),
     radial-gradient(1000px 600px at 110% 120%, rgba(14, 165, 233, 0.22), transparent 65%),
     linear-gradient(160deg, #fef3c7 0%, #fff7ed 35%, #ecfeff 100%);
-  background-size: 120% 120%, 130% 130%, 200% 200%;
-  animation: gradientShift 12s ease-in-out infinite;
+  background-size: 120% 120%, 130% 130%, 100% 100%;
 }
 .bg-layer {
   position: absolute;
@@ -835,9 +834,7 @@ onBeforeUnmount(() => {
   content: "";
   position: absolute;
   inset: -20%;
-  background: conic-gradient(from 0deg, rgba(251, 113, 133, 0.12), rgba(34, 211, 238, 0.1), rgba(245, 158, 11, 0.12), rgba(251, 113, 133, 0.12));
-  animation: spinBg 24s linear infinite;
-  filter: blur(20px);
+  background: conic-gradient(from 12deg, rgba(251, 113, 133, 0.1), rgba(34, 211, 238, 0.08), rgba(245, 158, 11, 0.1), rgba(251, 113, 133, 0.1));
 }
 .bg-layer::after {
   content: "";
@@ -849,14 +846,12 @@ onBeforeUnmount(() => {
       rgba(15, 118, 110, 0.08) 0 10px,
       rgba(255, 255, 255, 0) 10px 26px
     );
-  animation: stream 16s linear infinite;
-  opacity: 0.6;
+  opacity: 0.32;
 }
 .flow {
   position: absolute;
   border-radius: 999px;
-  filter: blur(40px);
-  opacity: 0.28;
+  opacity: 0.2;
 }
 .flow-a {
   width: 520px;
@@ -864,8 +859,7 @@ onBeforeUnmount(() => {
   left: -120px;
   top: 24%;
   transform: rotate(-18deg);
-  background: linear-gradient(90deg, #0ea5e9, #14b8a6);
-  animation: waveA 11s ease-in-out infinite;
+  background: linear-gradient(90deg, transparent, rgba(14,165,233,.74), rgba(20,184,166,.72), transparent);
 }
 .flow-b {
   width: 460px;
@@ -873,38 +867,33 @@ onBeforeUnmount(() => {
   right: -120px;
   bottom: 22%;
   transform: rotate(-22deg);
-  background: linear-gradient(90deg, #f59e0b, #f97316);
-  animation: waveB 13s ease-in-out infinite;
+  background: linear-gradient(90deg, transparent, rgba(245,158,11,.7), rgba(249,115,22,.68), transparent);
 }
 .blob {
   position: absolute;
   border-radius: 999px;
-  filter: blur(30px);
-  opacity: 0.45;
-  animation: float 14s ease-in-out infinite;
+  opacity: 0.5;
 }
 .blob-a {
   width: 300px;
   height: 300px;
   left: -60px;
   top: 10%;
-  background: #fb7185;
+  background: radial-gradient(circle, rgba(251,113,133,.52), rgba(251,113,133,.12) 54%, transparent 73%);
 }
 .blob-b {
   width: 380px;
   height: 380px;
   right: -80px;
   top: 35%;
-  background: #22d3ee;
-  animation-delay: 2s;
+  background: radial-gradient(circle, rgba(34,211,238,.48), rgba(34,211,238,.1) 55%, transparent 74%);
 }
 .blob-c {
   width: 260px;
   height: 260px;
   left: 45%;
   bottom: -80px;
-  background: #f59e0b;
-  animation-delay: 4s;
+  background: radial-gradient(circle, rgba(245,158,11,.46), rgba(245,158,11,.1) 55%, transparent 74%);
 }
 .spark {
   position: absolute;
@@ -918,13 +907,11 @@ onBeforeUnmount(() => {
   right: 20%;
   top: 16%;
   background: rgba(255, 255, 255, 0.62);
-  animation: sparkle 4s ease-in-out infinite;
 }
 .spark-b {
   left: 18%;
   bottom: 18%;
   background: rgba(255, 255, 255, 0.5);
-  animation: sparkle 5s ease-in-out infinite 0.6s;
 }
 .sticker {
   position: absolute;
@@ -955,8 +942,7 @@ onBeforeUnmount(() => {
   width: 100%;
   max-width: 1240px;
   border-radius: 20px;
-  background: rgba(255, 255, 255, 0.9);
-  backdrop-filter: blur(10px);
+  background: linear-gradient(145deg, rgba(255,255,255,.98), rgba(247,250,255,.95));
   overflow: hidden;
 }
 .lock-overlay {
@@ -966,8 +952,7 @@ onBeforeUnmount(() => {
   display: grid;
   place-items: center;
   padding: 24px;
-  background: rgba(15, 23, 42, 0.48);
-  backdrop-filter: blur(10px);
+  background: rgba(15, 23, 42, 0.58);
   pointer-events: all;
 }
 .lock-panel {
@@ -1221,15 +1206,6 @@ onBeforeUnmount(() => {
   text-decoration: none;
   font-weight: 600;
 }
-@keyframes float {
-  0%,
-  100% {
-    transform: translateY(0) translateX(0);
-  }
-  50% {
-    transform: translateY(-18px) translateX(14px);
-  }
-}
 @keyframes fieldShake {
   0%,
   100% {
@@ -1246,60 +1222,6 @@ onBeforeUnmount(() => {
   }
   80% {
     transform: translateX(3px);
-  }
-}
-@keyframes gradientShift {
-  0%,
-  100% {
-    background-position: 0% 0%, 100% 100%, 0% 50%;
-  }
-  50% {
-    background-position: 15% 10%, 85% 90%, 100% 50%;
-  }
-}
-@keyframes spinBg {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
-}
-@keyframes stream {
-  from {
-    transform: translateX(-6%) translateY(-4%);
-  }
-  to {
-    transform: translateX(6%) translateY(4%);
-  }
-}
-@keyframes waveA {
-  0%,
-  100% {
-    transform: translateX(0) translateY(0) rotate(-18deg);
-  }
-  50% {
-    transform: translateX(26px) translateY(-8px) rotate(-14deg);
-  }
-}
-@keyframes waveB {
-  0%,
-  100% {
-    transform: translateX(0) translateY(0) rotate(-22deg);
-  }
-  50% {
-    transform: translateX(-22px) translateY(10px) rotate(-26deg);
-  }
-}
-@keyframes sparkle {
-  0%,
-  100% {
-    transform: rotate(45deg) scale(1);
-    opacity: 0.55;
-  }
-  50% {
-    transform: rotate(45deg) scale(1.24);
-    opacity: 0.9;
   }
 }
 @media (max-width: 900px) {

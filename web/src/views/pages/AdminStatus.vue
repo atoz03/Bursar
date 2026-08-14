@@ -413,7 +413,7 @@ onBeforeUnmount(() => {
 .node-skeleton { min-height: 460px; padding: 24px; border-radius: 20px; background: #fff; }
 .node-card { --state: #10b981; position: relative; overflow: hidden; padding: 20px; border: 1px solid rgba(148,163,184,.28); border-top: 3px solid var(--state); border-radius: 21px; background: linear-gradient(155deg, rgba(255,255,255,.96), rgba(244,248,252,.92)); box-shadow: 0 15px 35px rgba(40,61,84,.09); transition: transform .2s ease, box-shadow .2s ease; }
 .node-card:hover { transform: translateY(-3px); box-shadow: 0 20px 42px rgba(35,58,82,.14); }
-.node-card.state-warning { --state: #f59e0b; } .node-card.state-offline { --state: #94a3b8; filter: saturate(.72); } .node-card.state-pending { --state: #3b82f6; }
+.node-card.state-warning { --state: #f59e0b; } .node-card.state-offline { --state: #94a3b8; } .node-card.state-pending { --state: #3b82f6; }
 .node-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .node-identity { display: flex; align-items: flex-start; gap: 11px; min-width: 0; }
 .status-dot { width: 11px; height: 11px; margin-top: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--state); box-shadow: 0 0 0 5px color-mix(in srgb, var(--state) 13%, transparent); }
@@ -474,7 +474,7 @@ onBeforeUnmount(() => {
 }
 .monitor-summary-grid { margin: 14px 0; }
 .live-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border-radius: 999px; color: #07885f; background: #e9f9f2; font-size: 11px; font-weight: 700; }
-.live-badge i { width: 6px; height: 6px; border-radius: 50%; background: #10b981; box-shadow: 0 0 0 4px rgba(16,185,129,.12); animation: statusLivePulse 1.8s ease-in-out infinite; }
+.live-badge i { width: 6px; height: 6px; border-radius: 50%; background: #10b981; box-shadow: 0 0 0 4px rgba(16,185,129,.12); }
 @keyframes statusLivePulse {
   0%, 100% { opacity: .72; transform: scale(.88); }
   50% { opacity: 1; transform: scale(1.12); }
@@ -508,7 +508,7 @@ onBeforeUnmount(() => {
 .node-card::before { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 3px; background: var(--state); }
 .node-card:hover { transform: translateY(-2px); border-color: #cfd9e1; box-shadow: 0 12px 28px rgba(36,53,72,.1); }
 .node-card.state-warning { --state: #f59e0b; }
-.node-card.state-offline { --state: #a8b2bf; filter: none; background: linear-gradient(145deg, rgba(250,251,252,.72), rgba(241,245,249,.42)); }
+.node-card.state-offline { --state: #a8b2bf; background: linear-gradient(145deg, rgba(250,251,252,.72), rgba(241,245,249,.42)); }
 .node-card.state-pending { --state: #3b82f6; }
 
 .node-head { flex: 0 0 auto; align-items: flex-start; }
