@@ -6003,7 +6003,7 @@ LIMIT $1`, limit)
 		)
 		n.DiskQuotaMounts = normalizeNullStringArray(diskQuotaMountsRaw)
 		if systemServicesCheckedAt.Valid {
-			ts := inBeijing(systemServicesCheckedAt.Time)
+			ts := asBeijingWallTime(systemServicesCheckedAt.Time)
 			n.SystemServicesCheckedAt = &ts
 		}
 		systemServices, err := parseNodeSystemServicesRaw(systemServicesRaw)
@@ -6169,7 +6169,7 @@ WHERE n.node_id=$1`, nodeID).Scan(
 	)
 	n.DiskQuotaMounts = normalizeNullStringArray(diskQuotaMountsRaw)
 	if systemServicesCheckedAt.Valid {
-		ts := inBeijing(systemServicesCheckedAt.Time)
+		ts := asBeijingWallTime(systemServicesCheckedAt.Time)
 		n.SystemServicesCheckedAt = &ts
 	}
 	systemServices, err := parseNodeSystemServicesRaw(systemServicesRaw)
