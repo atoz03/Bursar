@@ -37,4 +37,4 @@
 - 节点侧辅助工具改为携带运维凭据，从 `GPUOPS_QUERY_TOKEN` 或 `/etc/gpu-ops/query-token` 读取，因为余额接口不再匿名开放。
 - `docker-compose.yml` 不再内置数据库密码，请在 `.env` 中提供 `POSTGRES_PASSWORD`。
 
-[3.2.0]: https://github.com/atoz03/gpu-ops/releases/tag/v3.2.0
+[3.2.0]: https://github.com/atoz03/Bursar/releases/tag/v3.2.0

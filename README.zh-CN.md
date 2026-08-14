@@ -6,7 +6,7 @@
 
 *面向共享 GPU 集群的账户与配额管理。*
 
-[![CI](https://github.com/atoz03/gpu-ops/actions/workflows/go-test.yml/badge.svg)](https://github.com/atoz03/gpu-ops/actions/workflows/go-test.yml)
+[![CI](https://github.com/atoz03/Bursar/actions/workflows/go-test.yml/badge.svg)](https://github.com/atoz03/Bursar/actions/workflows/go-test.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8.svg)](controller/go.mod)
 [![Vue](https://img.shields.io/badge/Vue-3-42b883.svg)](web/package.json)
@@ -79,8 +79,8 @@ Node Agent 始终直接运行在计算节点主机上——它需要 cgroup、sy
 ## 方式 A: Docker
 
 ```bash
-git clone https://github.com/atoz03/gpu-ops.git
-cd gpu-ops
+git clone https://github.com/atoz03/Bursar.git
+cd Bursar
 cp .env.example .env
 ```
 
@@ -98,8 +98,8 @@ curl -fsS http://127.0.0.1:8080/readyz
 ### 1. 克隆与配置
 
 ```bash
-git clone https://github.com/atoz03/gpu-ops.git
-cd gpu-ops
+git clone https://github.com/atoz03/Bursar.git
+cd Bursar
 cp .env.example .env
 cp config/controller.yaml config/controller.local.yaml
 openssl rand -hex 32

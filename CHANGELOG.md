@@ -37,4 +37,4 @@ First public release. The version number continues the internal series this proj
 - Node-side helpers now send an operator credential, read from `GPUOPS_QUERY_TOKEN` or `/etc/gpu-ops/query-token`, because the balance endpoint is no longer anonymous.
 - `docker-compose.yml` no longer carries a database password. Supply `POSTGRES_PASSWORD` in `.env`.
 
-[3.2.0]: https://github.com/atoz03/gpu-ops/releases/tag/v3.2.0
+[3.2.0]: https://github.com/atoz03/Bursar/releases/tag/v3.2.0

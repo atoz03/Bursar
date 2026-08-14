@@ -42,8 +42,8 @@ docker compose version
 ## 环境搭建
 
 ```bash
-git clone https://github.com/atoz03/gpu-ops.git
-cd gpu-ops
+git clone https://github.com/atoz03/Bursar.git
+cd Bursar
 cp .env.example .env          # 填写 POSTGRES_PASSWORD
 docker compose up -d postgres
 

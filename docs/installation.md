@@ -18,8 +18,8 @@ The node agent is never containerised. It needs cgroup, systemd, SSH, and driver
 ## 1. Prepare secrets
 
 ```bash
-git clone https://github.com/atoz03/gpu-ops.git
-cd gpu-ops
+git clone https://github.com/atoz03/Bursar.git
+cd Bursar
 cp .env.example .env
 ```
 

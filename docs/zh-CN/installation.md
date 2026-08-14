@@ -18,8 +18,8 @@ Node Agent 永远不容器化，它需要主机上的 cgroup、systemd、SSH 和
 ## 1. 准备密钥
 
 ```bash
-git clone https://github.com/atoz03/gpu-ops.git
-cd gpu-ops
+git clone https://github.com/atoz03/Bursar.git
+cd Bursar
 cp .env.example .env
 ```
 
