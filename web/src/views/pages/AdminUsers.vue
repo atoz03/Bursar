@@ -136,7 +136,7 @@
         <div class="section-title-wrap">
           <span class="section-icon tone-delete"><el-icon><Delete /></el-icon></span>
           <div>
-          <div class="title">已删除平台账号（可恢复）</div>
+          <div class="title">已删除账号</div>
           <div class="sub">恢复时会校验当前已注册与待审核注册申请，冲突会明确提示。</div>
           </div>
         </div>
@@ -170,7 +170,7 @@
         <div class="section-title-wrap">
           <span class="section-icon tone-remind"><el-icon><Bell /></el-icon></span>
           <div>
-          <div class="title">毕业到期提醒（两个月后可能清理数据）</div>
+          <div class="title">毕业到期提醒</div>
           <div class="sub">查询已达到预计毕业时间的用户，可单发或批量发送备份提醒邮件。</div>
           </div>
         </div>

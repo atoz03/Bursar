@@ -3,7 +3,7 @@
     <template #header>
       <div class="row">
         <div>
-          <h3 class="title">双重验证（2FA）</h3>
+          <h3 class="title">双重验证</h3>
           <p class="sub">支持 Microsoft Authenticator、数盾等标准 TOTP 验证器</p>
         </div>
         <el-button :loading="loading" @click="loadStatus">刷新</el-button>

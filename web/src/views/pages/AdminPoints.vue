@@ -7,7 +7,7 @@
             <span class="section-icon tone-points"><el-icon><Coin /></el-icon></span>
             <div class="section-title-content">
               <div class="title">积分管理</div>
-              <div class="sub">支持单用户调整、按筛选结果批量调整、全体加减、月初重置、特殊月度规则和完整操作记录</div>
+              <div class="sub">统一管理用户积分、月度规则和操作记录</div>
             </div>
           </div>
           <el-button :loading="loading" type="primary" @click="reloadAll">刷新</el-button>
@@ -15,7 +15,7 @@
       </template>
 
       <el-alert
-        title="规则说明：当用户积分 ≤ -10 时，将强制中断其在所有关联节点上的进程。"
+        title="积分低于 -10 时，系统将中断关联节点上的进程。"
         type="warning"
         :closable="false"
         show-icon
@@ -23,20 +23,6 @@
       />
       <el-alert v-if="error" :title="error" type="error" show-icon style="margin-bottom: 12px" />
       <el-alert v-if="success" :title="success" type="success" show-icon style="margin-bottom: 12px" />
-      <el-alert
-        title="支持按个人信息筛选：先选择匹配字段（或全字段），再输入关键词。筛选出的用户可直接批量加减积分。"
-        type="info"
-        :closable="false"
-        show-icon
-        style="margin-bottom: 12px"
-      />
-      <el-alert
-        title="筛选排序说明：排序仅作用于当前匹配结果；输入筛选条件后，管理员账号不参与条件筛选。"
-        type="info"
-        :closable="false"
-        show-icon
-        style="margin-bottom: 12px"
-      />
 
       <el-form inline>
         <el-form-item label="匹配字段">
@@ -109,7 +95,7 @@
             <span class="section-icon tone-filter-batch"><el-icon><UserFilled /></el-icon></span>
             <div class="section-title-content">
               <div class="title">按筛选结果批量加减</div>
-              <div class="sub">对“当前查询结果”批量加减积分，可按个人信息先筛选，再统一执行</div>
+              <div class="sub">对当前查询结果统一调整</div>
             </div>
           </div>
           <el-tag type="info">当前命中 {{ filteredBatchTargetUsernames.length }} 人</el-tag>
@@ -157,9 +143,6 @@
           </el-button>
         </el-form-item>
       </el-form>
-      <div class="sub">
-        说明：按上方“用户查询”的筛选结果执行。可先按姓名/导师/学号等筛选，再批量加分或扣分。
-      </div>
     </el-card>
 
     <el-card v-if="allowPointsBatchAll" class="section-card">
@@ -169,7 +152,7 @@
             <span class="section-icon tone-batch"><el-icon><DataBoard /></el-icon></span>
             <div class="section-title-content">
               <div class="title">全体加减积分</div>
-              <div class="sub">对所有普通用户统一加分或扣分（正数为加分，负数为扣分）</div>
+              <div class="sub">统一调整所有普通用户</div>
             </div>
           </div>
         </div>
@@ -204,7 +187,7 @@
             <span class="section-icon tone-record"><el-icon><Document /></el-icon></span>
             <div class="section-title-content">
               <div class="title">积分操作记录</div>
-              <div class="sub">记录所有积分加减/重置动作（日期、操作、对象、变动值）</div>
+              <div class="sub">查看积分调整与重置记录</div>
             </div>
           </div>
           <el-tag type="info">共 {{ records.length }} 条</el-tag>
@@ -257,7 +240,7 @@
             <span class="section-icon tone-monthly"><el-icon><Clock /></el-icon></span>
             <div class="section-title-content">
               <div class="title">月初重置</div>
-              <div class="sub">规则：学号含 B 按博士发放、含 S 按硕士发放、其余按“其他”发放；特殊用户规则优先；上月未用完通用积分按上限结转（上限为累计上限）；欠费超过“每月最大欠费上限”会强制清理全部进程</div>
+              <div class="sub">配置月度发放、结转和欠费上限</div>
             </div>
           </div>
           <div class="row">
@@ -312,7 +295,7 @@
             <span class="section-icon tone-rule"><el-icon><UserFilled /></el-icon></span>
             <div class="section-title-content">
               <div class="title">特殊用户月度积分</div>
-              <div class="sub">为指定用户设置固定月度积分（优先于学号规则）</div>
+              <div class="sub">为指定用户设置固定月度积分</div>
             </div>
           </div>
         </div>

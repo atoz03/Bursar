@@ -11,7 +11,7 @@
     </template>
     <el-alert v-if="error" :title="error" type="error" show-icon class="mb" />
     <el-alert
-      title="规则说明：白名单/豁免名单与黑名单不能冲突。若发生冲突，以黑名单为最高优先级；系统会自动跳过或移除冲突项。"
+      title="名单冲突时以黑名单为准。"
       type="warning"
       show-icon
       class="mb"
@@ -24,12 +24,6 @@
       class="mb"
       :description="conflictHints.slice(0, 10).join('；')"
     />
-    <el-alert
-      title="支持两种添加方式：按节点账号添加，或按平台账号添加（自动展开该平台账号在节点上的账号）。node_id=* 表示所有节点。"
-      type="info"
-      show-icon
-      class="mb"
-    />
     <el-tabs v-model="mode" class="mb">
       <el-tab-pane label="SSH 白名单" name="whitelist" />
       <el-tab-pane label="SSH 黑名单" name="blacklist" />
@@ -38,14 +32,14 @@
     </el-tabs>
     <el-alert
       v-if="mode === 'exemptions'"
-      title="豁免账号权限：1) 登录校验最高优先级，忽略黑名单/白名单/注册映射限制；2) 不受“清除SSH状态”和黑名单加入时的强制断连影响；3) 控制器不可达时仍可通过本地豁免缓存登录；4) 不扣积分（仅记录使用），且不触发积分限速/欠费动作。"
+      title="豁免账号可绕过登录限制，不扣积分且不触发欠费限速。"
       type="warning"
       show-icon
       class="mb"
     />
     <el-alert
       v-if="mode === 'temporary'"
-      title="临时用户权限仅次于豁免：可 SSH 登录，不扣积分，不触发积分限速/欠费限制；黑名单仍优先。添加或删除后会立即刷新节点状态，删除时会同时断开现有 SSH 会话。"
+      title="临时用户可登录且不扣积分；黑名单仍优先。"
       type="warning"
       show-icon
       class="mb"
@@ -56,7 +50,6 @@
           <el-option label="所有节点 (*)" value="*" />
           <el-option v-for="id in nodeOptions" :key="id" :label="id" :value="id" />
         </el-select>
-        <el-text type="info" size="small" class="hint-text">提示：选择 `*` 表示该名单类型下的全部节点用户。</el-text>
       </el-form-item>
       <el-form-item label="添加方式">
         <el-radio-group v-model="addMode">
@@ -77,7 +70,6 @@
         >
           <el-option v-for="u in localUserOptions" :key="u" :label="u" :value="u" />
         </el-select>
-        <el-text type="info" size="small" class="hint-text">提示：输入节点账号后请按 `Enter` 确认加入列表，否则不会提交。</el-text>
       </el-form-item>
       <el-form-item v-if="addMode === 'platform'" label="平台账号">
         <el-select
@@ -92,7 +84,6 @@
         >
           <el-option v-for="u in billingUserOptions" :key="u" :label="u" :value="u" />
         </el-select>
-        <el-text type="info" size="small" class="hint-text">提示：输入平台账号后请按 `Enter` 确认加入列表，否则不会提交。</el-text>
       </el-form-item>
       <el-form-item v-if="addMode === 'platform'" label="展开账号">
         <el-select
@@ -101,9 +92,9 @@
           filterable
           clearable
           style="width: 480px"
-          placeholder="默认 ALL（添加该平台账号的全部节点账号）"
+          placeholder="默认添加全部节点账号"
         >
-          <el-option label="ALL（该平台账号下全部节点账号）" :value="ALL_PLATFORM_KEY" />
+          <el-option label="全部节点账号" :value="ALL_PLATFORM_KEY" />
           <el-option
             v-for="item in platformAccountRows"
             :key="item.key"
@@ -124,13 +115,6 @@
         </el-button>
       </el-form-item>
     </el-form>
-    <el-alert
-      :title="addMode === 'local' ? '当前为“按节点账号添加”：你填写的就是实际 Linux 节点账号。' : '当前为“按平台账号添加”：系统会自动展开该平台账号在节点上的账号并写入名单。'"
-      type="warning"
-      :closable="false"
-      class="mb"
-    />
-
     <el-form inline>
       <el-form-item label="按节点筛选">
         <el-input v-model="filterNode" placeholder="留空全部" />

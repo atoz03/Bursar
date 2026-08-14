@@ -352,3 +352,132 @@ body {
     font-size: 13px;
   }
 }
+
+/* 统一视觉系统：所有业务页面共享相同的密度、层级和交互反馈。 */
+:root {
+  --primary-color: #2563eb;
+  --primary-color-hover: #1d4ed8;
+  --primary-light: #60a5fa;
+  --primary-dark: #1e40af;
+  --primary-gradient: linear-gradient(135deg, #2563eb 0%, #4f46e5 100%);
+  --bg-primary: #f4f7fb;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f6f8fc;
+  --bg-card: #ffffff;
+  --bg-hover: #f0f5ff;
+  --border-color: #e0e7f0;
+  --border-light: #edf1f6;
+  --shadow-sm: 0 2px 8px rgba(15, 23, 42, .045);
+  --shadow-md: 0 8px 24px rgba(15, 23, 42, .06);
+  --shadow-lg: 0 16px 38px rgba(15, 23, 42, .09);
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  color-scheme: light;
+}
+
+html { background: var(--bg-primary); scroll-behavior: smooth; }
+body {
+  min-width: 320px;
+  background: var(--bg-primary);
+  color: #172033;
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+::selection { color: #fff; background: rgba(37, 99, 235, .82); }
+* { scrollbar-width: thin; scrollbar-color: #c5d0df transparent; }
+*::-webkit-scrollbar { width: 9px; height: 9px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 999px; background: #c5d0df; background-clip: padding-box; }
+*::-webkit-scrollbar-thumb:hover { background: #9eacbf; background-clip: padding-box; }
+
+.el-card {
+  overflow: hidden;
+  border: 1px solid var(--border-color) !important;
+  border-radius: var(--radius-lg) !important;
+  box-shadow: var(--shadow-md) !important;
+}
+.el-card:hover { box-shadow: 0 11px 30px rgba(15, 23, 42, .075) !important; }
+.el-card__header { padding: 15px 18px; background: #fff; border-bottom: 1px solid var(--border-light) !important; }
+.el-card__body { padding: 18px; }
+
+.el-button { border-radius: 9px; font-weight: 600; transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease, background .16s ease; }
+.el-button:not(.is-disabled):active { transform: translateY(1px); }
+.el-button--primary:not(.is-link):not(.is-text) { box-shadow: 0 5px 13px rgba(37, 99, 235, .17); }
+.el-button--primary:not(.is-link):not(.is-text):hover { box-shadow: 0 7px 17px rgba(37, 99, 235, .23); }
+
+.el-input__wrapper,
+.el-select__wrapper,
+.el-textarea__inner,
+.el-date-editor.el-input__wrapper,
+.el-input-number .el-input__wrapper {
+  border-radius: 9px !important;
+  box-shadow: 0 0 0 1px #dbe3ed inset !important;
+  transition: box-shadow .18s ease, background .18s ease;
+}
+.el-input__wrapper:hover,
+.el-select__wrapper:hover,
+.el-textarea__inner:hover { box-shadow: 0 0 0 1px #aebdd0 inset !important; }
+.el-input__wrapper.is-focus,
+.el-select__wrapper.is-focused,
+.el-textarea__inner:focus { box-shadow: 0 0 0 1px #3b82f6 inset, 0 0 0 3px rgba(59, 130, 246, .1) !important; }
+.el-form-item__label { color: #475569; font-weight: 600; }
+
+.el-table { --el-table-border-color: #e8edf4; --el-table-row-hover-bg-color: #f3f7ff; border-radius: 11px; }
+.el-table::before, .el-table__inner-wrapper::before { display: none; }
+.el-table th.el-table__cell { height: 44px; padding: 8px 0; color: #475569 !important; font-size: 12px; font-weight: 750; letter-spacing: .015em; background: #f6f8fc !important; }
+.el-table td.el-table__cell { padding: 10px 0; color: #273449; }
+.el-table--striped .el-table__body tr.el-table__row--striped td.el-table__cell { background: #fafbfd !important; }
+.el-table .cell { line-height: 1.45; }
+
+.el-dialog { overflow: hidden; border-radius: 18px !important; box-shadow: 0 26px 70px rgba(15, 23, 42, .2) !important; }
+.el-dialog__header { margin: 0; padding: 18px 20px 15px; }
+.el-dialog__body { padding: 18px 20px 20px; }
+.el-dialog__footer { padding: 12px 20px 18px; }
+.el-drawer { border-radius: 18px 0 0 18px; }
+
+.el-tabs__header { margin-bottom: 16px; }
+.el-tabs__item { color: #64748b; font-weight: 600; }
+.el-tabs__item.is-active { color: #2563eb; }
+.el-tabs__active-bar { height: 3px; border-radius: 999px; }
+.el-alert { border-radius: 11px; }
+.el-tag { border-radius: 7px; font-weight: 600; }
+.el-pagination.is-background .el-pager li,
+.el-pagination.is-background .btn-next,
+.el-pagination.is-background .btn-prev { border-radius: 8px; }
+.el-descriptions { overflow: hidden; border-radius: 11px; }
+.el-empty { padding: 28px 0; }
+.el-loading-mask { border-radius: inherit; background-color: rgba(255, 255, 255, .76); backdrop-filter: blur(2px); }
+
+/* 用户中心此前动画较强，统一收敛到清爽且不干扰阅读的背景。 */
+.user-fun-page {
+  padding: 12px;
+  border: 1px solid rgba(219, 227, 237, .8);
+  background:
+    radial-gradient(720px 340px at 0% 0%, rgba(59, 130, 246, .11), transparent 68%),
+    radial-gradient(680px 320px at 100% 100%, rgba(20, 184, 166, .09), transparent 70%),
+    #f7f9fc;
+  animation: none;
+}
+.user-fun-bg { opacity: .42; }
+.user-fun-bg::before,
+.user-fun-bg::after,
+.user-fun-flow,
+.user-fun-blob,
+.user-fun-spark { animation: none !important; }
+.user-fun-card { border: 1px solid #e0e7f0 !important; border-radius: 18px !important; box-shadow: 0 12px 30px rgba(15, 23, 42, .065) !important; }
+.user-fun-head-title { font-size: clamp(24px, 2vw, 30px); letter-spacing: -.03em; }
+
+@media (max-width: 720px) {
+  .el-card__header { padding: 13px 14px; }
+  .el-card__body { padding: 14px; }
+  .el-dialog { width: calc(100vw - 24px) !important; margin-top: 5vh !important; }
+  .el-message-box { width: calc(100vw - 24px) !important; }
+  .el-pagination { justify-content: flex-start; overflow-x: auto; padding-bottom: 2px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}

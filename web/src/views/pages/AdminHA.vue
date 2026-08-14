@@ -305,7 +305,9 @@ function scheduleAutoRefresh() {
   startAutoTick();
   autoTimer = setTimeout(async () => {
     autoRefreshRemainSec.value = 0;
-    await reload(false);
+    if (!document.hidden) {
+      await reload(false);
+    }
     scheduleAutoRefresh();
   }, AUTO_REFRESH_MS);
 }

@@ -49,7 +49,7 @@
         <el-row :gutter="12">
           <el-col :span="12"><el-form-item label="导师 *" required><el-input v-model="form.advisor" /></el-form-item></el-col>
           <el-col :span="12">
-            <el-form-item label="预计毕业时间（年-月） *" required>
+            <el-form-item label="预计毕业年月 *" required>
               <el-date-picker
                 v-model="graduationYm"
                 type="month"
@@ -62,7 +62,7 @@
           </el-col>
         </el-row>
         <el-form-item label="电话 *" required><el-input v-model="form.phone" /></el-form-item>
-        <el-form-item label="变更备注（仅修改用户名/邮箱/学号时必填）">
+        <el-form-item label="变更备注">
           <el-input v-model="form.change_reason" type="textarea" :rows="3" placeholder="请说明变更原因，供管理员审核" />
         </el-form-item>
         <el-form-item>

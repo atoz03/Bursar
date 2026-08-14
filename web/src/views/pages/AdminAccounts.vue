@@ -5,7 +5,7 @@
         <div class="head">
           <div class="section-title-wrap">
             <span class="section-icon tone-map"><el-icon><Connection /></el-icon></span>
-            <span>平台账号映射管理（管理员）</span>
+            <span>平台账号映射</span>
           </div>
           <div class="head-actions">
             <el-button :loading="loading" @click="reload">刷新</el-button>
@@ -16,13 +16,7 @@
 
       <el-alert v-if="error" :title="error" type="error" show-icon class="mb" />
       <el-alert v-if="success" :title="success" type="success" show-icon class="mb" />
-      <el-alert title="同一平台账号可映射多个节点账号；唯一键是“节点编号 + 节点账号”。" type="info" show-icon class="mb" />
-      <el-alert
-        title="页面阅读建议：先做“映射查询”定位账号，再在“映射列表”维护映射，随后处理“解绑记录”和“受限名单”。节点账号开通相关内容已单独移到“节点账号开通”页面。"
-        type="warning"
-        :closable="false"
-        show-icon
-      />
+      <el-alert title="一个平台账号可关联多个节点账号。" type="info" show-icon class="mb" />
     </el-card>
 
     <el-card class="section-card bind-policy-card">
@@ -38,7 +32,7 @@
       <el-skeleton v-if="bindPolicyLoading" :rows="2" animated />
       <template v-else>
         <el-alert
-          title="用于控制用户执行 gpuops-claim 前的 5 分钟临时窗口：可登录、但限 CPU/内存并隐藏 GPU。失败后将自动强制下线与清进程。"
+          title="绑定验证期间会临时限制资源；验证失败后自动下线。"
           type="warning"
           :closable="false"
           show-icon
@@ -147,7 +141,7 @@
               <el-form-item>
                 <template #label>
                   <span class="policy-label">
-                    <span>先到先得（历史参数）</span>
+                    <span>并发申请策略</span>
                     <el-tooltip placement="top">
                       <template #content>
                         <div class="policy-help-tip">
@@ -311,7 +305,7 @@
             <span v-else class="mini">暂无明确换绑链路</span>
           </template>
         </el-table-column>
-        <el-table-column label="涉及平台账号（可点击详情/拉黑）" min-width="380">
+        <el-table-column label="涉及平台账号" min-width="380">
           <template #default="{ row }">
             <div class="risk-users">
               <div v-for="u in row.platform_usernames || []" :key="`${row.node_id}:${row.local_username}:${u}`" class="risk-user-item">
@@ -463,7 +457,7 @@
         <div class="head">
           <div class="section-title-wrap">
             <span class="section-icon tone-note"><el-icon><WarningFilled /></el-icon></span>
-            <span>受限名单（CPU/内存/GPU/黑名单）</span>
+            <span>受限名单</span>
           </div>
           <el-button size="small" :loading="restrictedLoading" @click="reloadRestrictedRows">刷新名单</el-button>
         </div>

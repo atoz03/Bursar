@@ -87,7 +87,7 @@
 
       <div class="section-inline-title order-conflict-title">
         <span class="section-icon tone-risk"><el-icon><WarningFilled /></el-icon></span>
-        <span class="title">唯一性冲突申请（自动筛出）</span>
+        <span class="title">唯一性冲突</span>
       </div>
       <el-table :data="registrationConflictRows" stripe height="240" class="order-conflict-table" :row-class-name="conflictRowClassName">
         <el-table-column prop="request_id" label="ID" width="80" />
@@ -114,7 +114,7 @@
 
       <div class="section-inline-title order-rejected-title">
         <span class="section-icon tone-reject"><el-icon><Document /></el-icon></span>
-        <span class="title">平台账号退回申请情况（作废）</span>
+        <span class="title">已作废申请</span>
       </div>
       <el-table :data="registrationRejectedRows" stripe height="220" class="order-rejected-table">
         <el-table-column prop="request_id" label="ID" width="80" />
@@ -147,7 +147,7 @@
       </div>
       <el-alert
         class="order-security-alert"
-        :title="`当前策略：IP窗口 ${registerSecurityPolicy.ip_window_seconds || '-'}s（上限 ${registerSecurityPolicy.ip_limit || '-'}），邮箱窗口 ${registerSecurityPolicy.email_window_seconds || '-'}s（上限 ${registerSecurityPolicy.email_limit || '-'}），IP冷却 ${registerSecurityPolicy.ip_cooldown_seconds || '-'}s（最近失败 ${registerSecurityPolicy.ip_cooldown_failures || '-'} 次后触发），邮箱冷却 ${registerSecurityPolicy.email_cooldown_seconds || '-'}s`"
+        :title="`注册防护：IP ${registerSecurityPolicy.ip_limit || '-'} 次 / ${registerSecurityPolicy.ip_window_seconds || '-'} 秒，邮箱 ${registerSecurityPolicy.email_limit || '-'} 次 / ${registerSecurityPolicy.email_window_seconds || '-'} 秒`"
         type="info"
         :closable="false"
       />
