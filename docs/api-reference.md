@@ -156,7 +156,7 @@ CSRF 说明（Web 登录场景）：
   "enabled": true,
   "interval_days": 1,
   "start_hour": 3,
-  "dr_host": "192.0.2.10",
+  "dr_host": "192.0.2.20",
   "dr_ssh_user": "gpuops",
   "dr_ssh_port": 22,
   "dr_key_file": "/home/gpuops/gpu-ops/my_ssh_keys/node_60019.txt",
@@ -183,8 +183,12 @@ CSRF 说明（Web 登录场景）：
 ```
 
 #### `POST /api/admin/ha/failover/activate`
-- 立即尝试启动本机容灾接管服务（`gpu-controller`、`keepalived`）。
-- 返回每个服务启动步骤结果。
+- 仅允许在 `standby` 控制器上启动 Keepalived；primary 调用返回 `409`。
+- 请求体必须为 `{"confirm":"ACTIVATE_STANDBY"}`。
+
+#### `GET /api/admin/backup/status`
+- 返回最近加密备份、快照 ID、隔离恢复演练和新鲜度检查结果。
+- `ready=true` 需要最近 36 小时有成功备份，且最近 8 天有成功恢复演练。
 
 ### `POST /api/admin/prices`
 

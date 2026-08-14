@@ -1058,6 +1058,7 @@ export type HANodeStatus = {
   app_binary_sha256?: string;
   started_at?: string;
   uptime_seconds?: number;
+  database_fingerprint?: string;
   summary: HANodeSummary;
 };
 
@@ -1071,6 +1072,8 @@ export type HAStatusResp = {
     status?: HANodeStatus;
   };
   in_sync: boolean;
+  summary_match?: boolean;
+  same_database?: boolean;
   version_match?: boolean;
   note?: string;
   checked?: string;
@@ -1120,6 +1123,26 @@ export type HASyncConfigResp = {
   running: boolean;
   last_run?: HASyncRun;
   next_run_at?: string;
+};
+
+export type BackupJobStatus = {
+  state: "not_configured" | "running" | "success" | "failed" | "invalid" | "unreadable" | string;
+  started_at?: string;
+  finished_at?: string;
+  snapshot_id?: string;
+  database_bytes?: number;
+  included_paths?: string[];
+  message?: string;
+  last_success_at?: string;
+  last_snapshot_id?: string;
+};
+
+export type BackupStatusResp = {
+  ready: boolean;
+  backup: BackupJobStatus;
+  verification: BackupJobStatus;
+  checks: Array<{ key: string; ok: boolean; message: string }>;
+  checked_at: string;
 };
 
 function trimSlashRight(v: string): string {
@@ -3157,6 +3180,10 @@ export class ApiClient {
     return await this.getJson("/api/admin/ha/status", this.adminHeaders());
   }
 
+  async adminBackupStatus(): Promise<BackupStatusResp> {
+    return await this.getJson("/api/admin/backup/status", this.adminHeaders());
+  }
+
   async adminHASyncConfig(limit = 20): Promise<HASyncConfigResp> {
     return await this.getJson(`/api/admin/ha/sync/config?limit=${encodeURIComponent(String(limit))}`, this.adminHeaders());
   }
@@ -3173,8 +3200,8 @@ export class ApiClient {
     return await this.postJson("/api/admin/ha/sync/now", payload, this.adminHeaders());
   }
 
-  async adminHAFailoverActivate(): Promise<{ ok: boolean; message: string; steps: HASyncStep[] }> {
-    return await this.postJson("/api/admin/ha/failover/activate", {}, this.adminHeaders());
+  async adminHAFailoverActivate(confirm: "ACTIVATE_STANDBY"): Promise<{ ok: boolean; message: string; steps: HASyncStep[] }> {
+    return await this.postJson("/api/admin/ha/failover/activate", { confirm }, this.adminHeaders());
   }
 
   async adminStatsUsers(params: { from?: string; to?: string; limit?: number }): Promise<{ from: string; to: string; rows: UsageUserSummary[] }> {

@@ -90,6 +90,10 @@ ha_role: "primary"
 ha_peer_url: "http://<standby-controller-ip>:60039"
 ha_token: "<replace-with-ha-token>"
 
+# 系统级加密备份任务状态（由 scripts/gpuops_backup.sh 写入）
+backup_status_file: "/var/lib/gpu-controller/backup-status.json"
+backup_verify_status_file: "/var/lib/gpu-controller/backup-verify-status.json"
+
 # 共享工作目录（控制器直接在 NFS 服务端本地路径创建/chown 用户目录）
 shared_node_root: "/srv/gpu-ops/nodes"
 shared_cluster_root: "/srv/gpu-ops/cluster"

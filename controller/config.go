@@ -77,6 +77,10 @@ type Config struct {
 	HAPeerURL string `yaml:"ha_peer_url"`
 	HAToken   string `yaml:"ha_token"`
 
+	// BackupStatusFile 由系统级备份任务写入，控制器只读并在管理员页面展示。
+	BackupStatusFile       string `yaml:"backup_status_file"`
+	BackupVerifyStatusFile string `yaml:"backup_verify_status_file"`
+
 	// NFS 共享工作目录（控制器本机直接管理服务端真实路径，避免计算节点 NFS root_squash 导致 mkdir/chown 失败）
 	SharedNodeRoot    string `yaml:"shared_node_root"`
 	SharedClusterRoot string `yaml:"shared_cluster_root"`
@@ -196,6 +200,12 @@ func (c *Config) Validate() error {
 		if role != "" && role != "primary" && role != "standby" {
 			return errors.New("ha_role 仅支持 primary/standby")
 		}
+	}
+	if strings.TrimSpace(c.BackupStatusFile) == "" {
+		c.BackupStatusFile = "/var/lib/gpu-controller/backup-status.json"
+	}
+	if strings.TrimSpace(c.BackupVerifyStatusFile) == "" {
+		c.BackupVerifyStatusFile = "/var/lib/gpu-controller/backup-verify-status.json"
 	}
 	if strings.TrimSpace(c.SharedNodeRoot) == "" {
 		c.SharedNodeRoot = filepath.FromSlash("/srv/gpu-ops/nodes")

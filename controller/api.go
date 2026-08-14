@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/csv"
 	"encoding/hex"
@@ -1090,6 +1091,7 @@ func (s *Server) RouterWeb() *gin.Engine {
 	r.GET("/healthz", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
+	r.GET("/readyz", s.handleReadiness)
 	r.GET("/metrics", func(c *gin.Context) {
 		c.Header("Content-Type", "text/plain; charset=utf-8")
 		c.String(http.StatusOK, s.metr.render())
@@ -1224,6 +1226,7 @@ func (s *Server) RouterWeb() *gin.Engine {
 	admin.POST("/nodes/:id/processes/kill-all-users", s.requireNodesModifyPermission(), s.handleAdminNodeKillAllUserProcesses)
 	admin.POST("/nodes/:id/processes/kill-user", s.requireNodesModifyPermission(), s.handleAdminNodeKillUserProcesses)
 	admin.GET("/ha/status", s.requireSuperAdmin(), s.handleAdminHAStatus)
+	admin.GET("/backup/status", s.requireSuperAdmin(), s.handleAdminBackupStatus)
 	admin.GET("/ha/sync/config", s.requireSuperAdmin(), s.handleAdminHASyncConfigGet)
 	admin.POST("/ha/sync/config", s.requireSuperAdmin(), s.handleAdminHASyncConfigSet)
 	admin.GET("/ha/sync/runs", s.requireSuperAdmin(), s.handleAdminHASyncRuns)
@@ -1328,6 +1331,7 @@ func (s *Server) RouterInternal() *gin.Engine {
 	r.GET("/healthz", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
+	r.GET("/readyz", s.handleReadiness)
 
 	api := r.Group("/api")
 	s.registerInternalAPIRoutes(api)
@@ -1350,8 +1354,37 @@ func (s *Server) registerInternalAPIRoutes(api *gin.RouterGroup) {
 	nodeInternal.GET("/registry/nodes/:node_id/exempt.txt", s.handleRegistryNodeExemptUsersTxt)
 
 	globalInternal := api.Group("")
-	globalInternal.Use(s.authAgent())
+	globalInternal.Use(s.authHA())
 	globalInternal.GET("/ha/status", s.handleHAStatus)
+}
+
+func (s *Server) handleReadiness(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+	defer cancel()
+	if err := s.store.PingContext(ctx); err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"ok": false, "database": false})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "database": true})
+}
+
+func constantTimeTokenEqual(got string, want string) bool {
+	got = strings.TrimSpace(got)
+	want = strings.TrimSpace(want)
+	if got == "" || want == "" || len(got) != len(want) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+}
+
+func (s *Server) authHA() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !constantTimeTokenEqual(c.GetHeader("X-HA-Token"), s.cfg.HAToken) {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
+		}
+		c.Next()
+	}
 }
 
 func (s *Server) authSession() gin.HandlerFunc {
@@ -9619,18 +9652,19 @@ type haSummary struct {
 }
 
 type haNodeStatus struct {
-	Enabled         bool      `json:"enabled"`
-	Node            string    `json:"node"`
-	Role            string    `json:"role"`
-	ListenAddr      string    `json:"listen_addr"`
-	CheckedAt       time.Time `json:"checked_at"`
-	Summary         haSummary `json:"summary"`
-	AppVersion      string    `json:"app_version"`
-	AppCommit       string    `json:"app_commit,omitempty"`
-	AppBuildAt      string    `json:"app_build_at,omitempty"`
-	AppBinarySHA256 string    `json:"app_binary_sha256,omitempty"`
-	StartedAt       string    `json:"started_at,omitempty"`
-	UptimeSeconds   int64     `json:"uptime_seconds,omitempty"`
+	Enabled             bool      `json:"enabled"`
+	Node                string    `json:"node"`
+	Role                string    `json:"role"`
+	ListenAddr          string    `json:"listen_addr"`
+	CheckedAt           time.Time `json:"checked_at"`
+	Summary             haSummary `json:"summary"`
+	AppVersion          string    `json:"app_version"`
+	AppCommit           string    `json:"app_commit,omitempty"`
+	AppBuildAt          string    `json:"app_build_at,omitempty"`
+	AppBinarySHA256     string    `json:"app_binary_sha256,omitempty"`
+	StartedAt           string    `json:"started_at,omitempty"`
+	UptimeSeconds       int64     `json:"uptime_seconds,omitempty"`
+	DatabaseFingerprint string    `json:"database_fingerprint,omitempty"`
 }
 
 func (s *Server) queryCount(ctx context.Context, q string) int64 {
@@ -9695,19 +9729,21 @@ func (s *Server) localHAStatus(ctx context.Context) haNodeStatus {
 			uptimeSeconds = int64(now.Sub(buildInfo.StartedAt) / time.Second)
 		}
 	}
+	databaseSum := sha256.Sum256([]byte(strings.TrimSpace(s.cfg.DatabaseDSN)))
 	return haNodeStatus{
-		Enabled:         s.cfg.HAEnabled,
-		Node:            strings.TrimSpace(s.cfg.HANode),
-		Role:            strings.TrimSpace(strings.ToLower(s.cfg.HARole)),
-		ListenAddr:      strings.TrimSpace(s.cfg.ListenAddr),
-		CheckedAt:       now,
-		Summary:         s.buildHASummary(ctx),
-		AppVersion:      strings.TrimSpace(buildInfo.Version),
-		AppCommit:       strings.TrimSpace(buildInfo.Commit),
-		AppBuildAt:      strings.TrimSpace(buildInfo.BuildAt),
-		AppBinarySHA256: strings.TrimSpace(buildInfo.BinarySHA256),
-		StartedAt:       startedAtText,
-		UptimeSeconds:   uptimeSeconds,
+		Enabled:             s.cfg.HAEnabled,
+		Node:                strings.TrimSpace(s.cfg.HANode),
+		Role:                strings.TrimSpace(strings.ToLower(s.cfg.HARole)),
+		ListenAddr:          strings.TrimSpace(s.cfg.ListenAddr),
+		CheckedAt:           now,
+		Summary:             s.buildHASummary(ctx),
+		AppVersion:          strings.TrimSpace(buildInfo.Version),
+		AppCommit:           strings.TrimSpace(buildInfo.Commit),
+		AppBuildAt:          strings.TrimSpace(buildInfo.BuildAt),
+		AppBinarySHA256:     strings.TrimSpace(buildInfo.BinarySHA256),
+		StartedAt:           startedAtText,
+		UptimeSeconds:       uptimeSeconds,
+		DatabaseFingerprint: hex.EncodeToString(databaseSum[:]),
 	}
 }
 
@@ -9737,7 +9773,7 @@ func (s *Server) handleHAStatus(c *gin.Context) {
 func (s *Server) handleAdminHAStatus(c *gin.Context) {
 	local := s.localHAStatus(c.Request.Context())
 	peerURL := strings.TrimSpace(s.cfg.HAPeerURL)
-	if !s.cfg.HAEnabled || peerURL == "" {
+	if !s.cfg.HAEnabled || isPlaceholderHAValue(peerURL) {
 		c.JSON(http.StatusOK, gin.H{
 			"enabled":       s.cfg.HAEnabled,
 			"local":         local,
@@ -9802,13 +9838,18 @@ func (s *Server) handleAdminHAStatus(c *gin.Context) {
 		})
 		return
 	}
-	inSync := peerWrap.Status.Summary.Digest != "" && peerWrap.Status.Summary.Digest == local.Summary.Digest
+	summaryMatch := peerWrap.Status.Summary.Digest != "" && peerWrap.Status.Summary.Digest == local.Summary.Digest
+	sameDatabase := local.DatabaseFingerprint != "" && local.DatabaseFingerprint == peerWrap.Status.DatabaseFingerprint
+	// 独立数据库只比较条数会产生假阳性；只有确认连接同一数据库时才声明实时一致。
+	inSync := sameDatabase && summaryMatch
 	versionMatch := matchHAAppVersion(local, peerWrap.Status)
 	c.JSON(http.StatusOK, gin.H{
 		"enabled":       s.cfg.HAEnabled,
 		"local":         local,
 		"peer":          gin.H{"reachable": true, "url": peerURL, "status": peerWrap.Status},
 		"in_sync":       inSync,
+		"summary_match": summaryMatch,
+		"same_database": sameDatabase,
 		"version_match": versionMatch,
 		"note":          "建议主备控制器连接同一个 PostgreSQL 数据库以实现自动同步与恢复后一致性",
 		"checked":       formatRFC3339InBeijing(time.Now()),

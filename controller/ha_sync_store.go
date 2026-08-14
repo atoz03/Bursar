@@ -181,6 +181,75 @@ func normalizeHASyncConfig(cfg HASyncConfig) HASyncConfig {
 	return cfg
 }
 
+func isPlaceholderHAValue(v string) bool {
+	v = strings.ToLower(strings.TrimSpace(v))
+	return v == "" || strings.ContainsAny(v, "<>") || strings.Contains(v, "replace-with") || strings.Contains(v, "example")
+}
+
+func localInterfaceIPs() map[string]struct{} {
+	out := map[string]struct{}{"127.0.0.1": {}, "::1": {}}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return out
+	}
+	for _, addr := range addrs {
+		var ip net.IP
+		switch v := addr.(type) {
+		case *net.IPNet:
+			ip = v.IP
+		case *net.IPAddr:
+			ip = v.IP
+		}
+		if ip != nil {
+			out[ip.String()] = struct{}{}
+		}
+	}
+	return out
+}
+
+func validateRemoteHAHost(host string) error {
+	host = strings.TrimSpace(host)
+	if isPlaceholderHAValue(host) {
+		return errors.New("容灾节点地址尚未配置")
+	}
+	if strings.EqualFold(host, "localhost") {
+		return errors.New("容灾节点不能指向本机")
+	}
+	local := localInterfaceIPs()
+	resolved := []net.IP{}
+	if ip := net.ParseIP(host); ip != nil {
+		resolved = append(resolved, ip)
+	} else {
+		ips, err := net.LookupIP(host)
+		if err != nil || len(ips) == 0 {
+			return errors.New("容灾节点地址无法解析")
+		}
+		resolved = append(resolved, ips...)
+	}
+	for _, ip := range resolved {
+		if _, ok := local[ip.String()]; ok {
+			return errors.New("容灾节点解析到本机，必须使用独立故障域的主机")
+		}
+	}
+	return nil
+}
+
+func validateHASyncConfigForRun(cfg HASyncConfig) error {
+	if err := validateRemoteHAHost(cfg.DRHost); err != nil {
+		return err
+	}
+	if strings.TrimSpace(cfg.DRSSHUser) == "" {
+		return errors.New("dr_ssh_user 不能为空")
+	}
+	if strings.TrimSpace(cfg.DRKeyFile) == "" {
+		return errors.New("dr_key_file 不能为空")
+	}
+	if strings.TrimSpace(cfg.ScriptPath) == "" {
+		return errors.New("script_path 不能为空")
+	}
+	return nil
+}
+
 func (s *Store) GetHASyncConfig(ctx context.Context, baseCfg Config) (HASyncConfig, error) {
 	out := defaultHASyncConfig(baseCfg)
 	rows, err := s.db.QueryContext(ctx, `SELECT key, value FROM app_settings WHERE key = ANY($1)`, pq.Array([]string{
@@ -251,17 +320,10 @@ func (s *Store) GetHASyncConfig(ctx context.Context, baseCfg Config) (HASyncConf
 
 func (s *Store) UpsertHASyncConfig(ctx context.Context, cfg HASyncConfig) error {
 	cfg = normalizeHASyncConfig(cfg)
-	if strings.TrimSpace(cfg.DRHost) == "" {
-		return errors.New("dr_host 不能为空")
-	}
-	if strings.TrimSpace(cfg.DRSSHUser) == "" {
-		return errors.New("dr_ssh_user 不能为空")
-	}
-	if strings.TrimSpace(cfg.DRKeyFile) == "" {
-		return errors.New("dr_key_file 不能为空")
-	}
-	if strings.TrimSpace(cfg.ScriptPath) == "" {
-		return errors.New("script_path 不能为空")
+	if cfg.Enabled {
+		if err := validateHASyncConfigForRun(cfg); err != nil {
+			return err
+		}
 	}
 	items := map[string]string{
 		appSettingHASyncEnabled:               strconv.FormatBool(cfg.Enabled),
@@ -305,12 +367,40 @@ func (s *Store) InsertHASyncRun(ctx context.Context, triggerMode string, directi
 	if startedBy == "" {
 		startedBy = "system"
 	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	// 多个控制器共用数据库时也只允许一个同步任务，避免双主并发覆盖。
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(741906401)`); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE ha_sync_runs
+SET status='failed', summary='任务超过 3 小时未结束，已自动标记失败', finished_at=NOW()
+WHERE status='running' AND started_at < NOW() - INTERVAL '3 hours'`); err != nil {
+		return 0, err
+	}
+	var running bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM ha_sync_runs WHERE status='running')`).Scan(&running); err != nil {
+		return 0, err
+	}
+	if running {
+		return 0, errHASyncRunning
+	}
 	var runID int64
-	err := s.db.QueryRowContext(ctx, `
+	err = tx.QueryRowContext(ctx, `
 INSERT INTO ha_sync_runs(trigger_mode, direction, status, started_by, started_at)
 VALUES($1, $2, 'running', $3, NOW())
 RETURNING run_id`, triggerMode, direction, startedBy).Scan(&runID)
-	return runID, err
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return runID, nil
 }
 
 func (s *Store) FinishHASyncRun(ctx context.Context, runID int64, status string, summary string, detail []HASyncStep) error {
