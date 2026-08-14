@@ -17,6 +17,8 @@ import (
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/disk"
 	"github.com/shirou/gopsutil/v3/host"
+	"github.com/shirou/gopsutil/v3/load"
+	"github.com/shirou/gopsutil/v3/mem"
 	gonet "github.com/shirou/gopsutil/v3/net"
 	"github.com/shirou/gopsutil/v3/process"
 )
@@ -39,6 +41,7 @@ func (a *NodeAgent) CollectMetrics(ctx context.Context) (*MetricsData, error) {
 		metrics.CPUModel = strings.TrimSpace(infos[0].ModelName)
 	}
 	if hi, err := host.InfoWithContext(ctx); err == nil && hi != nil {
+		metrics.HostUptimeSeconds = hi.Uptime
 		metrics.OSVersion = strings.TrimSpace(strings.Join([]string{
 			strings.TrimSpace(hi.Platform),
 			strings.TrimSpace(hi.PlatformVersion),
@@ -46,6 +49,24 @@ func (a *NodeAgent) CollectMetrics(ctx context.Context) (*MetricsData, error) {
 		metrics.OSVersion = strings.TrimSpace(metrics.OSVersion)
 		metrics.KernelVersion = strings.TrimSpace(hi.KernelVersion)
 	}
+	if cpuPercents, err := cpu.PercentWithContext(ctx, 250*time.Millisecond, false); err == nil && len(cpuPercents) > 0 {
+		metrics.HostCPUPercent = cpuPercents[0]
+	}
+	if vm, err := mem.VirtualMemoryWithContext(ctx); err == nil && vm != nil {
+		metrics.HostMemoryTotalMB = float64(vm.Total) / 1024.0 / 1024.0
+		metrics.HostMemoryUsedMB = float64(vm.Used) / 1024.0 / 1024.0
+	}
+	if avg, err := load.AvgWithContext(ctx); err == nil && avg != nil {
+		metrics.HostLoad1 = avg.Load1
+		metrics.HostLoad5 = avg.Load5
+		metrics.HostLoad15 = avg.Load15
+	}
+	if self, err := process.NewProcess(int32(os.Getpid())); err == nil {
+		if memoryInfo, err := self.MemoryInfoWithContext(ctx); err == nil && memoryInfo != nil {
+			metrics.AgentMemoryMB = float64(memoryInfo.RSS) / 1024.0 / 1024.0
+		}
+	}
+	metrics.MonitorMetricsAvailable = true
 	metrics.NodeIP, metrics.NodeMAC = collectPrimaryNodeNetworkIdentity(ctx)
 	metrics.SecuritySignals = a.collectSecuritySignals(ctx)
 
@@ -53,9 +74,20 @@ func (a *NodeAgent) CollectMetrics(ctx context.Context) (*MetricsData, error) {
 	if err != nil {
 		return nil, err
 	}
+	if devices, err := a.getGPUDeviceStatuses(ctx); err == nil {
+		metrics.GPUDevices = applyGPUProcessCounts(devices, gpuMap)
+		if len(devices) > 0 {
+			metrics.GPUModel = devices[0].Name
+			metrics.GPUCount = len(devices)
+		}
+	}
 	if model, count, err := a.getGPUInventory(ctx); err == nil {
-		metrics.GPUModel = model
-		metrics.GPUCount = count
+		if metrics.GPUModel == "" {
+			metrics.GPUModel = model
+		}
+		if metrics.GPUCount == 0 {
+			metrics.GPUCount = count
+		}
 	}
 	if du, err := disk.UsageWithContext(ctx, "/"); err == nil && du != nil {
 		metrics.DiskTotalGB = float64(du.Total) / 1024.0 / 1024.0 / 1024.0

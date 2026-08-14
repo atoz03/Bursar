@@ -65,6 +65,80 @@ func (a *NodeAgent) getGPUUsageMap(ctx context.Context) (map[int32][]GPUUsage, e
 	return out, nil
 }
 
+func (a *NodeAgent) getGPUDeviceStatuses(ctx context.Context) ([]GPUDeviceStatus, error) {
+	lines, err := a.runNvidiaSMI(ctx,
+		"--query-gpu=index,uuid,name,pci.bus_id,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,power.limit",
+		"--format=csv,noheader,nounits",
+	)
+	if err != nil {
+		if errors.Is(err, errNoNvidiaSMI) {
+			return []GPUDeviceStatus{}, nil
+		}
+		return nil, err
+	}
+	out := make([]GPUDeviceStatus, 0, len(lines))
+	for _, line := range lines {
+		if item, ok := parseGPUDeviceStatusLine(line); ok {
+			out = append(out, item)
+		}
+	}
+	return out, nil
+}
+
+func parseGPUDeviceStatusLine(line string) (GPUDeviceStatus, bool) {
+	parts := splitCSVLine(strings.TrimSpace(line))
+	if len(parts) < 10 {
+		return GPUDeviceStatus{}, false
+	}
+	idx, err := parseInt32(parts[0])
+	if err != nil || idx < 0 {
+		return GPUDeviceStatus{}, false
+	}
+	return GPUDeviceStatus{
+		Index:          idx,
+		UUID:           strings.TrimSpace(parts[1]),
+		Name:           strings.TrimSpace(parts[2]),
+		BusID:          strings.TrimSpace(parts[3]),
+		UtilizationPct: parseNvidiaFloat(parts[4]),
+		MemoryUsedMB:   parseNvidiaFloat(parts[5]),
+		MemoryTotalMB:  parseNvidiaFloat(parts[6]),
+		TemperatureC:   parseNvidiaFloat(parts[7]),
+		PowerDrawW:     parseNvidiaFloat(parts[8]),
+		PowerLimitW:    parseNvidiaFloat(parts[9]),
+	}, true
+}
+
+func parseNvidiaFloat(raw string) float64 {
+	v, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil || v < 0 {
+		return 0
+	}
+	return v
+}
+
+func applyGPUProcessCounts(devices []GPUDeviceStatus, usage map[int32][]GPUUsage) []GPUDeviceStatus {
+	if len(devices) == 0 {
+		return devices
+	}
+	byIndex := make(map[int32]int, len(devices))
+	for i := range devices {
+		byIndex[devices[i].Index] = i
+	}
+	for _, processGPUs := range usage {
+		seen := make(map[int32]struct{}, len(processGPUs))
+		for _, item := range processGPUs {
+			if _, duplicate := seen[item.GPUID]; duplicate {
+				continue
+			}
+			seen[item.GPUID] = struct{}{}
+			if i, ok := byIndex[item.GPUID]; ok {
+				devices[i].ComputeProcesses++
+			}
+		}
+	}
+	return devices
+}
+
 func (a *NodeAgent) getBusIDToIndexMap(ctx context.Context) (map[string]int32, error) {
 	now := time.Now()
 	a.cacheMu.Lock()

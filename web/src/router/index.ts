@@ -15,6 +15,7 @@ const ChangePassword = () => import("../views/pages/ChangePassword.vue");
 const UserAccounts = () => import("../views/pages/UserAccounts.vue");
 const AdminUsers = () => import("../views/pages/AdminUsers.vue");
 const AdminNodes = () => import("../views/pages/AdminNodes.vue");
+const AdminStatus = () => import("../views/pages/AdminStatus.vue");
 const AdminUsage = () => import("../views/pages/AdminUsage.vue");
 const AdminRequests = () => import("../views/pages/AdminRequests.vue");
 const AdminMailSettings = () => import("../views/pages/AdminMailSettings.vue");
@@ -71,6 +72,7 @@ export const router = createRouter({
         { path: "admin/users", component: AdminUsers },
         { path: "admin/points", component: AdminPoints },
         { path: "admin/nodes", component: AdminNodes },
+        { path: "admin/status", component: AdminStatus },
         { path: "admin/accounts", component: AdminAccounts },
         { path: "admin/account-provision", component: AdminAccountProvision },
         { path: "admin/whitelist", component: AdminWhitelist },
@@ -129,7 +131,7 @@ router.beforeEach(async (to) => {
     if (authState.role === "power_user") {
       const p = to.path;
       if (p.startsWith("/admin/board") && authState.canViewBoard) return true;
-      if (p.startsWith("/admin/nodes") && authState.canViewNodes) return true;
+      if ((p.startsWith("/admin/nodes") || p.startsWith("/admin/status")) && authState.canViewNodes) return true;
       if (p.startsWith("/admin/points") && hasPointsAccess()) return true;
       if (p.startsWith("/admin/users") && authState.canManagePlatformUsers) return true;
       if (p.startsWith("/admin/requests") && authState.canReviewRequests) return true;

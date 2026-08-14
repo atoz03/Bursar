@@ -243,6 +243,34 @@ export type NodeStatus = {
   updated_at: string;
 };
 
+export type GPUDeviceStatus = {
+  index: number;
+  uuid?: string;
+  name?: string;
+  bus_id?: string;
+  utilization_percent: number;
+  memory_used_mb: number;
+  memory_total_mb: number;
+  temperature_c?: number;
+  power_draw_w?: number;
+  power_limit_w?: number;
+  compute_processes: number;
+};
+
+export type NodeMonitorStatus = NodeStatus & {
+  monitor_report_ts?: string;
+  monitor_metrics_available: boolean;
+  host_cpu_percent: number;
+  host_memory_total_mb: number;
+  host_memory_used_mb: number;
+  host_load_1: number;
+  host_load_5: number;
+  host_load_15: number;
+  host_uptime_seconds: number;
+  agent_memory_mb: number;
+  gpu_devices: GPUDeviceStatus[];
+};
+
 export type NodeSystemServiceStatus = {
   name: string;
   deployed: boolean;
@@ -1754,6 +1782,10 @@ export class ApiClient {
 
   async adminNodes(limit: number): Promise<{ nodes: NodeStatus[] }> {
     return await this.getJson(`/api/admin/nodes?limit=${limit}`, this.adminHeaders());
+  }
+
+  async adminNodeMonitor(limit = 200): Promise<{ nodes: NodeMonitorStatus[]; generated_at: string }> {
+    return await this.getJson(`/api/admin/node-monitor?limit=${limit}`, this.adminHeaders());
   }
 
   async adminNodeDetail(nodeId: string, params?: { minutes?: number; limit?: number }): Promise<NodeDetailResp> {

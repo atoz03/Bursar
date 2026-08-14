@@ -19,6 +19,7 @@
           </el-sub-menu>
           <el-sub-menu index="grp-resource">
             <template #title><el-icon><Monitor /></el-icon><span>{{ t("资源管理", "Resources") }}</span></template>
+            <el-menu-item index="/admin/status">{{ t("状态总览", "Status Overview") }}</el-menu-item>
             <el-menu-item index="/admin/nodes">{{ t("节点状态", "Node Status") }}</el-menu-item>
           </el-sub-menu>
           <el-sub-menu index="grp-points">
@@ -61,6 +62,7 @@
           <el-sub-menu index="grp-power">
             <template #title><el-icon><DataBoard /></el-icon><span>{{ t("授权功能", "Authorized") }}</span></template>
             <el-menu-item v-if="authState.canViewBoard" index="/admin/board">{{ t("运营看板", "Dashboard") }}</el-menu-item>
+            <el-menu-item v-if="authState.canViewNodes" index="/admin/status">{{ t("状态总览", "Status Overview") }}</el-menu-item>
             <el-menu-item v-if="authState.canViewNodes" index="/admin/nodes">{{ t("节点状态", "Node Status") }}</el-menu-item>
             <el-menu-item v-if="authState.canManagePoints || authState.canPointsUsers || authState.canPointsBatchFiltered || authState.canPointsBatchAll || authState.canPointsRecords || authState.canPointsMonthly || authState.canPointsSpecialRules" index="/admin/points">{{ t("积分管理", "Points") }}</el-menu-item>
             <el-menu-item v-if="authState.canManagePlatformUsers" index="/admin/users">{{ t("平台用户管理", "Platform Users") }}</el-menu-item>
