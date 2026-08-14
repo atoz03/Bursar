@@ -362,7 +362,8 @@ cd /home/gpuops/gpu-ops && \
   SYSTEM_MEMORY_RESERVE_GB=12 \
   PARALLEL=8 \
   bash scripts/deploy_installed_nodes_only.sh
-
+```
+```bash
 # 停止控制节点服务（需要时）
 sudo systemctl stop gpu-controller && sudo systemctl disable gpu-controller && sudo systemctl status gpu-controller --no-pager
 # 停止计算节点服务（node-agent + SSH Guard，需要时）
