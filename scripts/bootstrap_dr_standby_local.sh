@@ -138,7 +138,7 @@ install -m 0755 -o root -g root "${CONTROLLER_SOURCE}" /usr/local/bin/gpu-contro
 
 cat >/etc/systemd/system/gpu-controller.service <<EOF_SERVICE
 [Unit]
-Description=GPU Ops Standby Controller
+Description=Bursar Standby Controller
 After=network-online.target docker.service
 Wants=network-online.target
 Requires=docker.service

@@ -47,7 +47,7 @@
         <aside v-if="activeRole !== 'guest'" class="preview-sidebar">
           <div class="preview-brand">
             <span><el-icon><Cpu /></el-icon></span>
-            <div><b>GPU Ops</b><small>PREVIEW</small></div>
+            <div><b>Bursar</b><small>PREVIEW</small></div>
           </div>
           <button
             v-for="page in availablePages"

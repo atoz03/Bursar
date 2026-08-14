@@ -1,8 +1,8 @@
-# GPU Ops Documentation
+# Bursar Documentation
 
 **English** | [简体中文](zh-CN/README.md)
 
-This directory is the canonical documentation set for GPU Ops. `README.md` files and English documents are the source language; complete Simplified Chinese translations live under `docs/zh-CN/`.
+This directory is the canonical documentation set for Bursar. `README.md` files and English documents are the source language; complete Simplified Chinese translations live under `docs/zh-CN/`.
 
 ## Choose a reading path
 

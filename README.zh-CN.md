@@ -1,8 +1,10 @@
 <p align="center">
-  <img src="web/public/logo.svg" width="96" alt="GPU Ops 标志">
+  <img src="web/public/logo.svg" width="96" alt="Bursar 标志">
 </p>
 
-# GPU Ops
+# Bursar
+
+*面向共享 GPU 集群的账户与配额管理。*
 
 [![CI](https://github.com/atoz03/gpu-ops/actions/workflows/go-test.yml/badge.svg)](https://github.com/atoz03/gpu-ops/actions/workflows/go-test.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
@@ -11,12 +13,12 @@
 
 [English](README.md) | **简体中文**
 
-GPU Ops 是一个面向共享 Linux GPU 服务器的自托管运维与治理平台。用户保留日常 SSH 使用习惯，控制器统一完成节点可观测、用量计费、积分、配额、账号映射、访问策略和安全事件管理。
+Bursar 是一个面向共享 Linux GPU 服务器的自托管运维与治理平台。用户保留日常 SSH 使用习惯，控制器统一完成节点可观测、用量计费、积分、配额、账号映射、访问策略和安全事件管理。
 
 > [!IMPORTANT]
-> GPU Ops 可以在计算节点执行特权操作。生产部署前请审阅[安全模型](docs/zh-CN/security.md)，先以 `dry_run: true` 试运行，并完成[上线检查清单](docs/zh-CN/go-live-checklist.md)。
+> Bursar 可以在计算节点执行特权操作。生产部署前请审阅[安全模型](docs/zh-CN/security.md)，先以 `dry_run: true` 试运行，并完成[上线检查清单](docs/zh-CN/go-live-checklist.md)。
 
-## 为什么选择 GPU Ops
+## 为什么选择 Bursar
 
 - **保留 SSH 工作流：** 不强制引入 Notebook 网关或自定义任务调度器。
 - **统一查看节点：** 集中采集 GPU、CPU、内存、磁盘、进程、会话、系统服务和 Agent 健康状态。
@@ -28,13 +30,13 @@ GPU Ops 是一个面向共享 Linux GPU 服务器的自托管运维与治理平�
 
 ## 适用范围
 
-GPU Ops 适合已经管理 Linux GPU 主机、希望在不替换 SSH 的情况下增加治理能力的团队。它不是任务调度器、Kubernetes Operator、托管控制面，也不能替代网络隔离、操作系统加固、监控和经过演练的备份。
+Bursar 适合已经管理 Linux GPU 主机、希望在不替换 SSH 的情况下增加治理能力的团队。它不是任务调度器、Kubernetes Operator、托管控制面，也不能替代网络隔离、操作系统加固、监控和经过演练的备份。
 
 ## 架构
 
 ```mermaid
 flowchart LR
-    U[用户与管理员] -->|HTTPS / Web UI| C[GPU Ops Controller]
+    U[用户与管理员] -->|HTTPS / Web UI| C[Bursar Controller]
     A[Node Agent] -->|内部 HTTPS + 节点 token| C
     C --> P[(PostgreSQL)]
     C -->|动作与策略| A
@@ -218,6 +220,10 @@ bash scripts/check_docs.sh
 
 请按 [SECURITY.zh-CN.md](SECURITY.zh-CN.md) 私下报告漏洞。不要在公开 Issue 中粘贴 token、私钥、真实主机清单、数据库转储或用户数据。
 
+## 关于名字
+
+Bursar 是学校里管理学生账户的财务主管：按期发放额度、记录支出、余额耗尽时停止支用。本项目对共享集群上的 GPU 分钟与 CPU 核分钟做同样的事。
+
 ## 许可证
 
-GPU Ops 使用 [Apache License 2.0](LICENSE)。
+Bursar 使用 [Apache License 2.0](LICENSE)。

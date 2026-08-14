@@ -68,7 +68,7 @@ smtp_port: 587
 smtp_user: ""
 smtp_pass: ""
 from_email: ""
-from_name: "GPU Ops"
+from_name: "Bursar"
 
 # 默认余额（首次见到的新用户）
 default_balance: 100

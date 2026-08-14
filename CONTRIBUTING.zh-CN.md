@@ -2,7 +2,7 @@
 
 [English](CONTRIBUTING.md) | **简体中文**
 
-感谢你愿意改进 GPU Ops。提交代码前请先阅读[行为准则](CODE_OF_CONDUCT.zh-CN.md)。安全漏洞不要提交公开 Issue，请按[安全策略](SECURITY.zh-CN.md)私下报告。
+感谢你愿意改进 Bursar。提交代码前请先阅读[行为准则](CODE_OF_CONDUCT.zh-CN.md)。安全漏洞不要提交公开 Issue，请按[安全策略](SECURITY.zh-CN.md)私下报告。
 
 ## 开始之前
 

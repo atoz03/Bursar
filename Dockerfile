@@ -1,4 +1,4 @@
-# GPU Ops controller image.
+# Bursar controller image.
 #
 # Only the controller is containerised. The node agent must run directly on each
 # compute host: it needs cgroup v2 write access, systemd, the host SSH state, and

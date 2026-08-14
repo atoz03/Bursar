@@ -77,7 +77,7 @@ fi
 echo "[5/6] 写入 systemd 服务 ${SERVICE_NAME}"
 ${SUDO} tee "/etc/systemd/system/${SERVICE_NAME}.service" >/dev/null <<EOF_SERVICE
 [Unit]
-Description=GPU Ops Controller
+Description=Bursar Controller
 After=network-online.target
 Wants=network-online.target
 

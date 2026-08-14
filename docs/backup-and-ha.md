@@ -72,7 +72,7 @@ Stop the controller before restoring. Restoring underneath a running controller 
 
 ## High availability
 
-HA in GPU Ops is operational automation, not a consensus protocol. There is no quorum, no automatic leader election, and no split-brain protection in the application. Preventing two simultaneously active primaries is your responsibility, at the network and process level.
+HA in Bursar is operational automation, not a consensus protocol. There is no quorum, no automatic leader election, and no split-brain protection in the application. Preventing two simultaneously active primaries is your responsibility, at the network and process level.
 
 ### Model
 

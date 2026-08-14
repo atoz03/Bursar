@@ -2,7 +2,7 @@
 
 **English** | [简体中文](SECURITY.zh-CN.md)
 
-GPU Ops handles node control, account mapping, and resource-usage data. Please disclose vulnerabilities responsibly. Do not publish exploitable details in an issue, discussion, or pull request.
+Bursar handles node control, account mapping, and resource-usage data. Please disclose vulnerabilities responsibly. Do not publish exploitable details in an issue, discussion, or pull request.
 
 ## Supported versions
 

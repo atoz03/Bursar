@@ -102,7 +102,7 @@ fi
 
 ${SUDO} tee /etc/systemd/system/gpuops-backup.service >/dev/null <<EOF
 [Unit]
-Description=GPU Ops encrypted backup
+Description=Bursar encrypted backup
 After=docker.service network-online.target
 Requires=docker.service
 
@@ -117,7 +117,7 @@ EOF
 
 ${SUDO} tee /etc/systemd/system/gpuops-backup.timer >/dev/null <<'EOF'
 [Unit]
-Description=Daily GPU Ops backup
+Description=Daily Bursar backup
 
 [Timer]
 OnCalendar=*-*-* 02:00:00
@@ -130,7 +130,7 @@ EOF
 
 ${SUDO} tee /etc/systemd/system/gpuops-backup-verify.service >/dev/null <<EOF
 [Unit]
-Description=GPU Ops isolated restore verification
+Description=Bursar isolated restore verification
 After=docker.service network-online.target
 Requires=docker.service
 
@@ -145,7 +145,7 @@ EOF
 
 ${SUDO} tee /etc/systemd/system/gpuops-backup-verify.timer >/dev/null <<'EOF'
 [Unit]
-Description=Weekly GPU Ops restore verification
+Description=Weekly Bursar restore verification
 
 [Timer]
 OnCalendar=Sun *-*-* 04:00:00

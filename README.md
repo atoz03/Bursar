@@ -1,8 +1,10 @@
 <p align="center">
-  <img src="web/public/logo.svg" width="96" alt="GPU Ops logo">
+  <img src="web/public/logo.svg" width="96" alt="Bursar logo">
 </p>
 
-# GPU Ops
+# Bursar
+
+*Accounts and quotas for a shared GPU cluster.*
 
 [![CI](https://github.com/atoz03/gpu-ops/actions/workflows/go-test.yml/badge.svg)](https://github.com/atoz03/gpu-ops/actions/workflows/go-test.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
@@ -11,12 +13,12 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-GPU Ops is a self-hosted operations and governance platform for shared Linux GPU servers. Users keep their normal SSH workflow while a central controller handles node visibility, usage accounting, points, quotas, account mapping, access policy, and security events.
+Bursar is a self-hosted operations and governance platform for shared Linux GPU servers. Users keep their normal SSH workflow while a central controller handles node visibility, usage accounting, points, quotas, account mapping, access policy, and security events.
 
 > [!IMPORTANT]
-> GPU Ops can execute privileged actions on compute nodes. Review the [security model](docs/security.md), start with `dry_run: true`, and complete the [go-live checklist](docs/go-live-checklist.md) before production rollout.
+> Bursar can execute privileged actions on compute nodes. Review the [security model](docs/security.md), start with `dry_run: true`, and complete the [go-live checklist](docs/go-live-checklist.md) before production rollout.
 
-## Why GPU Ops
+## Why Bursar
 
 - **Keep SSH workflows:** no notebook gateway or custom job scheduler is required.
 - **See the whole fleet:** GPU, CPU, memory, disk, processes, sessions, services, and agent health are reported centrally.
@@ -28,13 +30,13 @@ GPU Ops is a self-hosted operations and governance platform for shared Linux GPU
 
 ## Intended use
 
-GPU Ops is designed for teams that already operate Linux GPU hosts and want governance without replacing SSH. It is not a scheduler, Kubernetes operator, hosted control plane, or substitute for network segmentation, OS hardening, monitoring, and tested backups.
+Bursar is designed for teams that already operate Linux GPU hosts and want governance without replacing SSH. It is not a scheduler, Kubernetes operator, hosted control plane, or substitute for network segmentation, OS hardening, monitoring, and tested backups.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    U[Users and administrators] -->|HTTPS / Web UI| C[GPU Ops Controller]
+    U[Users and administrators] -->|HTTPS / Web UI| C[Bursar Controller]
     A[Node Agent] -->|Internal HTTPS + node token| C
     C --> P[(PostgreSQL)]
     C -->|Actions and policy| A
@@ -218,6 +220,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for workflow and review expectations.
 
 Report vulnerabilities privately according to [SECURITY.md](SECURITY.md). Never place tokens, keys, real host inventories, database dumps, or user data in public issues.
 
+## About the name
+
+A bursar is the officer who keeps each student's account: grants the allowance for the term, records what is spent, and closes the account when it runs dry. This project does that for GPU-minutes and CPU core-minutes on a cluster people share.
+
 ## License
 
-GPU Ops is licensed under the [Apache License 2.0](LICENSE).
+Bursar is licensed under the [Apache License 2.0](LICENSE).

@@ -2,7 +2,7 @@
 
 [English](../user-guide.md) | **简体中文**
 
-你照常使用 SSH 即可。GPU Ops 在后台完成计量与策略执行。
+你照常使用 SSH 即可。Bursar 在后台完成计量与策略执行。
 
 ## 日常使用
 

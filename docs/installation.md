@@ -2,7 +2,7 @@
 
 **English** | [简体中文](zh-CN/installation.md)
 
-GPU Ops supports two ways to run the controller:
+Bursar supports two ways to run the controller:
 
 | Path | Use it when |
 | --- | --- |
@@ -140,7 +140,7 @@ Global dependency changes are operationally significant; inspect the script and 
 
 ## 2. Provision PostgreSQL
 
-Use a managed or separately administered PostgreSQL instance when possible. Create a database and role dedicated to GPU Ops, enforce network access controls, and produce a DSN such as:
+Use a managed or separately administered PostgreSQL instance when possible. Create a database and role dedicated to Bursar, enforce network access controls, and produce a DSN such as:
 
 ```text
 postgres://gpuops:<password>@db.example.org:5432/gpuops?sslmode=require

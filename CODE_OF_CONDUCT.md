@@ -30,4 +30,4 @@ Maintainers will make reasonable efforts to protect the privacy of reporters and
 
 ## Scope
 
-This code applies to the repository, issues, pull requests, discussions, and public spaces where someone represents the GPU Ops community.
+This code applies to the repository, issues, pull requests, discussions, and public spaces where someone represents the Bursar community.

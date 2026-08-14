@@ -17,6 +17,7 @@ Notable project changes are recorded here. Releases follow [Semantic Versioning]
 
 ### Changed
 
+- The project is now called **Bursar**. This is a rename of the product name only: module paths, binary names, systemd unit names, on-disk paths, `GPUOPS_*` environment variables, `gpuops_controller_*` metric names, and database identifiers are all unchanged, so existing deployments, scrape configs, and dashboards keep working. The default platform name and email `from_name` change for new installations only; an existing install keeps whatever is stored in its settings.
 - Public examples now use reusable hostnames, paths, identities, and test data.
 - **Breaking:** default ports changed to `8080` (Web/API) and `8081` (internal agent/HA listener), replacing `60039`/`60040`. Existing deployments keep working by setting `listen_addr` and `internal_listen_addr` explicitly; update firewall rules, `CONTROLLER_URL` on every node, and reverse proxies before upgrading.
 - The controller now runs Gin in release mode unless `GIN_MODE` is set explicitly.

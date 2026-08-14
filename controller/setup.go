@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	defaultPlatformName                       = "GPU Ops"
+	defaultPlatformName                       = "Bursar"
 	appSettingPlatformName                    = "platform_name"
 	appSettingRegistrationAllowedEmailDomains = "registration_allowed_email_domains"
 	appSettingProvisionSSHHost                = "provision_ssh_host"

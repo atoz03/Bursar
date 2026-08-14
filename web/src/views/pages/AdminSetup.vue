@@ -3,7 +3,7 @@
     <div class="setup-head">
       <div>
         <div class="eyebrow">FIRST-RUN SETUP</div>
-        <h2>{{ form.platform.platform_name || "GPU Ops" }} 系统设置</h2>
+        <h2>{{ form.platform.platform_name || "Bursar" }} 系统设置</h2>
         <p>集中完成平台身份、注册规则、计费、邮件和容灾配置。启动密钥只做状态检查，不会回传到浏览器。</p>
       </div>
       <el-tag :type="form.platform.setup_completed ? 'success' : 'warning'">
@@ -36,7 +36,7 @@
         </div>
         <el-form label-position="top" :model="form.platform">
           <el-form-item label="平台名称" required>
-            <el-input v-model="form.platform.platform_name" maxlength="80" show-word-limit placeholder="例如：GPU Ops" />
+            <el-input v-model="form.platform.platform_name" maxlength="80" show-word-limit placeholder="例如：Bursar" />
           </el-form-item>
           <el-form-item label="允许注册的邮箱域名">
             <el-select
@@ -180,7 +180,7 @@ const step = ref(0);
 
 const form = reactive({
   platform: {
-    platform_name: "GPU Ops",
+    platform_name: "Bursar",
     registration_allowed_email_domains: [] as string[],
     provision_ssh_host: "",
     setup_completed: false,
@@ -195,7 +195,7 @@ const form = reactive({
     smtp_pass: "",
     smtp_password_set: false,
     from_email: "",
-    from_name: "GPU Ops",
+    from_name: "Bursar",
   } as SetupMailSettings,
   ha: {
     enabled: false,

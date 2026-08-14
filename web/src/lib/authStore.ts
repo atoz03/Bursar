@@ -54,7 +54,7 @@ export const authState = reactive<AuthState>({
   serverNow: "",
   serverTzName: "",
   serverTzOffsetMinutes: Number.NaN,
-  platformName: "GPU Ops",
+  platformName: "Bursar",
   registrationAllowedEmailDomains: [],
   provisionSSHHost: "",
   setupCompleted: false,
@@ -87,7 +87,7 @@ export async function refreshAuth(): Promise<void> {
   authState.serverTzOffsetMinutes = Number.isFinite(Number(me.server_tz_offset_minutes))
     ? Number(me.server_tz_offset_minutes)
     : Number.NaN;
-  authState.platformName = String(me.platform_name || "GPU Ops").trim() || "GPU Ops";
+  authState.platformName = String(me.platform_name || "Bursar").trim() || "Bursar";
   authState.registrationAllowedEmailDomains = Array.isArray(me.registration_allowed_email_domains)
     ? me.registration_allowed_email_domains.map((domain) => String(domain || "").trim().toLowerCase()).filter(Boolean)
     : [];

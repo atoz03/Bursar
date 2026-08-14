@@ -1,8 +1,8 @@
-# GPU Ops 文档
+# Bursar 文档
 
 [English](../README.md) | **简体中文**
 
-本目录是 GPU Ops 的完整文档集。英文文档是源语言，`docs/zh-CN/` 下是对应的简体中文翻译。
+本目录是 Bursar 的完整文档集。英文文档是源语言，`docs/zh-CN/` 下是对应的简体中文翻译。
 
 ## 选择阅读路径
 

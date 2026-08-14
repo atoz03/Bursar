@@ -1,8 +1,8 @@
-# Contributing to GPU Ops
+# Contributing to Bursar
 
 **English** | [简体中文](CONTRIBUTING.zh-CN.md)
 
-Thank you for improving GPU Ops. Read the [Code of Conduct](CODE_OF_CONDUCT.md) before contributing. Do not open a public issue for a vulnerability; follow the [Security Policy](SECURITY.md) instead.
+Thank you for improving Bursar. Read the [Code of Conduct](CODE_OF_CONDUCT.md) before contributing. Do not open a public issue for a vulnerability; follow the [Security Policy](SECURITY.md) instead.
 
 ## Before you start
 

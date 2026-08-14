@@ -2,18 +2,18 @@
 
 **English** | [简体中文](zh-CN/security.md)
 
-This document describes what GPU Ops protects, what it does not protect, and the hardening baseline an operator is expected to provide. For private vulnerability reporting, see [SECURITY.md](../SECURITY.md).
+This document describes what Bursar protects, what it does not protect, and the hardening baseline an operator is expected to provide. For private vulnerability reporting, see [SECURITY.md](../SECURITY.md).
 
-## What GPU Ops assumes
+## What Bursar assumes
 
-GPU Ops is a control plane for machines you already own. It assumes:
+Bursar is a control plane for machines you already own. It assumes:
 
 - the controller runs on a trusted host on a network you control;
 - compute nodes are administered by the same team that administers the controller;
 - PostgreSQL, TLS certificates, DNS, and backups are operated by you;
 - users have shell access to compute nodes and are not treated as adversaries with root.
 
-GPU Ops is not a multi-tenant isolation boundary. A user who can escalate to root on a compute node can defeat node-local enforcement.
+Bursar is not a multi-tenant isolation boundary. A user who can escalate to root on a compute node can defeat node-local enforcement.
 
 ## Trust boundaries
 

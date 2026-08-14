@@ -2,7 +2,7 @@
 
 [English](SECURITY.md) | **简体中文**
 
-GPU Ops 会接触节点控制、账号映射和资源使用数据。请负责任地披露漏洞，不要在公开 Issue、讨论区或 Pull Request 中发布可利用细节。
+Bursar 会接触节点控制、账号映射和资源使用数据。请负责任地披露漏洞，不要在公开 Issue、讨论区或 Pull Request 中发布可利用细节。
 
 ## 支持范围
 

@@ -2,7 +2,7 @@
 
 **English** | [简体中文](zh-CN/user-guide.md)
 
-You keep using SSH the way you always have. GPU Ops handles accounting and enforcement in the background.
+You keep using SSH the way you always have. Bursar handles accounting and enforcement in the background.
 
 ## Everyday use
 

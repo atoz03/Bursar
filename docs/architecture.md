@@ -2,7 +2,7 @@
 
 **English** | [简体中文](zh-CN/architecture.md)
 
-GPU Ops separates centralized policy and persistence from node-local observation and enforcement. It is intentionally compatible with direct SSH workflows.
+Bursar separates centralized policy and persistence from node-local observation and enforcement. It is intentionally compatible with direct SSH workflows.
 
 ## Components
 
@@ -90,7 +90,7 @@ Per-node tokens can be introduced in audit mode and then enforced after every no
 
 ## Repository boundaries
 
-GPU Ops does not include a production database, TLS PKI, reverse proxy, identity provider, email provider, NFS server, container registry, or monitoring stack. The repository supplies application components and reference scripts; operators own infrastructure integration and policy decisions.
+Bursar does not include a production database, TLS PKI, reverse proxy, identity provider, email provider, NFS server, container registry, or monitoring stack. The repository supplies application components and reference scripts; operators own infrastructure integration and policy decisions.
 
 ## Design constraints
 

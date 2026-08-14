@@ -2,7 +2,7 @@
 
 [English](../installation.md) | **简体中文**
 
-GPU Ops 支持两种运行控制器的方式：
+Bursar 支持两种运行控制器的方式：
 
 | 方式 | 适用场景 |
 | --- | --- |
@@ -138,7 +138,7 @@ sudo env INSTALL_DOCKER=0 INSTALL_GO=0 bash scripts/install_deps_ubuntu2204.sh
 
 ## 2. 准备 PostgreSQL
 
-尽量使用托管或独立管理的 PostgreSQL 实例。为 GPU Ops 创建专用数据库与角色，配置网络访问控制，得到类似这样的 DSN：
+尽量使用托管或独立管理的 PostgreSQL 实例。为 Bursar 创建专用数据库与角色，配置网络访问控制，得到类似这样的 DSN：
 
 ```text
 postgres://gpuops:<password>@db.example.org:5432/gpuops?sslmode=require
