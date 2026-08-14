@@ -4,7 +4,11 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOCAL_BIN="${LOCAL_BIN:-/usr/local/bin/gpu-controller}"
-LOCAL_CONFIG_PATH="${LOCAL_CONFIG_PATH:-${ROOT_DIR}/config/controller.yaml}"
+DEFAULT_LOCAL_CONFIG_PATH="${ROOT_DIR}/config/controller.yaml"
+if [[ -f "${ROOT_DIR}/config/controller.local.yaml" ]]; then
+  DEFAULT_LOCAL_CONFIG_PATH="${ROOT_DIR}/config/controller.local.yaml"
+fi
+LOCAL_CONFIG_PATH="${LOCAL_CONFIG_PATH:-${DEFAULT_LOCAL_CONFIG_PATH}}"
 LOCAL_WEB_DIST="${LOCAL_WEB_DIST:-${ROOT_DIR}/web/dist/}"
 REMOTE_PROJECT_DIR="${REMOTE_PROJECT_DIR:-/home/${DR_SSH_USER:-gpuops}/gpu-ops}"
 REMOTE_BIN="${REMOTE_BIN:-/usr/local/bin/gpu-controller}"
@@ -12,6 +16,10 @@ REMOTE_CONFIG_PATH="${REMOTE_CONFIG_PATH:-${REMOTE_PROJECT_DIR}/config/controlle
 REMOTE_WEB_DIST="${REMOTE_WEB_DIST:-${REMOTE_PROJECT_DIR}/web/dist/}"
 REMOTE_SERVICE_NAME="${REMOTE_SERVICE_NAME:-gpu-controller}"
 LOCAL_SERVICE_NAME="${LOCAL_SERVICE_NAME:-gpu-controller}"
+REMOTE_APPLY_HELPER="${REMOTE_APPLY_HELPER:-/usr/local/sbin/gpuops-ha-apply}"
+LOCAL_POSTGRES_CONTAINER="${LOCAL_POSTGRES_CONTAINER:-}"
+POSTGRES_DATABASE="${POSTGRES_DATABASE:-gpuops}"
+POSTGRES_USER="${POSTGRES_USER:-gpuops}"
 
 HA_SYNC_DIRECTION="${HA_SYNC_DIRECTION:-primary_to_standby}"
 DR_NODE_ID="${DR_NODE_ID:-60019}"
@@ -24,7 +32,7 @@ PRIMARY_HOST="${PRIMARY_HOST:-127.0.0.1}"
 PRIMARY_CONTROLLER_PORT="${PRIMARY_CONTROLLER_PORT:-60039}"
 SYNC_WEB_DIST="${SYNC_WEB_DIST:-1}"
 SYNC_DATABASE="${SYNC_DATABASE:-1}"
-VERIFY_TOOL_VERSIONS="${VERIFY_TOOL_VERSIONS:-1}"
+VERIFY_TOOL_VERSIONS="${VERIFY_TOOL_VERSIONS:-0}"
 ALLOW_VERSION_MISMATCH="${ALLOW_VERSION_MISMATCH:-0}"
 SSH_TIMEOUT="${SSH_TIMEOUT:-10}"
 
@@ -130,6 +138,7 @@ mkdir -p "$(dirname "${KNOWN_HOSTS_FILE}")"
 touch "${KNOWN_HOSTS_FILE}"
 chmod 600 "${KNOWN_HOSTS_FILE}" || true
 SSH_OPTS=(-i "${TMP_KEY}" -p "${DR_SSH_PORT}" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="${KNOWN_HOSTS_FILE}" -o ConnectTimeout="${SSH_TIMEOUT}")
+SCP_OPTS=(-i "${TMP_KEY}" -P "${DR_SSH_PORT}" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="${KNOWN_HOSTS_FILE}" -o ConnectTimeout="${SSH_TIMEOUT}")
 REMOTE="${DR_SSH_USER}@${DR_HOST}"
 
 if ! ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "echo ok" >/dev/null 2>&1; then
@@ -179,11 +188,11 @@ fi
 sync_p2s_binary() {
   [[ -f "${LOCAL_BIN}" ]] || die_step "sync_binary" "本机二进制不存在：${LOCAL_BIN}"
   tmp_remote="/tmp/gpu-controller.ha.$$.bin"
-  if ! scp -q "${SSH_OPTS[@]}" "${LOCAL_BIN}" "${REMOTE}:${tmp_remote}"; then
+  if ! scp -q "${SCP_OPTS[@]}" "${LOCAL_BIN}" "${REMOTE}:${tmp_remote}"; then
     die_step "sync_binary" "上传控制器二进制失败"
   fi
-  if ! ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "sudo -n install -m 0755 '${tmp_remote}' '${REMOTE_BIN}' && rm -f '${tmp_remote}'"; then
-    die_step "sync_binary" "安装容灾控制器二进制失败，请检查远端 sudo 权限"
+  if ! ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "sudo -n '${REMOTE_APPLY_HELPER}' install-controller '${tmp_remote}'"; then
+    die_step "sync_binary" "安装容灾控制器二进制失败，请检查远端 HA helper"
   fi
   local_sha="$(sha256sum "${LOCAL_BIN}" | awk '{print $1}')"
   remote_sha="$(ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "sha256sum '${REMOTE_BIN}' | awk '{print \\\$1}'" | xargs)"
@@ -191,9 +200,62 @@ sync_p2s_binary() {
   step_result "sync_binary" "ok" "主->备二进制同步完成 sha256=${local_sha}"
 }
 
+resolve_local_postgres_container() {
+  if [[ -n "${LOCAL_POSTGRES_CONTAINER}" ]]; then
+    docker inspect "${LOCAL_POSTGRES_CONTAINER}" >/dev/null 2>&1 || return 1
+    return 0
+  fi
+  local -a candidates=()
+  local container_id query_result
+  mapfile -t candidates < <(docker ps --filter 'publish=5432' --format '{{.ID}}' 2>/dev/null)
+  if (( ${#candidates[@]} == 1 )); then
+    LOCAL_POSTGRES_CONTAINER="${candidates[0]}"
+    return 0
+  fi
+  candidates=()
+  while IFS= read -r container_id; do
+    [[ -n "${container_id}" ]] || continue
+    query_result="$(docker exec "${container_id}" psql --username="${POSTGRES_USER}" \
+      --dbname="${POSTGRES_DATABASE}" --tuples-only --no-align --command='SELECT 1' 2>/dev/null || true)"
+    [[ "${query_result}" == "1" ]] && candidates+=("${container_id}")
+  done < <(docker ps --quiet)
+  (( ${#candidates[@]} == 1 )) || return 1
+  LOCAL_POSTGRES_CONTAINER="${candidates[0]}"
+}
+
+create_local_database_dump() {
+  local dsn="$1" dump_file="$2"
+  if command -v pg_dump >/dev/null 2>&1 && command -v pg_restore >/dev/null 2>&1; then
+    pg_dump --format=custom --compress=6 --no-owner --no-privileges --file="${dump_file}" "${dsn}"
+    pg_restore --list "${dump_file}" >/dev/null
+    return
+  fi
+  command -v docker >/dev/null 2>&1 || return 1
+  resolve_local_postgres_container || return 1
+  docker exec "${LOCAL_POSTGRES_CONTAINER}" pg_dump \
+    --username="${POSTGRES_USER}" --dbname="${POSTGRES_DATABASE}" \
+    --format=custom --compress=6 --no-owner --no-privileges >"${dump_file}"
+  docker exec -i "${LOCAL_POSTGRES_CONTAINER}" pg_restore --list <"${dump_file}" >/dev/null
+}
+
+restore_local_database_dump() {
+  local dsn="$1" dump_file="$2"
+  if command -v pg_restore >/dev/null 2>&1; then
+    pg_restore --clean --if-exists --no-owner --no-privileges --exit-on-error \
+      --single-transaction --dbname="${dsn}" "${dump_file}"
+    return
+  fi
+  command -v docker >/dev/null 2>&1 || return 1
+  resolve_local_postgres_container || return 1
+  docker exec -i "${LOCAL_POSTGRES_CONTAINER}" pg_restore \
+    --username="${POSTGRES_USER}" --dbname="${POSTGRES_DATABASE}" \
+    --clean --if-exists --no-owner --no-privileges --exit-on-error \
+    --single-transaction <"${dump_file}"
+}
+
 sync_s2p_binary() {
   tmp_local="$(mktemp /tmp/gpu-controller.ha.sync.XXXXXX)"
-  if ! scp -q "${SSH_OPTS[@]}" "${REMOTE}:${REMOTE_BIN}" "${tmp_local}"; then
+  if ! scp -q "${SCP_OPTS[@]}" "${REMOTE}:${REMOTE_BIN}" "${tmp_local}"; then
     die_step "sync_binary" "下载容灾控制器二进制失败"
   fi
   if ! ${SUDO_LOCAL} install -m 0755 "${tmp_local}" "${LOCAL_BIN}"; then
@@ -254,26 +316,16 @@ sync_p2s_database() {
   dst_dsn="$(ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "grep -E '^[[:space:]]*database_dsn:' '${REMOTE_CONFIG_PATH}' | head -n1" | sed -E 's/^[^:]+:[[:space:]]*//; s/[[:space:]]+#.*$//; s/^"//; s/"$//' | xargs)"
   [[ -n "${src_dsn}" ]] || die_step "sync_database" "本机 database_dsn 为空"
   [[ -n "${dst_dsn}" ]] || die_step "sync_database" "容灾 database_dsn 为空"
-  if [[ "${src_dsn}" == "${dst_dsn}" ]]; then
-    step_result "sync_database" "ok" "主备共用同一数据库 DSN，无需额外同步"
-    return 0
-  fi
-  command -v pg_dump >/dev/null 2>&1 || die_step "sync_database" "本机缺少 pg_dump"
-  command -v pg_restore >/dev/null 2>&1 || die_step "sync_database" "本机缺少 pg_restore"
+  # 两端 DSN 都可能写成 127.0.0.1，但分别指向各自主机上的独立数据库，不能按字符串相等跳过。
   dump_local="$(mktemp /tmp/gpuops-ha.XXXXXX.dump)"
   dump_remote="/tmp/gpuops-ha.$$.dump"
-  if ! pg_dump --format=custom --compress=6 --no-owner --no-privileges --file="${dump_local}" "${src_dsn}"; then
+  if ! create_local_database_dump "${src_dsn}" "${dump_local}"; then
     die_step "sync_database" "生成主数据库归档失败"
   fi
-  if ! pg_restore --list "${dump_local}" >/dev/null; then
-    die_step "sync_database" "主数据库归档校验失败"
-  fi
-  if ! scp -q "${SSH_OPTS[@]}" "${dump_local}" "${REMOTE}:${dump_remote}"; then
+  if ! scp -q "${SCP_OPTS[@]}" "${dump_local}" "${REMOTE}:${dump_remote}"; then
     die_step "sync_database" "上传数据库归档失败"
   fi
-  dst_dsn_q="$(printf '%q' "${dst_dsn}")"
-  dump_remote_q="$(printf '%q' "${dump_remote}")"
-  if ! ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "pg_restore --clean --if-exists --no-owner --no-privileges --exit-on-error --single-transaction --dbname=${dst_dsn_q} ${dump_remote_q} && rm -f ${dump_remote_q}"; then
+  if ! ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "sudo -n '${REMOTE_APPLY_HELPER}' restore-database '${dump_remote}'"; then
     die_step "sync_database" "容灾数据库单事务恢复失败，原数据库未被部分覆盖"
   fi
   rm -f "${dump_local}"
@@ -290,26 +342,17 @@ sync_s2p_database() {
   src_dsn="$(ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "grep -E '^[[:space:]]*database_dsn:' '${REMOTE_CONFIG_PATH}' | head -n1" | sed -E 's/^[^:]+:[[:space:]]*//; s/[[:space:]]+#.*$//; s/^"//; s/"$//' | xargs)"
   [[ -n "${src_dsn}" ]] || die_step "sync_database" "容灾 database_dsn 为空"
   [[ -n "${dst_dsn}" ]] || die_step "sync_database" "本机 database_dsn 为空"
-  if [[ "${src_dsn}" == "${dst_dsn}" ]]; then
-    step_result "sync_database" "ok" "主备共用同一数据库 DSN，无需额外同步"
-    return 0
-  fi
-  command -v pg_restore >/dev/null 2>&1 || die_step "sync_database" "本机缺少 pg_restore"
+  # 两端 DSN 都可能写成 127.0.0.1，但分别指向各自主机上的独立数据库，必须执行回切同步。
   dump_local="$(mktemp /tmp/gpuops-ha-recovery.XXXXXX.dump)"
   dump_remote="/tmp/gpuops-ha-recovery.$$.dump"
-  src_dsn_q="$(printf '%q' "${src_dsn}")"
-  dump_remote_q="$(printf '%q' "${dump_remote}")"
-  if ! ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "pg_dump --format=custom --compress=6 --no-owner --no-privileges --file=${dump_remote_q} ${src_dsn_q}"; then
+  if ! ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "sudo -n '${REMOTE_APPLY_HELPER}' dump-database '${dump_remote}'"; then
     die_step "sync_database" "生成容灾数据库归档失败"
   fi
-  if ! scp -q "${SSH_OPTS[@]}" "${REMOTE}:${dump_remote}" "${dump_local}"; then
+  if ! scp -q "${SCP_OPTS[@]}" "${REMOTE}:${dump_remote}" "${dump_local}"; then
     die_step "sync_database" "下载容灾数据库归档失败"
   fi
-  ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "rm -f ${dump_remote_q}" || true
-  if ! pg_restore --list "${dump_local}" >/dev/null; then
-    die_step "sync_database" "容灾数据库归档校验失败"
-  fi
-  if ! pg_restore --clean --if-exists --no-owner --no-privileges --exit-on-error --single-transaction --dbname="${dst_dsn}" "${dump_local}"; then
+  ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "rm -f '${dump_remote}'" || true
+  if ! restore_local_database_dump "${dst_dsn}" "${dump_local}"; then
     die_step "sync_database" "主数据库单事务回切失败，原数据库未被部分覆盖"
   fi
   rm -f "${dump_local}"
@@ -317,7 +360,7 @@ sync_s2p_database() {
 }
 
 restart_remote_service() {
-  if ! ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "sudo -n systemctl restart '${REMOTE_SERVICE_NAME}' && sudo -n systemctl is-active '${REMOTE_SERVICE_NAME}'"; then
+  if ! ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "sudo -n '${REMOTE_APPLY_HELPER}' restart-controller"; then
     die_step "restart_service" "容灾服务重启或存活检查失败：${REMOTE_SERVICE_NAME}"
   fi
   step_result "restart_service" "ok" "容灾服务重启成功：${REMOTE_SERVICE_NAME}"

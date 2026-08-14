@@ -433,6 +433,15 @@ bash scripts/deploy_dr_node_60019.sh
 - 自动实时探测主控健康，主控故障自动切到备机，主控恢复后自动回切。
 - 管理后台在 `/admin/ha` 实时查看主备状态（自动刷新）。
 
+推荐直接从 primary 执行自动部署。脚本会把 Docker 数据和独立 PostgreSQL 固定到 60009 的 `/var/lib/gpu-ops`，不会把数据库写入接近满载的系统盘；远端 sudo 仅用于首次引导：
+
+```bash
+cd /home/gpuops/gpu-ops
+bash scripts/deploy_dr_standby.sh
+```
+
+部署过程中会在 60009 请求一次 sudo 密码。完成后再由 `/admin/ha` 发起首次主→备同步；日常同步通过受限的 `gpuops-ha-apply` helper 完成，不需要给同步账号完整 Docker 权限。
+
 ### 1) 在 `60009` 上停止并禁用计算节点服务
 
 ```bash
@@ -638,6 +647,9 @@ sudo systemctl start gpuops-backup-verify.service
 | `gpuops_backup.sh` | 备份 PostgreSQL 与控制器运行配置并执行保留策略 | `sudo systemctl start gpuops-backup.service` |
 | `remove_snap_docker_conflict.sh` | 备份数据库后移除冲突的 Snap Docker，并恢复系统 Docker Socket | `sudo bash scripts/remove_snap_docker_conflict.sh` |
 | `gpuops_backup_verify.sh` | 在一次性 PostgreSQL 容器内执行完整恢复校验 | `sudo systemctl start gpuops-backup-verify.service` |
+| `deploy_dr_standby.sh` | 从 primary 分发并引导 60009 standby | `bash scripts/deploy_dr_standby.sh` |
+| `bootstrap_dr_standby_local.sh` | 在容灾主机安装独立数据库、standby 控制器与受限同步 helper | 由 `deploy_dr_standby.sh` 远程调用 |
+| `gpuops_ha_apply.sh` | 受限执行控制器发布、standby 数据库同步和服务重启 | 安装为 `/usr/local/sbin/gpuops-ha-apply` |
 | `install_agent_local.sh` | 在计算节点本机一键安装并启用 `gpu-node-agent` | `NODE_ID=60001 CONTROLLER_URL=http://<控制器IP>:60039 AGENT_TOKEN=<token> bash scripts/install_agent_local.sh` |
 | `deploy_agent.sh` | 从控制端批量部署 agent 到多台节点 | `NODES='60000:192.0.2.10 60001:192.0.2.10' AGENT_TOKEN=<token> CONTROLLER_URL=http://<控制器IP>:60039 bash scripts/deploy_agent.sh` |
 | `deploy_controller.sh` | 部署 controller 二进制与配置到远端控制器主机 | `HOST=<控制器主机> CONTROLLER_BIN=./controller/controller bash scripts/deploy_controller.sh` |
