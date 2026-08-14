@@ -94,7 +94,8 @@ EOF_SERVICE
 
 echo "[6/6] 重载并启用服务"
 ${SUDO} systemctl daemon-reload
-${SUDO} systemctl enable --now "${SERVICE_NAME}"
+${SUDO} systemctl enable "${SERVICE_NAME}"
+${SUDO} systemctl restart "${SERVICE_NAME}"
 ${SUDO} systemctl --no-pager --full status "${SERVICE_NAME}" || true
 ${SUDO} journalctl -u "${SERVICE_NAME}" -n 40 --no-pager || true
 
