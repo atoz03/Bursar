@@ -14,6 +14,7 @@ DOCKER_DATA_ROOT="${DOCKER_DATA_ROOT:-/var/lib/gpu-ops/gpu-ops-docker}"
 POSTGRES_DATA_ROOT="${POSTGRES_DATA_ROOT:-/var/lib/gpu-ops/gpu-ops-postgres}"
 POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-gpuops-postgres-standby}"
 POSTGRES_IMAGE="${POSTGRES_IMAGE:-postgres:18.1}"
+POSTGRES_IMAGE_ARCHIVE="${POSTGRES_IMAGE_ARCHIVE:-${PROJECT_DIR}/.deploy/postgres-image.tar.gz}"
 CONFIG_SOURCE="${CONFIG_SOURCE:-${PROJECT_DIR}/.deploy/controller.yaml}"
 CONFIG_PATH="${CONFIG_PATH:-${PROJECT_DIR}/config/controller.yaml}"
 CONTROLLER_SOURCE="${CONTROLLER_SOURCE:-${PROJECT_DIR}/.deploy/gpu-controller}"
@@ -62,6 +63,15 @@ done
 
 echo "[4/8] 启动独立 standby PostgreSQL"
 install -d -m 0700 -o 999 -g 999 "${POSTGRES_DATA_ROOT}"
+if ! docker image inspect "${POSTGRES_IMAGE}" >/dev/null 2>&1 && [[ -r "${POSTGRES_IMAGE_ARCHIVE}" ]]; then
+  echo "从 primary 导入 PostgreSQL 镜像"
+  gzip -dc "${POSTGRES_IMAGE_ARCHIVE}" | docker load
+fi
+docker image inspect "${POSTGRES_IMAGE}" >/dev/null 2>&1 || {
+  echo "缺少 PostgreSQL 镜像 ${POSTGRES_IMAGE}，且本地归档不可用" >&2
+  exit 4
+}
+rm -f "${POSTGRES_IMAGE_ARCHIVE}"
 if docker inspect "${POSTGRES_CONTAINER}" >/dev/null 2>&1; then
   docker start "${POSTGRES_CONTAINER}" >/dev/null || true
 else
