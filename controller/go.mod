@@ -2,6 +2,8 @@ module gpu-ops/controller
 
 go 1.26.0
 
+toolchain go1.26.6
+
 require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/lib/pq v1.12.3
