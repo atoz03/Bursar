@@ -1,42 +1,44 @@
 <template>
   <div class="monitor-page">
-    <section class="monitor-hero">
-      <div class="hero-copy">
-        <div class="eyebrow"><span class="live-pulse" /> CLUSTER LIVE</div>
-        <h1>集群状态总览</h1>
-        <p>以 CPU 和逐卡 GPU 状态为核心，快速识别离线、过载与温度异常节点。</p>
-      </div>
-      <div class="hero-actions">
-        <div class="refresh-meta">
-          <span>数据每 {{ AUTO_REFRESH_SECONDS }} 秒刷新</span>
-          <strong>{{ lastRefreshText }}</strong>
+    <header class="page-head">
+      <div>
+        <div class="title-line">
+          <h1>集群状态</h1>
+          <span class="live-badge"><i />实时</span>
         </div>
-        <el-button type="primary" round size="large" :loading="loading" @click="loadMonitor">
+        <p>优先展示 CPU 与逐卡 GPU 状态，异常节点会自动排在前面。</p>
+      </div>
+      <div class="head-actions">
+        <span>{{ AUTO_REFRESH_SECONDS }} 秒自动刷新 · {{ lastRefreshText }}</span>
+        <el-button circle :loading="loading" aria-label="立即刷新" @click="loadMonitor">
           <el-icon><Refresh /></el-icon>
-          立即刷新
         </el-button>
       </div>
-    </section>
+    </header>
 
     <el-alert v-if="error" class="monitor-error" type="error" show-icon :closable="false" :title="error" />
 
-    <section class="summary-grid">
-      <article class="summary-card tone-green">
-        <span class="summary-icon"><el-icon><Monitor /></el-icon></span>
-        <div><strong>{{ onlineCount }}<small>/ {{ nodes.length }}</small></strong><span>在线节点</span></div>
-      </article>
-      <article class="summary-card tone-violet">
-        <span class="summary-icon"><el-icon><Cpu /></el-icon></span>
-        <div><strong>{{ busyGPUCount }}<small>/ {{ totalGPUCount }}</small></strong><span>活跃 GPU</span></div>
-      </article>
-      <article class="summary-card tone-blue">
-        <span class="summary-icon"><el-icon><DataLine /></el-icon></span>
-        <div><strong>{{ averageCPUText }}</strong><span>在线节点平均 CPU</span></div>
-      </article>
-      <article class="summary-card" :class="warningCount ? 'tone-amber' : 'tone-cyan'">
-        <span class="summary-icon"><el-icon><WarningFilled v-if="warningCount" /><CircleCheck v-else /></el-icon></span>
-        <div><strong>{{ warningCount }}</strong><span>需关注节点</span></div>
-      </article>
+    <section class="summary-bar">
+      <div class="summary-item">
+        <span>在线节点</span>
+        <strong>{{ onlineCount }}<small>/ {{ nodes.length }}</small></strong>
+        <i class="summary-mark mark-green" />
+      </div>
+      <div class="summary-item">
+        <span>活跃 GPU</span>
+        <strong>{{ busyGPUCount }}<small>/ {{ totalGPUCount }}</small></strong>
+        <i class="summary-mark mark-violet" />
+      </div>
+      <div class="summary-item">
+        <span>平均 CPU</span>
+        <strong>{{ averageCPUText }}</strong>
+        <i class="summary-mark mark-blue" />
+      </div>
+      <div class="summary-item" :class="{ attention: warningCount }">
+        <span>需关注</span>
+        <strong>{{ warningCount }}<small> 台</small></strong>
+        <i class="summary-mark mark-amber" />
+      </div>
     </section>
 
     <section class="monitor-toolbar">
@@ -77,7 +79,7 @@
           </div>
           <div class="node-head-tags">
             <span class="state-chip">{{ nodeStateText(node) }}</span>
-            <span class="uptime-chip">{{ uptimeText(node.host_uptime_seconds) }}</span>
+            <span class="heartbeat-chip">{{ heartbeatText(node) }}</span>
           </div>
         </header>
 
@@ -102,8 +104,8 @@
 
         <div class="gpu-section">
           <div class="section-label">
-            <span><el-icon><Cpu /></el-icon> GPU 状态</span>
-            <small>{{ gpuBusyOnNode(node) }}/{{ node.gpu_count || displayGPUs(node).length }} 活跃</small>
+            <span>GPU <em>{{ compactModel(node.gpu_model || "") }}</em></span>
+            <small><b>{{ gpuBusyOnNode(node) }}</b>/{{ node.gpu_count || displayGPUs(node).length }} 活跃</small>
           </div>
           <div v-if="displayGPUs(node).length" class="gpu-grid">
             <div
@@ -113,16 +115,15 @@
               :class="gpuState(gpu)"
             >
               <div class="gpu-head">
-                <strong>GPU {{ gpu.index }}</strong>
+                <strong :title="gpu.name || node.gpu_model">GPU {{ gpu.index }}</strong>
                 <span>{{ gpu.pending ? "待上报" : gpuStateText(gpu) }}</span>
               </div>
-              <div class="gpu-model" :title="gpu.name || node.gpu_model">{{ compactModel(gpu.name || node.gpu_model || "GPU") }}</div>
-              <div class="gpu-row">
-                <span>核心</span><b>{{ gpu.pending ? "--" : `${round(gpu.utilization_percent)}%` }}</b>
-                <div class="mini-track"><i :class="barTone(gpu.utilization_percent)" :style="barWidth(gpu.utilization_percent)" /></div>
+              <div class="gpu-values">
+                <span><i>核心</i><b>{{ gpu.pending ? "--" : `${round(gpu.utilization_percent)}%` }}</b></span>
+                <span><i>显存</i><b>{{ gpu.pending ? "--" : `${round(gpuMemoryPercent(gpu))}%` }}</b></span>
               </div>
-              <div class="gpu-row">
-                <span>显存</span><b>{{ gpu.pending ? "--" : `${round(gpuMemoryPercent(gpu))}%` }}</b>
+              <div class="gpu-bars">
+                <div class="mini-track"><i :class="barTone(gpu.utilization_percent)" :style="barWidth(gpu.utilization_percent)" /></div>
                 <div class="mini-track"><i :class="barTone(gpuMemoryPercent(gpu))" :style="barWidth(gpuMemoryPercent(gpu))" /></div>
               </div>
               <div class="gpu-meta">
@@ -131,14 +132,14 @@
               </div>
             </div>
           </div>
-          <div v-else class="no-gpu">该节点未配置 GPU</div>
+          <div v-else class="no-gpu">GPU 数据不可用或未配置</div>
         </div>
 
         <footer class="node-footer">
           <span><i>硬盘</i>{{ diskText(node) }}</span>
-          <span><i>SSH</i>{{ node.ssh_active_count || 0 }}</span>
-          <span><i>进程</i>{{ (node.cpu_process_count || 0) + (node.gpu_process_count || 0) }}</span>
-          <span class="heartbeat"><i>心跳</i>{{ heartbeatText(node) }}</span>
+          <span><i>Agent</i>{{ formatMemory(node.agent_memory_mb) }}</span>
+          <span><i>运行</i>{{ uptimeText(node.host_uptime_seconds).replace("运行 ", "") }}</span>
+          <span class="heartbeat"><i>负载</i>{{ Number(node.host_load_1 || 0).toFixed(2) }}</span>
         </footer>
       </article>
     </section>
@@ -149,7 +150,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { CircleCheck, Cpu, DataLine, Monitor, Refresh, Search, WarningFilled } from "@element-plus/icons-vue";
+import { Refresh, Search } from "@element-plus/icons-vue";
 import { ApiClient, type GPUDeviceStatus, type NodeMonitorStatus } from "../../lib/api";
 import { authState } from "../../lib/authStore";
 import { settingsState } from "../../lib/settingsStore";
@@ -520,5 +521,146 @@ onBeforeUnmount(() => {
   .node-footer { grid-template-columns: repeat(2, 1fr); }
   .node-footer .heartbeat { justify-self: start; }
   .refresh-meta { display: none; }
+}
+</style>
+
+<style scoped>
+/* 轻量监控主题：减少嵌套容器和装饰，让节点与 GPU 数据成为视觉主体。 */
+.monitor-page {
+  min-height: calc(100vh - 96px);
+  padding: 4px 2px 28px;
+  color: #172235;
+}
+
+.page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 8px 2px 18px;
+}
+
+.title-line { display: flex; align-items: center; gap: 12px; }
+.title-line h1 { margin: 0; font-size: 27px; letter-spacing: -.035em; }
+.page-head p { margin: 7px 0 0; color: #7b8798; font-size: 13px; }
+.live-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border-radius: 999px; color: #07885f; background: #e9f9f2; font-size: 11px; font-weight: 700; }
+.live-badge i { width: 6px; height: 6px; border-radius: 50%; background: #10b981; box-shadow: 0 0 0 4px rgba(16,185,129,.12); }
+.head-actions { display: flex; align-items: center; gap: 12px; color: #8a96a6; font-size: 12px; }
+.head-actions :deep(.el-button) { width: 36px; height: 36px; border-color: #dce4eb; color: #486078; background: #fff; }
+
+.summary-bar {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 14px;
+  border: 1px solid #e1e7ed;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 7px 24px rgba(39, 57, 77, .055);
+}
+
+.summary-item { position: relative; display: grid; gap: 5px; min-height: 84px; padding: 17px 22px; border-right: 1px solid #edf1f4; }
+.summary-item:last-child { border-right: 0; }
+.summary-item > span { color: #7e8a99; font-size: 12px; }
+.summary-item strong { color: #18283a; font-size: 25px; line-height: 1; letter-spacing: -.03em; }
+.summary-item strong small { margin-left: 3px; color: #9aa5b2; font-size: 12px; font-weight: 550; }
+.summary-mark { position: absolute; top: 20px; right: 20px; width: 8px; height: 8px; border-radius: 50%; }
+.mark-green { background: #10b981; box-shadow: 0 0 0 5px #e9f9f2; }
+.mark-violet { background: #8b5cf6; box-shadow: 0 0 0 5px #f2edff; }
+.mark-blue { background: #3b82f6; box-shadow: 0 0 0 5px #eaf2ff; }
+.mark-amber { background: #cbd5e1; box-shadow: 0 0 0 5px #f1f5f9; }
+.summary-item.attention .mark-amber { background: #f59e0b; box-shadow: 0 0 0 5px #fff6df; }
+
+.monitor-toolbar { margin: 0 0 14px; padding: 4px 2px; border: 0; border-radius: 0; background: transparent; }
+.filter-tabs { gap: 4px; padding: 3px; border-radius: 11px; background: #eef2f5; }
+.filter-tabs button { padding: 7px 11px; border-radius: 8px; color: #667587; font-size: 12px; font-weight: 600; }
+.filter-tabs button span { min-width: 18px; height: 18px; margin-left: 3px; padding: 0 5px; background: rgba(100,116,139,.09); font-size: 10px; }
+.filter-tabs button:hover { color: #17694f; background: rgba(255,255,255,.62); }
+.filter-tabs button.active { color: #087854; background: #fff; box-shadow: 0 1px 4px rgba(38,55,72,.1); }
+.node-search { width: min(290px, 100%); }
+.node-search :deep(.el-input__wrapper) { border-radius: 10px; box-shadow: 0 0 0 1px #dde4ea inset; background: #fff; }
+
+.node-grid, .skeleton-grid { grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 14px; }
+.node-skeleton { min-height: 390px; padding: 20px; border: 1px solid #e3e8ed; border-radius: 16px; box-shadow: none; }
+.node-card {
+  --state: #10b981;
+  padding: 17px;
+  border: 1px solid #e0e6eb;
+  border-top: 1px solid #e0e6eb;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 7px 22px rgba(36, 53, 72, .06);
+}
+.node-card::before { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 3px; background: var(--state); }
+.node-card:hover { transform: translateY(-2px); border-color: #cfd9e1; box-shadow: 0 12px 28px rgba(36,53,72,.1); }
+.node-card.state-warning { --state: #f59e0b; }
+.node-card.state-offline { --state: #a8b2bf; filter: none; background: #fafbfc; }
+.node-card.state-pending { --state: #3b82f6; }
+
+.node-head { align-items: flex-start; }
+.node-identity { gap: 10px; }
+.status-dot { width: 8px; height: 8px; margin-top: 6px; box-shadow: 0 0 0 4px color-mix(in srgb, var(--state) 11%, transparent); }
+.node-identity h2 { font-size: 17px; }
+.node-identity div > span { max-width: 225px; margin-top: 3px; color: #8793a1; font-size: 11px; }
+.node-head-tags { gap: 4px; }
+.state-chip { padding: 4px 8px; font-size: 10px; }
+.heartbeat-chip { color: #929dab; font-size: 10px; white-space: nowrap; }
+
+.primary-metrics { gap: 18px; margin: 16px 0; padding: 0; border-radius: 0; background: transparent; }
+.metric-panel { padding: 12px; border: 1px solid #e8edf1; border-radius: 12px; background: #fafcfd; }
+.metric-title { color: #667587; font-size: 11px; }
+.metric-title strong { color: #17283a; font-size: 17px; }
+.progress-track { height: 5px; margin: 7px 0; background: #e7ecf0; }
+.metric-foot { color: #8995a3; font-size: 9px; }
+
+.gpu-section { padding-top: 1px; }
+.section-label { margin-bottom: 8px; }
+.section-label > span { min-width: 0; gap: 7px; color: #314255; font-size: 12px; }
+.section-label > span em { overflow: hidden; color: #94a0ad; font-size: 10px; font-style: normal; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.section-label small { flex: 0 0 auto; color: #8c98a6; font-size: 10px; }
+.section-label small b { color: #5c6e82; font-weight: 750; }
+.gpu-grid { gap: 7px; max-height: 288px; padding-right: 2px; }
+.gpu-tile { padding: 10px; border-color: #e5eaf0; border-radius: 11px; background: #fafcfd; }
+.gpu-tile.gpu-busy { border-color: #ddd4fa; background: #fbf9ff; }
+.gpu-tile.gpu-hot { border-color: #fecaca; background: #fff8f8; }
+.gpu-tile.gpu-pending { border-style: dashed; background: #fafbfc; }
+.gpu-head strong { font-size: 11px; }
+.gpu-head span { font-size: 9px; }
+.gpu-values { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px; }
+.gpu-values span { display: flex; align-items: baseline; justify-content: space-between; gap: 4px; }
+.gpu-values i { color: #8d99a6; font-size: 9px; font-style: normal; }
+.gpu-values b { color: #304155; font-size: 11px; }
+.gpu-bars { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.mini-track { height: 3px; margin: 4px 0 5px; background: #e6ebef; }
+.gpu-meta { margin-top: 3px; color: #8b97a4; font-size: 8px; }
+.no-gpu { min-height: 64px; border-color: #dce3e9; border-radius: 11px; color: #9aa5b1; font-size: 11px; background: #fafbfc; }
+
+.node-footer { grid-template-columns: repeat(4, 1fr); gap: 7px; margin-top: 13px; padding-top: 11px; color: #536579; font-size: 9px; }
+.node-footer span { display: grid; gap: 2px; white-space: nowrap; }
+.node-footer i { color: #9ba6b2; }
+.node-footer .heartbeat { justify-self: stretch; }
+
+@media (max-width: 950px) {
+  .summary-bar { grid-template-columns: repeat(2, 1fr); }
+  .summary-item:nth-child(2) { border-right: 0; }
+  .summary-item:nth-child(-n+2) { border-bottom: 1px solid #edf1f4; }
+}
+
+@media (max-width: 760px) {
+  .page-head, .monitor-toolbar { align-items: stretch; flex-direction: column; }
+  .page-head { gap: 13px; }
+  .head-actions { justify-content: space-between; }
+  .node-grid, .skeleton-grid { grid-template-columns: minmax(0, 1fr); }
+  .node-search { width: 100%; }
+}
+
+@media (max-width: 500px) {
+  .summary-bar { grid-template-columns: 1fr 1fr; }
+  .summary-item { min-height: 76px; padding: 15px; }
+  .summary-item strong { font-size: 22px; }
+  .summary-mark { top: 18px; right: 15px; }
+  .primary-metrics, .gpu-grid { grid-template-columns: 1fr; }
+  .gpu-grid { max-height: 360px; }
+  .node-card { padding: 15px; }
+  .head-actions > span { font-size: 10px; }
 }
 </style>
