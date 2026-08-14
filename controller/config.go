@@ -15,7 +15,7 @@ import (
 // 说明：字段与 config/controller.yaml 对应，便于运维直接修改。
 type Config struct {
 	ListenAddr string `yaml:"listen_addr"`
-	// InternalListenAddr 为内部接口监听地址（建议绑定内网 IP + 独立端口，如 192.0.2.10:60040）。
+	// InternalListenAddr 为内部接口监听地址（建议绑定内网 IP + 独立端口）。
 	// 为空时不启用内部独立监听。
 	InternalListenAddr string `yaml:"internal_listen_addr"`
 	// InternalTLSCertFile / InternalTLSKeyFile 为内部监听 HTTPS 证书与私钥路径。

@@ -5,7 +5,7 @@
 
     <div class="login-layout">
       <section class="intro">
-        <div class="intro-badge">GPU Ops</div>
+        <div class="intro-badge">{{ authState.platformName }}</div>
         <div class="lang-switch-wrap">
           <el-button text class="lang-switch" @click="toggleUiLanguage">{{ uiLocaleState.language === "en" ? "中" : "EN" }}</el-button>
         </div>
@@ -173,7 +173,7 @@ async function doLogin() {
   try {
     await login(username.value.trim(), password.value, captchaId.value, Number(captchaOption.value ?? 0), totpCode.value.trim(), captchaToken.value);
     if (authState.role === "admin") {
-      await router.push("/admin/board");
+      await router.push(authState.setupCompleted ? "/admin/board" : "/admin/setup");
     } else if (authState.role === "power_user") {
       if (authState.canViewBoard) {
         await router.push("/admin/board");

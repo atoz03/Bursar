@@ -10,32 +10,36 @@ node-agent/node-agent
 **/*.log
 **/state/
 **/tmp/
-计算节点部署情况.txt
-控制节点安全部署命令.md
-计算节点首次安装交接.md
+node-deployment-report.txt
+*.dump
+*.dump.gz
 
 # IDE
 .idea/
-.codex
+.codex/
 
 # Web
 web/node_modules/
 web/.vite/
-web/.env
-web/.env.*
+**/.env
+**/.env.*
+!**/.env.example
 web/dist/
 
 # 本地生产配置与导出文件
 config/*.local.yaml
 config/*.local.env
-使用手册/*.pdf
+config/agent_node_tokens.*
+config/ha_known_hosts
 
 helloagents/
 .serena/
 .ace-tool/
 
 my_ssh_keys/
-my_ssh_keys/*.txt
-!my_ssh_keys/server_ssh_map.csv
-!my_ssh_keys/README.md
-config/ha_known_hosts
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer

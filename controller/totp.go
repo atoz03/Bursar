@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	totpIssuer    = "GPU Ops"
+	totpIssuer    = defaultPlatformName
 	totpDigits    = 6
 	totpPeriod    = 30
 	totpSkewSteps = 2

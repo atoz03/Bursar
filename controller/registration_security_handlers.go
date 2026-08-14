@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
-	"sort"
 	"strings"
 	"time"
 
@@ -68,11 +67,12 @@ func (s *Server) handleAuthRegisterCaptcha(c *gin.Context) {
 }
 
 func (s *Server) handleAdminRegisterSecurityPolicy(c *gin.Context) {
-	domains := make([]string, 0, len(allowedRegisterEmailDomains))
-	for d := range allowedRegisterEmailDomains {
-		domains = append(domains, d)
+	settings, err := s.store.GetPlatformSettings(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
-	sort.Strings(domains)
+	domains := settings.RegistrationAllowedEmailDomains
 	c.JSON(http.StatusOK, gin.H{
 		"ip_window_seconds":        int(registerIPWindow / time.Second),
 		"ip_limit":                 registerIPLimit,
@@ -82,7 +82,7 @@ func (s *Server) handleAdminRegisterSecurityPolicy(c *gin.Context) {
 		"captcha_ttl_seconds":      int(registerCaptchaTTL / time.Second),
 		"captcha_option_count":     registerCaptchaOptionCount,
 		"allowed_email_domains":    domains,
-		"allowed_email_suffix_tip": allowedRegisterEmailSuffixHint(),
+		"allowed_email_suffix_tip": allowedRegisterEmailSuffixHint(domains),
 	})
 }
 

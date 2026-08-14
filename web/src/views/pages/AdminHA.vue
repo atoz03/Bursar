@@ -102,7 +102,7 @@
       <el-row :gutter="16">
         <el-col :xs="24" :md="8">
           <el-form-item label="容灾节点主机">
-            <el-input v-model="syncConfig.dr_host" placeholder="例如 192.0.2.10" />
+            <el-input v-model="syncConfig.dr_host" placeholder="例如 192.0.2.20" />
           </el-form-item>
         </el-col>
         <el-col :xs="24" :md="8">
@@ -251,21 +251,21 @@ const error = ref("");
 const status = ref<HAStatusResp | null>(null);
 const backupStatus = ref<BackupStatusResp | null>(null);
 const syncConfig = ref<HASyncConfig>({
-  enabled: true,
+  enabled: false,
   interval_days: 1,
   start_hour: 3,
-  dr_node_id: "60009",
-  dr_host: "192.0.2.10",
+  dr_node_id: "",
+  dr_host: "",
   dr_ssh_port: 22,
-  dr_ssh_user: "gpuops",
-  dr_key_file: "/home/gpuops/gpu-ops/my_ssh_keys/node_60009.txt",
+  dr_ssh_user: "",
+  dr_key_file: "",
   dr_controller_port: 60039,
-  primary_host: "192.0.2.10",
+  primary_host: "127.0.0.1",
   primary_controller_port: 60039,
-  script_path: "/home/gpuops/gpu-ops/scripts/ha_sync_worker.sh",
+  script_path: "/opt/gpu-ops/scripts/ha_sync_worker.sh",
   sync_web_dist: true,
   sync_database: true,
-  auto_failover: true,
+  auto_failover: false,
 });
 const syncRuns = ref<HASyncRun[]>([]);
 const syncRunning = ref(false);

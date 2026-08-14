@@ -3,15 +3,15 @@
 set -Eeuo pipefail
 umask 077
 
-PROJECT_DIR="${PROJECT_DIR:-/home/gpuops/gpu-ops}"
-RUN_USER="${RUN_USER:-gpuops}"
-RUN_GROUP="${RUN_GROUP:-gpuops}"
+PROJECT_DIR="${PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+RUN_USER="${RUN_USER:-${SUDO_USER:-gpuops}}"
+RUN_GROUP="${RUN_GROUP:-$(id -gn "${RUN_USER}" 2>/dev/null || echo "${RUN_USER}")}"
 PRIMARY_HOST="${PRIMARY_HOST:-}"
 PRIMARY_CONTROLLER_PORT="${PRIMARY_CONTROLLER_PORT:-60039}"
 DR_CONTROLLER_PORT="${DR_CONTROLLER_PORT:-60039}"
-DR_HA_NODE="${DR_HA_NODE:-controller-60009}"
-DOCKER_DATA_ROOT="${DOCKER_DATA_ROOT:-/var/lib/gpu-ops/gpu-ops-docker}"
-POSTGRES_DATA_ROOT="${POSTGRES_DATA_ROOT:-/var/lib/gpu-ops/gpu-ops-postgres}"
+DR_HA_NODE="${DR_HA_NODE:-controller-standby}"
+DOCKER_DATA_ROOT="${DOCKER_DATA_ROOT:-/var/lib/gpu-ops/docker}"
+POSTGRES_DATA_ROOT="${POSTGRES_DATA_ROOT:-/var/lib/gpu-ops/postgres}"
 POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-gpuops-postgres-standby}"
 POSTGRES_IMAGE="${POSTGRES_IMAGE:-postgres:18.1}"
 POSTGRES_IMAGE_ARCHIVE="${POSTGRES_IMAGE_ARCHIVE:-${PROJECT_DIR}/.deploy/postgres-image.tar.gz}"
@@ -19,11 +19,10 @@ CONFIG_SOURCE="${CONFIG_SOURCE:-${PROJECT_DIR}/.deploy/controller.yaml}"
 CONFIG_PATH="${CONFIG_PATH:-${PROJECT_DIR}/config/controller.yaml}"
 CONTROLLER_SOURCE="${CONTROLLER_SOURCE:-${PROJECT_DIR}/.deploy/gpu-controller}"
 
-[[ "$(id -u)" -eq 0 ]] || { echo "请在 60009 上使用 sudo 运行" >&2; exit 2; }
+[[ "$(id -u)" -eq 0 ]] || { echo "请在 standby 主机上使用 sudo 运行" >&2; exit 2; }
 [[ "${PRIMARY_HOST}" =~ ^[0-9a-fA-F:.]+$ ]] || { echo "PRIMARY_HOST 格式不安全" >&2; exit 2; }
 [[ -f "${CONFIG_SOURCE}" ]] || { echo "缺少待部署配置：${CONFIG_SOURCE}" >&2; exit 2; }
 [[ -f "${CONTROLLER_SOURCE}" ]] || { echo "缺少待部署控制器：${CONTROLLER_SOURCE}" >&2; exit 2; }
-[[ -d /var/lib/gpu-ops ]] || { echo "缺少独立数据盘 /var/lib/gpu-ops" >&2; exit 2; }
 
 echo "[1/8] 安装 Docker 与基础工具"
 export DEBIAN_FRONTEND=noninteractive
@@ -97,7 +96,7 @@ done
 
 echo "[5/8] 从 primary 生成并恢复一致性种子"
 systemctl stop gpu-controller.service >/dev/null 2>&1 || true
-seed_dump="/var/lib/gpu-ops/gpuops-standby-seed.$$.dump"
+seed_dump="$(mktemp /var/tmp/gpuops-standby-seed.XXXXXX.dump)"
 docker exec -e "PGPASSWORD=${postgres_password}" "${POSTGRES_CONTAINER}" pg_dump \
   --host="${PRIMARY_HOST}" --port=5432 \
   --username="${postgres_user}" --dbname="${postgres_database}" \

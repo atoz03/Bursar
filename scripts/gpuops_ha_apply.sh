@@ -9,7 +9,7 @@ if [[ -r "${ENV_FILE}" ]]; then
   source "${ENV_FILE}"
 fi
 
-HA_OPERATOR="${HA_OPERATOR:-gpuops}"
+HA_OPERATOR="${HA_OPERATOR:-${SUDO_USER:-gpuops}}"
 CONTROLLER_BIN="${CONTROLLER_BIN:-/usr/local/bin/gpu-controller}"
 CONTROLLER_SERVICE="${CONTROLLER_SERVICE:-gpu-controller}"
 POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-gpuops-postgres-standby}"

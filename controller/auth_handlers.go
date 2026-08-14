@@ -71,6 +71,12 @@ type mailSettingsReq struct {
 func (s *Server) handleAuthMe(c *gin.Context) {
 	writeWithServerTime := func(status int, body gin.H) {
 		now := nowInBeijing()
+		if settings, err := s.store.GetPlatformSettings(c.Request.Context()); err == nil {
+			body["platform_name"] = settings.PlatformName
+			body["registration_allowed_email_domains"] = settings.RegistrationAllowedEmailDomains
+			body["provision_ssh_host"] = settings.ProvisionSSHHost
+			body["setup_completed"] = settings.SetupCompleted
+		}
 		body["server_now"] = formatRFC3339InBeijing(now)
 		body["server_tz_name"] = beijingTZName
 		body["server_tz_offset_minutes"] = beijingOffsetMinutes(now)
@@ -376,6 +382,16 @@ func (s *Server) handleAuthRegister(c *gin.Context) {
 			UserAgent: userAgent,
 		})
 	}
+	platformSettings, err := s.store.GetPlatformSettings(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !platformSettings.SetupCompleted {
+		recordEvent("deny", "setup_required")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "setup_required"})
+		return
+	}
 
 	if req.Email == "" || req.Username == "" || req.Password == "" || strings.TrimSpace(req.RealName) == "" ||
 		req.StudentID == "" || strings.TrimSpace(req.Advisor) == "" || strings.TrimSpace(req.Phone) == "" {
@@ -388,7 +404,7 @@ func (s *Server) handleAuthRegister(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "请先阅读并勾选同意《用户准则》后再提交"})
 		return
 	}
-	normalizedEmail, emailLocal, emailDomain, err := normalizeRegisterEmail(req.Email)
+	normalizedEmail, emailLocal, emailDomain, err := normalizeRegisterEmail(req.Email, platformSettings.RegistrationAllowedEmailDomains)
 	if err != nil {
 		recordEvent("deny", "invalid_register_email_or_student")
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -526,10 +542,13 @@ func (s *Server) handleAuthRegister(c *gin.Context) {
 		return
 	}
 	verifyURL := buildRegisterVerifyURL(c, rawToken)
-	subject := "GPU Ops 注册邮箱验证"
+	platformName := s.platformName(ctx)
+	subject := platformName + " 注册邮箱验证"
 	body := fmt.Sprintf(
-		"你好，\n\n你正在提交 GPU Ops 平台账号注册申请。\n请在 30 分钟内点击以下链接完成邮箱验证，验证后申请才会进入管理员审核：\n%s\n\n若非本人操作，请忽略此邮件。\n\nGPU Ops 团队",
+		"你好，\n\n你正在提交 %s 平台账号注册申请。\n请在 30 分钟内点击以下链接完成邮箱验证，验证后申请才会进入管理员审核：\n%s\n\n若非本人操作，请忽略此邮件。\n\n%s 团队",
+		platformName,
 		verifyURL,
+		platformName,
 	)
 	if err := sendPlainTextMail(settings, req.Email, subject, body); err != nil {
 		_ = s.store.DeleteRegistrationEmailVerificationByTokenHash(ctx, tokenHash)
@@ -548,8 +567,13 @@ func (s *Server) handleAuthRegisterCheck(c *gin.Context) {
 	studentID := normalizeStudentID(c.Query("student_id"))
 	localErrs := map[string]string{}
 	emailLocal := ""
+	platformSettings, err := s.store.GetPlatformSettings(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	if email != "" {
-		normalizedEmail, local, domain, err := normalizeRegisterEmail(email)
+		normalizedEmail, local, domain, err := normalizeRegisterEmail(email, platformSettings.RegistrationAllowedEmailDomains)
 		if err != nil {
 			localErrs["email"] = err.Error()
 		} else {
@@ -561,7 +585,7 @@ func (s *Server) handleAuthRegisterCheck(c *gin.Context) {
 				return
 			}
 			if blocked {
-				localErrs["email"] = "该邮箱域名不允许注册，请使用学校正式邮箱"
+				localErrs["email"] = "该邮箱域名不允许注册，请使用可信邮箱"
 			}
 		}
 	}
@@ -653,8 +677,9 @@ func (s *Server) handleAuthForgotPassword(c *gin.Context) {
 		return
 	}
 	resetURL := buildResetURL(c, username, rawToken)
-	subject := "GPU Ops 密码找回"
-	body := fmt.Sprintf("您好，\n\n请在 30 分钟内访问以下链接重置密码：\n%s\n\n若非本人操作，请忽略此邮件。\n\nGPU Ops 团队", resetURL)
+	platformName := s.platformName(c.Request.Context())
+	subject := platformName + " 密码找回"
+	body := fmt.Sprintf("您好，\n\n请在 30 分钟内访问以下链接重置密码：\n%s\n\n若非本人操作，请忽略此邮件。\n\n%s 团队", resetURL, platformName)
 	if err := sendResetPasswordMail(settings, email, subject, body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "发送邮件失败，请联系管理员检查 SMTP 配置: " + err.Error()})
 		return

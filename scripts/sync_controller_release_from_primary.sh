@@ -3,11 +3,12 @@
 set -euo pipefail
 
 PRIMARY_HOST="${PRIMARY_HOST:-}"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REMOTE_BIN="${REMOTE_BIN:-/usr/local/bin/gpu-controller}"
 LOCAL_BIN="${LOCAL_BIN:-/usr/local/bin/gpu-controller}"
 SYNC_WEB_DIST="${SYNC_WEB_DIST:-1}"
-REMOTE_WEB_DIST="${REMOTE_WEB_DIST:-/home/gpuops/gpu-ops/web/dist/}"
-LOCAL_WEB_DIST="${LOCAL_WEB_DIST:-/home/gpuops/gpu-ops/web/dist/}"
+REMOTE_WEB_DIST="${REMOTE_WEB_DIST:-/opt/gpu-ops/web/dist/}"
+LOCAL_WEB_DIST="${LOCAL_WEB_DIST:-${ROOT_DIR}/web/dist/}"
 RESTART_SERVICE="${RESTART_SERVICE:-1}"
 SERVICE_NAME="${SERVICE_NAME:-gpu-controller}"
 
@@ -72,4 +73,3 @@ echo "remote_sha256=${REMOTE_HASH}"
 echo "local_sha256=${LOCAL_HASH}"
 echo "remote_version=${REMOTE_VER}"
 echo "local_version=${LOCAL_VER}"
-

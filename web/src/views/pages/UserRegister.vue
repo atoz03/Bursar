@@ -51,7 +51,7 @@
       <div class="rule-chips">
         <span class="chip chip-orange">{{ t("用户名：姓名缩写+邮箱前缀", "Username: initials + email prefix") }}</span>
         <span class="chip chip-cyan">{{ t("学号：全平台唯一", "Student ID: globally unique") }}</span>
-        <span class="chip chip-blue">{{ t("邮箱：仅允许 @example.org / @students.example.org", "Email: only @example.org / @students.example.org") }}</span>
+        <span class="chip chip-blue">{{ emailDomainRuleText }}</span>
       </div>
       <div class="rule-note">{{ t("提交前会自动校验重复项；用户名只需要输入姓名缩写部分，系统会自动把邮箱前缀拼到后面。", "The form checks duplicates before submit. You only type the initials part of the username, and the email prefix is appended automatically.") }}</div>
 
@@ -71,11 +71,11 @@
                   <template #label><span class="required">*</span> {{ t("邮箱", "Email") }}</template>
                   <el-input
                     v-model="form.email"
-                    :placeholder="t('例如：26B123456@example.org', 'Example: 26B123456@example.org')"
+                    :placeholder="t('例如：user@example.org', 'Example: user@example.org')"
                     @input="onEmailInput"
                     @blur="checkUnique('email')"
                   />
-                  <div class="field-tip">{{ t("必须使用 `@example.org` 或 `@students.example.org`；邮箱前缀会自动作为用户名后缀。", "Use only @example.org or @students.example.org; the email prefix will be appended to your username automatically.") }}</div>
+                  <div class="field-tip">{{ emailDomainTip }}</div>
                   <div v-if="fieldErrors.email" class="field-error">{{ fieldErrors.email }}</div>
                 </el-form-item>
               </el-col>
@@ -240,6 +240,7 @@ import { STRONG_PASSWORD_RULE_TEXT, checkStrongPassword } from "../../lib/passwo
 import { getServerCurrentYear } from "../../lib/time";
 import { pickText, toggleUiLanguage, uiLocaleState } from "../../lib/uiLocale";
 import TurnstileWidget from "../../components/TurnstileWidget.vue";
+import { authState } from "../../lib/authStore";
 
 type FieldKey =
   | "username"
@@ -253,7 +254,13 @@ type FieldKey =
   | "phone"
   | "accept_guideline"
   | "captcha";
-const allowedEmailDomains = ["example.org", "students.example.org"];
+const allowedEmailDomains = computed(() => authState.registrationAllowedEmailDomains);
+const emailDomainRuleText = computed(() => allowedEmailDomains.value.length
+  ? t(`邮箱：仅允许 ${allowedEmailDomains.value.map((domain) => `@${domain}`).join(" / ")}`, `Email: ${allowedEmailDomains.value.map((domain) => `@${domain}`).join(" / ")}`)
+  : t("邮箱：允许任意有效域名", "Email: any valid domain"));
+const emailDomainTip = computed(() => allowedEmailDomains.value.length
+  ? t(`仅允许 ${allowedEmailDomains.value.map((domain) => `@${domain}`).join("、")}；邮箱前缀会自动作为用户名后缀。`, `Allowed domains: ${allowedEmailDomains.value.map((domain) => `@${domain}`).join(", ")}. The email prefix is appended to the username.`)
+  : t("允许任意有效邮箱；邮箱前缀会自动作为用户名后缀。", "Any valid email is accepted; its prefix is appended to the username."));
 const MAX_FRONTEND_REGISTER_COOLDOWN_SECONDS = 1000;
 
 function toYYYYMM(year: number, month: number): string {
@@ -406,8 +413,8 @@ function normalizeRegisterEmailInput(emailRaw: string): { value: string; error: 
   if (!m) return { value: email, error: "邮箱格式不合法" };
   const local = String(m[1] || "").trim().toUpperCase();
   const domain = String(m[2] || "").trim().toLowerCase();
-  if (!allowedEmailDomains.includes(domain)) {
-    return { value: email, error: "注册邮箱后缀仅支持 @example.org 或 @students.example.org" };
+  if (allowedEmailDomains.value.length && !allowedEmailDomains.value.includes(domain)) {
+	return { value: email, error: `注册邮箱后缀仅支持 ${allowedEmailDomains.value.map((item) => `@${item}`).join("、")}` };
   }
   return { value: `${local}@${domain}`, error: null };
 }
@@ -461,7 +468,7 @@ function normalizeFieldError(field: FieldKey, msg: string): string {
   if (text === "用户名已存在") return "该用户名已被使用，请换一个用户名。";
   if (text === "邮箱已存在") return "该邮箱已被使用，请换一个邮箱。";
   if (text === "邮箱格式不合法") return "邮箱格式不正确，请检查后再填写。";
-  if (text.includes("注册邮箱后缀仅支持")) return "邮箱后缀仅支持 @example.org 或 @students.example.org。";
+  if (text.includes("注册邮箱后缀仅支持")) return `${text}。`;
   if (text === "学号已存在") return "该学号已被使用，请确认后再填写。";
   if (text === "用户名已被待审核申请占用") return "该用户名已被他人提交注册申请，请更换。";
   if (text === "邮箱已被待审核申请占用") return "该邮箱已被他人提交注册申请，请更换。";
@@ -507,7 +514,7 @@ function normalizeRegisterError(msg: string): string {
   if (text.includes("强密码规则")) return STRONG_PASSWORD_RULE_TEXT;
   if (text === "密码不能包含空格") return "密码不能包含空格。";
   if (text === "邮箱格式不合法") return "邮箱格式不正确，请检查后再提交。";
-  if (text.includes("注册邮箱后缀仅支持")) return "注册邮箱后缀仅支持 @example.org 或 @students.example.org。";
+  if (text.includes("注册邮箱后缀仅支持")) return `${text}。`;
   if (text === "请求过于频繁，请稍后再试") return "请求过于频繁，请稍后再试。";
   if (text === "该邮箱请求过于频繁，请稍后再试") return "该邮箱请求过于频繁，请稍后再试。";
   if (text === "验证码错误，请重试") return "验证码错误，请重新选择后再提交。";
@@ -515,7 +522,7 @@ function normalizeRegisterError(msg: string): string {
   if (text === "请先完成人机验证") return "请先完成人机验证。";
   if (text === "人机验证未通过，请重试") return "人机验证未通过，请重新验证后提交。";
   if (text === "人机验证服务暂时不可用，请稍后重试") return "人机验证服务暂时不可用，请检查网络后重试。";
-  if (text === "该邮箱域名不允许注册，请使用学校正式邮箱") return "该邮箱域名不允许注册，请使用学校正式邮箱。";
+  if (text === "该邮箱域名不允许注册，请使用可信邮箱") return "该邮箱域名不允许注册，请使用可信邮箱。";
   if (text === "请先阅读并勾选同意《用户准则》后再提交") return "请先阅读并勾选同意《用户准则》后再提交。";
   if (text === "请求的资源不存在") return "注册接口不可用，请确认控制器服务已更新并重启。";
   return text;

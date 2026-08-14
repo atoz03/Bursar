@@ -6,7 +6,7 @@ func TestSummarizeUserNodeAccountReadiness(t *testing.T) {
 	rows := []UserNodeAccount{
 		{NodeID: "60001", LocalUsername: "ready", BillingUsername: "u1", IdentityAligned: true},
 		{NodeID: "60002", LocalUsername: "init", BillingUsername: "u2", IdentityInitializing: true},
-		{NodeID: "60003", LocalUsername: "failed", BillingUsername: "u3"},
+		{NodeID: "node-03", LocalUsername: "failed", BillingUsername: "u3"},
 	}
 
 	filteredAll, totalNotReady, totalInitializing, totalFailed := summarizeUserNodeAccountReadiness(rows, "all")

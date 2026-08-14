@@ -23,11 +23,11 @@ if [[ "${ROLE}" != "primary" && "${ROLE}" != "standby" ]]; then
   exit 2
 fi
 if [[ -z "${HA_VIP}" ]]; then
-  echo "HA_VIP 不能为空（示例：192.0.2.10/24）" >&2
+  echo "HA_VIP 不能为空（示例：192.0.2.30/24）" >&2
   exit 2
 fi
 if [[ -z "${HA_PEER_IP}" ]]; then
-  echo "HA_PEER_IP 不能为空（示例：192.0.2.10）" >&2
+  echo "HA_PEER_IP 不能为空（示例：192.0.2.20）" >&2
   exit 2
 fi
 if [[ "${#HA_AUTH_PASS}" -lt 1 || "${#HA_AUTH_PASS}" -gt 8 ]]; then

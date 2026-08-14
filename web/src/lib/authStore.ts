@@ -25,6 +25,10 @@ export type AuthState = {
   serverNow: string;
   serverTzName: string;
   serverTzOffsetMinutes: number;
+  platformName: string;
+  registrationAllowedEmailDomains: string[];
+  provisionSSHHost: string;
+  setupCompleted: boolean;
 };
 
 export const authState = reactive<AuthState>({
@@ -50,6 +54,10 @@ export const authState = reactive<AuthState>({
   serverNow: "",
   serverTzName: "",
   serverTzOffsetMinutes: Number.NaN,
+  platformName: "GPU Ops",
+  registrationAllowedEmailDomains: [],
+  provisionSSHHost: "",
+  setupCompleted: false,
 });
 
 export async function refreshAuth(): Promise<void> {
@@ -79,6 +87,12 @@ export async function refreshAuth(): Promise<void> {
   authState.serverTzOffsetMinutes = Number.isFinite(Number(me.server_tz_offset_minutes))
     ? Number(me.server_tz_offset_minutes)
     : Number.NaN;
+  authState.platformName = String(me.platform_name || "GPU Ops").trim() || "GPU Ops";
+  authState.registrationAllowedEmailDomains = Array.isArray(me.registration_allowed_email_domains)
+    ? me.registration_allowed_email_domains.map((domain) => String(domain || "").trim().toLowerCase()).filter(Boolean)
+    : [];
+  authState.provisionSSHHost = String(me.provision_ssh_host || "").trim();
+  authState.setupCompleted = !!me.setup_completed;
 }
 
 export async function login(username: string, password: string, captchaID: string, captchaOption: number, totpCode = "", captchaToken = ""): Promise<void> {

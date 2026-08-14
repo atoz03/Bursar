@@ -27,7 +27,7 @@ func newTurnstileTestServer(t *testing.T, response string, status int) (*Server,
 	s := NewServer(Config{
 		TurnstileSiteKey:           "test-site-key",
 		TurnstileSecretKey:         "test-secret",
-		TurnstileExpectedHostnames: []string{"192.0.2.20"},
+		TurnstileExpectedHostnames: []string{"controller.example.org"},
 	}, nil)
 	s.turnstileVerifyURL = upstream.URL
 	s.turnstileHTTPClient = upstream.Client()
@@ -36,7 +36,7 @@ func newTurnstileTestServer(t *testing.T, response string, status int) (*Server,
 
 func TestVerifyTurnstile(t *testing.T) {
 	t.Run("accepts expected action and internal hostname", func(t *testing.T) {
-		s, closeServer := newTurnstileTestServer(t, `{"success":true,"hostname":"192.0.2.20","action":"login"}`, http.StatusOK)
+		s, closeServer := newTurnstileTestServer(t, `{"success":true,"hostname":"controller.example.org","action":"login"}`, http.StatusOK)
 		defer closeServer()
 		if err := s.verifyTurnstile(context.Background(), "test-token", "login"); err != nil {
 			t.Fatalf("verifyTurnstile() error: %v", err)

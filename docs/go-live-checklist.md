@@ -26,7 +26,7 @@
 
 - 控制器仅对内网开放，或经网关 ACL 保护
 - `agent_token`、`admin_token`、`auth_secret` 已更换为强随机值，并安全保存
-- 若启用 Turnstile，确认 widget 允许 `192.0.2.20`，并验证浏览器和 Controller 均可访问 `challenges.cloudflare.com:443`
+- 若启用 Turnstile，确认 widget 允许实际访问域名，并验证浏览器和 Controller 均可访问 `challenges.cloudflare.com:443`
 - 管理员接口不要暴露到公网
 - 积分/余额查询接口默认不鉴权（为了 Hook 低侵入），建议仅内网可达或通过网关保护
 

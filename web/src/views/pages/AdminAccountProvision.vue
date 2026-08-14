@@ -75,7 +75,7 @@
             <el-form-item label="SSH 主机地址">
               <el-input
                 v-model="provisionForm.ssh_host"
-                placeholder="默认 controller.example.org"
+                placeholder="请填写 SSH 主机，或先在系统设置中配置"
                 @blur="rememberProvisionSSHHostFromForm"
               />
             </el-form-item>
@@ -466,7 +466,6 @@ const provisionUserDetail = ref<PlatformUserDetail | null>(null);
 const provisionUserLastFetched = ref("");
 let provisionUserFetchSeq = 0;
 
-const DEFAULT_PROVISION_SSH_HOST = "controller.example.org";
 const PROVISION_SSH_HOST_STORAGE_KEY = "gpuops.provision.last_ssh_host";
 
 const provisionForm = reactive({
@@ -491,9 +490,9 @@ function client() {
 function loadProvisionSSHHostDefault(): string {
   try {
     const v = String(localStorage.getItem(PROVISION_SSH_HOST_STORAGE_KEY) || "").trim();
-    return v || DEFAULT_PROVISION_SSH_HOST;
+    return v || authState.provisionSSHHost;
   } catch {
-    return DEFAULT_PROVISION_SSH_HOST;
+    return authState.provisionSSHHost;
   }
 }
 

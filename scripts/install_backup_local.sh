@@ -6,7 +6,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKUP_REPOSITORY="${BACKUP_REPOSITORY:-}"
 BACKUP_DATA_PATHS="${BACKUP_DATA_PATHS:-}"
 BACKUP_RUN_USER="${BACKUP_RUN_USER:-root}"
-BACKUP_STATUS_GROUP="${BACKUP_STATUS_GROUP:-gpuops}"
+BACKUP_STATUS_GROUP="${BACKUP_STATUS_GROUP:-$(id -gn)}"
 BACKUP_SFTP_KEY_FILE="${BACKUP_SFTP_KEY_FILE:-}"
 POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-}"
 POSTGRES_PUBLISHED_PORT="${POSTGRES_PUBLISHED_PORT:-5432}"
@@ -23,7 +23,7 @@ trap cleanup EXIT
 
 if [[ -z "${BACKUP_REPOSITORY}" ]]; then
   echo "必须设置 BACKUP_REPOSITORY，且应位于独立磁盘、SFTP 或对象存储。" >&2
-  echo "示例：BACKUP_REPOSITORY=sftp:backup@10.0.0.2:/srv/restic/gpu-ops" >&2
+  echo "示例：BACKUP_REPOSITORY=sftp:backup@192.0.2.20:/srv/restic/gpu-ops" >&2
   exit 2
 fi
 if [[ "${BACKUP_REPOSITORY}" == /var/lib/docker/* || "${BACKUP_REPOSITORY}" == /home/* ]]; then

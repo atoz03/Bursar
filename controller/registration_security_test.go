@@ -73,17 +73,17 @@ func TestBuildNumericChoiceCaptcha(t *testing.T) {
 func TestNormalizeRegisterEmail(t *testing.T) {
 	t.Parallel()
 
-	normalized, local, domain, err := normalizeRegisterEmail("26b123456@Stu.HIT.edu.cn")
+	normalized, local, domain, err := normalizeRegisterEmail("user@Example.org", []string{"example.org"})
 	if err != nil {
 		t.Fatalf("normalizeRegisterEmail() error: %v", err)
 	}
-	if normalized != "26B123456@students.example.org" {
+	if normalized != "USER@example.org" {
 		t.Fatalf("normalized=%q", normalized)
 	}
-	if local != "26B123456" {
+	if local != "USER" {
 		t.Fatalf("local=%q", local)
 	}
-	if domain != "students.example.org" {
+	if domain != "example.org" {
 		t.Fatalf("domain=%q", domain)
 	}
 }
