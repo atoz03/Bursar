@@ -49,9 +49,30 @@ resolve_postgres_container() {
     }
     return 0
   fi
-  mapfile -t candidates < <(docker ps --filter "publish=${POSTGRES_PUBLISHED_PORT}" --format '{{.Names}}')
+
+  local port_candidate_count=0
+  local query_result=""
+  mapfile -t candidates < <(docker ps --filter "publish=${POSTGRES_PUBLISHED_PORT}" --format '{{.ID}}' 2>/dev/null)
+  port_candidate_count="${#candidates[@]}"
+  if (( port_candidate_count == 1 )); then
+    POSTGRES_CONTAINER="${candidates[0]}"
+    return 0
+  fi
+
+  # 某些 Docker 版本或非标准网络模式无法通过 publish 过滤器定位容器。
+  # 此时直接验证哪个运行中容器能查询目标数据库，避免依赖容器名称。
+  candidates=()
+  while IFS= read -r container_id; do
+    [[ -n "${container_id}" ]] || continue
+    query_result="$(docker exec "${container_id}" psql \
+      --username="${POSTGRES_USER}" \
+      --dbname="${POSTGRES_DATABASE}" \
+      --tuples-only --no-align --command='SELECT 1' 2>/dev/null || true)"
+    [[ "${query_result}" == "1" ]] && candidates+=("${container_id}")
+  done < <(docker ps --quiet)
+
   if (( ${#candidates[@]} != 1 )); then
-    echo "无法按发布端口 ${POSTGRES_PUBLISHED_PORT} 唯一识别 PostgreSQL 容器（找到 ${#candidates[@]} 个），请设置 POSTGRES_CONTAINER" >&2
+    echo "无法唯一识别 PostgreSQL 容器（端口候选 ${port_candidate_count} 个，数据库验证候选 ${#candidates[@]} 个），请设置 POSTGRES_CONTAINER" >&2
     return 1
   fi
   POSTGRES_CONTAINER="${candidates[0]}"

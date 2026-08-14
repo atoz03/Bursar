@@ -601,7 +601,7 @@ BACKUP_REPOSITORY='sftp:backup@<backup-host>:/srv/restic/gpu-ops' \
 bash scripts/install_backup_local.sh
 
 # 使用独立 SSH 私钥连接异机仓库
-BACKUP_REPOSITORY='sftp:gpuops@192.0.2.10:/var/lib/gpu-ops/gpu-ops-restic' \
+BACKUP_REPOSITORY='sftp:gpuops@192.0.2.10:/mnt/raid5/gpu-ops-restic' \
 BACKUP_SFTP_KEY_FILE='/path/to/ssh-private-key' \
 bash scripts/install_backup_local.sh
 
@@ -618,6 +618,7 @@ sudo systemctl start gpuops-backup-verify.service
 - `BACKUP_SFTP_KEY_FILE` 会由安装器复制到仅 root 可读的位置，定时任务无需依赖登录用户的 SSH 配置。
 - 如确实需要附带其他小型目录，可在安装时显式设置 `BACKUP_DATA_PATHS='/path/one /path/two'`；不要用它备份大规模科研数据。
 - 备份脚本默认按宿主机发布端口 `5432` 自动识别 PostgreSQL 容器；存在多个候选时必须显式设置 `POSTGRES_CONTAINER=<容器名>`。
+- 若 Docker 无法按发布端口返回容器，脚本会逐个验证运行中容器的目标数据库；仍无法唯一识别时，可重新安装并显式设置 `POSTGRES_CONTAINER=<容器名或 ID>`。
 
 ---
 
