@@ -97,7 +97,6 @@
             <div class="progress-track"><span :class="barTone(memoryPercent(node))" :style="barWidth(memoryPercent(node))" /></div>
             <div class="metric-foot">
               <span>{{ memoryUsageText(node) }}</span>
-              <span>Agent {{ formatMemory(node.agent_memory_mb) }}</span>
             </div>
           </div>
         </div>
@@ -105,22 +104,11 @@
         <div class="gpu-section">
           <div class="section-label">
             <span>GPU <em>{{ compactModel(node.gpu_model || "") }}</em></span>
-            <div class="gpu-section-actions">
-              <small><b>{{ gpuBusyOnNode(node) }}</b>/{{ node.gpu_count || displayGPUs(node).length }} 活跃</small>
-              <button
-                v-if="displayGPUs(node).length > COLLAPSED_GPU_COUNT"
-                type="button"
-                :aria-expanded="isGPUExpanded(node.node_id)"
-                @click="toggleGPUExpanded(node.node_id)"
-              >
-                {{ isGPUExpanded(node.node_id) ? "收起" : `展开 ${displayGPUs(node).length - COLLAPSED_GPU_COUNT} 张` }}
-                <el-icon :class="{ expanded: isGPUExpanded(node.node_id) }"><ArrowDown /></el-icon>
-              </button>
-            </div>
+            <small><b>{{ gpuBusyOnNode(node) }}</b>/{{ node.gpu_count || displayGPUs(node).length }} 活跃</small>
           </div>
           <div v-if="displayGPUs(node).length" class="gpu-grid">
             <div
-              v-for="gpu in visibleGPUs(node)"
+              v-for="gpu in displayGPUs(node)"
               :key="`${node.node_id}-${gpu.index}`"
               class="gpu-tile"
               :class="gpuState(gpu)"
@@ -148,7 +136,7 @@
 
         <footer class="node-footer">
           <span><i>硬盘</i>{{ diskText(node) }}</span>
-          <span><i>Agent</i>{{ formatMemory(node.agent_memory_mb) }}</span>
+          <span><i>SSH</i>{{ node.ssh_active_count || 0 }}</span>
           <span><i>运行</i>{{ uptimeText(node.host_uptime_seconds).replace("运行 ", "") }}</span>
           <span class="heartbeat"><i>负载</i>{{ Number(node.host_load_1 || 0).toFixed(2) }}</span>
         </footer>
@@ -161,7 +149,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { ArrowDown, Refresh, Search } from "@element-plus/icons-vue";
+import { Refresh, Search } from "@element-plus/icons-vue";
 import { ApiClient, type GPUDeviceStatus, type NodeMonitorStatus } from "../../lib/api";
 import { authState } from "../../lib/authStore";
 import { settingsState } from "../../lib/settingsStore";
@@ -170,14 +158,12 @@ type FilterValue = "all" | "online" | "busy" | "warning" | "offline";
 type DisplayGPU = GPUDeviceStatus & { pending?: boolean };
 
 const AUTO_REFRESH_SECONDS = 15;
-const COLLAPSED_GPU_COUNT = 4;
 const nodes = ref<NodeMonitorStatus[]>([]);
 const loading = ref(false);
 const error = ref("");
 const keyword = ref("");
 const activeFilter = ref<FilterValue>("all");
 const lastRefreshAt = ref(0);
-const expandedGPUNodeIDs = ref<Set<string>>(new Set());
 let refreshTimer: ReturnType<typeof setInterval> | null = null;
 
 function heartbeatTimeoutMs(node: NodeMonitorStatus): number {
@@ -283,22 +269,6 @@ function displayGPUs(node: NodeMonitorStatus): DisplayGPU[] {
     compute_processes: 0,
     pending: true,
   }));
-}
-
-function isGPUExpanded(nodeID: string): boolean {
-  return expandedGPUNodeIDs.value.has(nodeID);
-}
-
-function toggleGPUExpanded(nodeID: string): void {
-  const next = new Set(expandedGPUNodeIDs.value);
-  if (next.has(nodeID)) next.delete(nodeID);
-  else next.add(nodeID);
-  expandedGPUNodeIDs.value = next;
-}
-
-function visibleGPUs(node: NodeMonitorStatus): DisplayGPU[] {
-  const items = displayGPUs(node);
-  return isGPUExpanded(node.node_id) ? items : items.slice(0, COLLAPSED_GPU_COUNT);
 }
 
 function gpuBusyOnNode(node: NodeMonitorStatus): number {
@@ -644,7 +614,8 @@ onBeforeUnmount(() => {
 .metric-title { color: #667587; font-size: 11px; }
 .metric-title strong { color: #17283a; font-size: 17px; }
 .progress-track { height: 5px; margin: 7px 0; background: #e7ecf0; }
-.metric-foot { color: #8995a3; font-size: 9px; }
+.metric-foot { justify-content: flex-start; overflow: hidden; color: #8995a3; font-size: 9px; }
+.metric-foot span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 .gpu-section { display: flex; flex: 1 1 auto; min-height: 0; padding-top: 1px; flex-direction: column; }
 .section-label { margin-bottom: 8px; }
@@ -652,12 +623,10 @@ onBeforeUnmount(() => {
 .section-label > span em { overflow: hidden; color: #94a0ad; font-size: 10px; font-style: normal; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .section-label small { flex: 0 0 auto; color: #8c98a6; font-size: 10px; }
 .section-label small b { color: #5c6e82; font-weight: 750; }
-.gpu-section-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 7px; }
-.gpu-section-actions button { display: inline-flex; align-items: center; gap: 2px; padding: 2px 5px; border: 0; border-radius: 6px; color: #64748b; background: #eef2f5; cursor: pointer; font: inherit; font-size: 9px; white-space: nowrap; }
-.gpu-section-actions button:hover { color: #087854; background: #e8f6f0; }
-.gpu-section-actions .el-icon { transition: transform .18s ease; }
-.gpu-section-actions .el-icon.expanded { transform: rotate(180deg); }
-.gpu-grid { flex: 1 1 auto; align-content: start; min-height: 0; max-height: none; gap: 7px; padding-right: 3px; overflow-y: auto; }
+.gpu-grid { flex: 1 1 auto; align-content: start; min-height: 0; max-height: none; gap: 7px; padding-right: 5px; overflow-y: scroll; scrollbar-width: thin; scrollbar-color: #b9c4ce #edf1f4; scrollbar-gutter: stable; }
+.gpu-grid::-webkit-scrollbar { width: 7px; }
+.gpu-grid::-webkit-scrollbar-track { border-radius: 999px; background: #edf1f4; }
+.gpu-grid::-webkit-scrollbar-thumb { border: 2px solid #edf1f4; border-radius: 999px; background: #aebbc6; }
 .gpu-tile { padding: 10px; border-color: #e5eaf0; border-radius: 11px; background: #fafcfd; }
 .gpu-tile.gpu-busy { border-color: #ddd4fa; background: #fbf9ff; }
 .gpu-tile.gpu-hot { border-color: #fecaca; background: #fff8f8; }

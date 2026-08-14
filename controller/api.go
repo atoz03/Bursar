@@ -1184,7 +1184,7 @@ func (s *Server) RouterWeb() *gin.Engine {
 	admin.POST("/usage/retention", s.requireSuperAdmin(), s.handleAdminUsageRetentionSet)
 	admin.POST("/usage/delete-range", s.requireSuperAdmin(), s.handleAdminUsageDeleteRange)
 	admin.GET("/nodes", s.requireNodesPermission(), s.handleAdminNodes)
-	admin.GET("/node-monitor", s.requireNodesPermission(), s.handleAdminNodeMonitor)
+	admin.GET("/node-monitor", s.requireSuperAdmin(), s.handleAdminNodeMonitor)
 	admin.GET("/nodes/:id/detail", s.requireNodesPermission(), s.handleAdminNodeDetail)
 	admin.GET("/nodes/:id/security-events", s.requireNodesPermission(), s.handleAdminNodeSecurityEvents)
 	admin.POST("/nodes/:id/ssh-guard", s.requireNodesModifyPermission(), s.handleAdminNodeSSHGuardSet)
