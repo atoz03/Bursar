@@ -499,16 +499,16 @@ onBeforeUnmount(() => {
   height: 100%;
   box-sizing: border-box;
   padding: 17px;
-  border: 1px solid #e0e6eb;
-  border-top: 1px solid #e0e6eb;
+  border: 1px solid rgba(255,255,255,.76);
+  border-top: 1px solid rgba(255,255,255,.76);
   border-radius: 16px;
-  background: #fff;
-  box-shadow: 0 7px 22px rgba(36, 53, 72, .06);
+  background: linear-gradient(145deg, rgba(255,255,255,.74), rgba(247,250,255,.46));
+  box-shadow: 0 12px 30px rgba(36,53,72,.09), inset 0 1px 0 rgba(255,255,255,.92);
 }
 .node-card::before { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 3px; background: var(--state); }
 .node-card:hover { transform: translateY(-2px); border-color: #cfd9e1; box-shadow: 0 12px 28px rgba(36,53,72,.1); }
 .node-card.state-warning { --state: #f59e0b; }
-.node-card.state-offline { --state: #a8b2bf; filter: none; background: #fafbfc; }
+.node-card.state-offline { --state: #a8b2bf; filter: none; background: linear-gradient(145deg, rgba(250,251,252,.72), rgba(241,245,249,.42)); }
 .node-card.state-pending { --state: #3b82f6; }
 
 .node-head { flex: 0 0 auto; align-items: flex-start; }
@@ -521,7 +521,7 @@ onBeforeUnmount(() => {
 .heartbeat-chip { color: #929dab; font-size: 10px; white-space: nowrap; }
 
 .primary-metrics { flex: 0 0 auto; gap: 18px; margin: 16px 0; padding: 0; border-radius: 0; background: transparent; }
-.metric-panel { padding: 12px; border: 1px solid #e8edf1; border-radius: 12px; background: #fafcfd; }
+.metric-panel { padding: 12px; border: 1px solid rgba(255,255,255,.74); border-radius: 12px; background: rgba(255,255,255,.42); box-shadow: inset 0 1px 0 rgba(255,255,255,.88); }
 .metric-title { color: #667587; font-size: 11px; }
 .metric-title strong { color: #17283a; font-size: 17px; }
 .progress-track { height: 5px; margin: 7px 0; background: #e7ecf0; }
@@ -538,10 +538,10 @@ onBeforeUnmount(() => {
 .gpu-grid::-webkit-scrollbar { width: 7px; }
 .gpu-grid::-webkit-scrollbar-track { border-radius: 999px; background: #edf1f4; }
 .gpu-grid::-webkit-scrollbar-thumb { border: 2px solid #edf1f4; border-radius: 999px; background: #aebbc6; }
-.gpu-tile { padding: 10px; border-color: #e5eaf0; border-radius: 11px; background: #fafcfd; }
-.gpu-tile.gpu-busy { border-color: #ddd4fa; background: #fbf9ff; }
-.gpu-tile.gpu-hot { border-color: #fecaca; background: #fff8f8; }
-.gpu-tile.gpu-pending { border-style: dashed; background: #fafbfc; }
+.gpu-tile { padding: 10px; border-color: rgba(255,255,255,.74); border-radius: 11px; background: rgba(255,255,255,.44); box-shadow: inset 0 1px 0 rgba(255,255,255,.82); }
+.gpu-tile.gpu-busy { border-color: rgba(196,181,253,.58); background: rgba(250,245,255,.58); }
+.gpu-tile.gpu-hot { border-color: rgba(254,202,202,.72); background: rgba(255,248,248,.62); }
+.gpu-tile.gpu-pending { border-style: dashed; background: rgba(248,250,252,.44); }
 .gpu-head strong { font-size: 11px; }
 .gpu-head span { font-size: 9px; }
 .gpu-values { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px; }
