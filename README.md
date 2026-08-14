@@ -636,6 +636,7 @@ sudo systemctl start gpuops-backup-verify.service
 | `install_ha_vip_local.sh` | 安装 Keepalived VRRP VIP，主备自动切换与修复回切 | `HA_ROLE=primary HA_INTERFACE=eth0 HA_VIP=192.0.2.10/24 HA_PEER_IP=<standby-ip> bash scripts/install_ha_vip_local.sh` |
 | `install_backup_local.sh` | 安装 restic 每日加密备份与每周隔离恢复演练 | `BACKUP_REPOSITORY=sftp:backup@<host>:/srv/restic/gpu-ops bash scripts/install_backup_local.sh` |
 | `gpuops_backup.sh` | 备份 PostgreSQL 与控制器运行配置并执行保留策略 | `sudo systemctl start gpuops-backup.service` |
+| `remove_snap_docker_conflict.sh` | 备份数据库后移除冲突的 Snap Docker，并恢复系统 Docker Socket | `sudo bash scripts/remove_snap_docker_conflict.sh` |
 | `gpuops_backup_verify.sh` | 在一次性 PostgreSQL 容器内执行完整恢复校验 | `sudo systemctl start gpuops-backup-verify.service` |
 | `install_agent_local.sh` | 在计算节点本机一键安装并启用 `gpu-node-agent` | `NODE_ID=60001 CONTROLLER_URL=http://<控制器IP>:60039 AGENT_TOKEN=<token> bash scripts/install_agent_local.sh` |
 | `deploy_agent.sh` | 从控制端批量部署 agent 到多台节点 | `NODES='60000:192.0.2.10 60001:192.0.2.10' AGENT_TOKEN=<token> CONTROLLER_URL=http://<控制器IP>:60039 bash scripts/deploy_agent.sh` |
