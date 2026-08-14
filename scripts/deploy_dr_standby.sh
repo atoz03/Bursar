@@ -15,6 +15,8 @@ DR_KEY_FILE="${DR_KEY_FILE:-${ROOT_DIR}/my_ssh_keys/node_60009.txt}"
 REMOTE_PROJECT_DIR="${REMOTE_PROJECT_DIR:-/home/${DR_SSH_USER}/gpu-ops}"
 LOCAL_CONFIG_PATH="${LOCAL_CONFIG_PATH:-${ROOT_DIR}/config/controller.local.yaml}"
 LOCAL_BIN="${LOCAL_BIN:-/usr/local/bin/gpu-controller}"
+POSTGRES_IMAGE="${POSTGRES_IMAGE:-postgres:18.1}"
+TRANSFER_POSTGRES_IMAGE="${TRANSFER_POSTGRES_IMAGE:-1}"
 
 for required in "${DR_KEY_FILE}" "${LOCAL_CONFIG_PATH}" "${LOCAL_BIN}"; do
   [[ -r "${required}" ]] || { echo "缺少部署文件：${required}" >&2; exit 2; }
@@ -22,7 +24,12 @@ done
 [[ "${DR_HOST}" != "${PRIMARY_HOST}" ]] || { echo "容灾主机不能等于 primary" >&2; exit 2; }
 
 tmp_key="$(mktemp /tmp/gpuops-dr-key.XXXXXX)"
-trap 'rm -f "${tmp_key}"' EXIT
+image_archive=""
+cleanup() {
+  rm -f "${tmp_key}"
+  [[ -z "${image_archive}" ]] || rm -f "${image_archive}"
+}
+trap cleanup EXIT
 awk '/-----BEGIN OPENSSH PRIVATE KEY-----/{copy=1} copy{print} /-----END OPENSSH PRIVATE KEY-----/{if(copy) exit}' "${DR_KEY_FILE}" >"${tmp_key}"
 chmod 0600 "${tmp_key}"
 ssh-keygen -y -f "${tmp_key}" >/dev/null
@@ -39,6 +46,14 @@ tar -C "${ROOT_DIR}" \
   -cf - . | ssh "${ssh_opts[@]}" "${remote}" "tar -C '${REMOTE_PROJECT_DIR}' -xf -"
 scp -q "${scp_opts[@]}" "${LOCAL_CONFIG_PATH}" "${remote}:${REMOTE_PROJECT_DIR}/.deploy/controller.yaml"
 scp -q "${scp_opts[@]}" "${LOCAL_BIN}" "${remote}:${REMOTE_PROJECT_DIR}/.deploy/gpu-controller"
+
+if [[ "${TRANSFER_POSTGRES_IMAGE}" == "1" ]]; then
+  echo "[1b/4] 从 primary 导出 PostgreSQL 镜像，避免容灾节点依赖 Docker Hub"
+  image_archive="$(mktemp /tmp/postgres-18.1.XXXXXX.tar.gz)"
+  sudo docker image inspect "${POSTGRES_IMAGE}" >/dev/null
+  sudo docker save "${POSTGRES_IMAGE}" | gzip -1 >"${image_archive}"
+  scp -q "${scp_opts[@]}" "${image_archive}" "${remote}:${REMOTE_PROJECT_DIR}/.deploy/postgres-image.tar.gz"
+fi
 
 echo "[2/4] 在 60009 安装独立 PostgreSQL 与 standby 控制器"
 ssh -tt "${ssh_opts[@]}" "${remote}" \
