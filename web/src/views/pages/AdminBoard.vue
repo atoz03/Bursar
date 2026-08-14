@@ -1,17 +1,17 @@
 <template>
   <div class="board-wrap">
-    <section class="board-hero">
-      <div class="hero-copy">
-        <span class="eyebrow">OPERATIONS OVERVIEW</span>
-        <div class="hero-title-row">
-          <span class="hero-icon"><el-icon><DataBoard /></el-icon></span>
+    <section class="board-hero ops-page-hero">
+      <div class="hero-copy ops-hero-copy">
+        <span class="eyebrow ops-eyebrow">OPERATIONS OVERVIEW</span>
+        <div class="hero-title-row ops-title-row">
+          <span class="hero-icon ops-hero-icon"><el-icon><DataBoard /></el-icon></span>
           <div>
             <h1>运营看板</h1>
             <p>聚合资源使用与积分变化，详情数据按需加载。</p>
           </div>
         </div>
       </div>
-      <div class="head-actions">
+      <div class="head-actions ops-hero-actions">
         <span v-if="lastSyncedAt" class="sync-time">更新于 {{ lastSyncedAt }}</span>
         <el-button v-if="authState.role === 'admin'" plain @click="toggleRetention">
           <el-icon><Delete /></el-icon>{{ retentionExpanded ? "收起数据工具" : "数据工具" }}
@@ -59,23 +59,23 @@
       <div class="range-meta">当前数据：{{ appliedFromDate }} 至 {{ appliedToDate }}</div>
     </el-card>
 
-    <div class="metric-grid" v-loading="loading">
-      <article class="metric-card tone-blue">
+    <div class="metric-grid ops-metric-grid" v-loading="loading">
+      <article class="metric-card ops-metric-card tone-blue ops-tone-blue">
         <span class="metric-label">平台用户</span>
         <strong>{{ displayUserRows.length }}</strong>
         <small>{{ activeUserCount }} 位在区间内有记录</small>
       </article>
-      <article class="metric-card tone-violet">
+      <article class="metric-card ops-metric-card tone-violet ops-tone-violet">
         <span class="metric-label">GPU 使用时间</span>
         <strong>{{ fmtCompactDuration(totalGPUSeconds) }}</strong>
         <small>按节点采样周期累计</small>
       </article>
-      <article class="metric-card tone-cyan">
+      <article class="metric-card ops-metric-card tone-cyan ops-tone-cyan">
         <span class="metric-label">CPU 使用时间</span>
         <strong>{{ fmtCompactDuration(totalCPUSeconds) }}</strong>
         <small>有效 CPU 活跃时间</small>
       </article>
-      <article class="metric-card tone-amber">
+      <article class="metric-card ops-metric-card tone-amber ops-tone-amber">
         <span class="metric-label">积分消耗</span>
         <strong>{{ fmt2(totalCost) }}</strong>
         <small>区间内累计消耗</small>

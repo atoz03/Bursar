@@ -1,22 +1,24 @@
 <template>
   <div class="admin-accounts-page">
-    <el-card class="section-card overview-card">
-      <template #header>
-        <div class="head">
-          <div class="section-title-wrap">
-            <span class="section-icon tone-map"><el-icon><Connection /></el-icon></span>
-            <span>平台账号映射</span>
-          </div>
-          <div class="head-actions">
-            <el-button :loading="loading" @click="reload">刷新</el-button>
-            <el-button type="primary" @click="openCreateDialog">新增映射</el-button>
+    <section class="ops-page-hero">
+      <div class="ops-hero-copy">
+        <span class="ops-eyebrow">ACCOUNT DIRECTORY</span>
+        <div class="ops-title-row">
+          <span class="ops-hero-icon"><el-icon><Connection /></el-icon></span>
+          <div>
+            <h1>平台账号映射</h1>
+            <p>管理平台账号与节点账号的关联、安全策略和资源限制。</p>
           </div>
         </div>
-      </template>
+      </div>
+      <div class="ops-hero-actions">
+        <el-button :loading="loading" @click="reload">刷新</el-button>
+        <el-button type="primary" @click="openCreateDialog">新增映射</el-button>
+      </div>
+    </section>
 
-      <el-alert v-if="error" :title="error" type="error" show-icon class="mb" />
-      <el-alert v-if="success" :title="success" type="success" show-icon class="mb" />
-    </el-card>
+    <el-alert v-if="error" :title="error" type="error" show-icon />
+    <el-alert v-if="success" :title="success" type="success" show-icon />
 
     <el-card class="section-card workspace-nav-card">
       <el-tabs v-model="activeSection" class="workspace-tabs" @tab-change="onSectionChange">
