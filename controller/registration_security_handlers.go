@@ -17,7 +17,15 @@ type adminDisposableDomainUpsertReq struct {
 	Note    string `json:"note"`
 }
 
-func (s *Server) issueAuthCaptcha(c *gin.Context) {
+func (s *Server) issueAuthCaptcha(c *gin.Context, action string) {
+	if s.turnstileEnabled() {
+		c.JSON(http.StatusOK, gin.H{
+			"provider": "turnstile",
+			"site_key": strings.TrimSpace(s.cfg.TurnstileSiteKey),
+			"action":   strings.TrimSpace(action),
+		})
+		return
+	}
 	captchaID, err := randomTokenURLSafe(24)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -43,6 +51,7 @@ func (s *Server) issueAuthCaptcha(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
+		"provider":   "numeric",
 		"captcha_id": captchaID,
 		"question":   question,
 		"options":    options,
@@ -51,11 +60,11 @@ func (s *Server) issueAuthCaptcha(c *gin.Context) {
 }
 
 func (s *Server) handleAuthLoginCaptcha(c *gin.Context) {
-	s.issueAuthCaptcha(c)
+	s.issueAuthCaptcha(c, "login")
 }
 
 func (s *Server) handleAuthRegisterCaptcha(c *gin.Context) {
-	s.issueAuthCaptcha(c)
+	s.issueAuthCaptcha(c, "register")
 }
 
 func (s *Server) handleAdminRegisterSecurityPolicy(c *gin.Context) {
@@ -69,8 +78,6 @@ func (s *Server) handleAdminRegisterSecurityPolicy(c *gin.Context) {
 		"ip_limit":                 registerIPLimit,
 		"email_window_seconds":     int(registerEmailWindow / time.Second),
 		"email_limit":              registerEmailLimit,
-		"ip_cooldown_seconds":      int(registerIPCooldown / time.Second),
-		"ip_cooldown_failures":     registerIPCooldownFailures,
 		"email_cooldown_seconds":   int(registerEmailCooldown / time.Second),
 		"captcha_ttl_seconds":      int(registerCaptchaTTL / time.Second),
 		"captcha_option_count":     registerCaptchaOptionCount,

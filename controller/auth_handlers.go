@@ -22,6 +22,7 @@ type loginReq struct {
 	Username      string `json:"username"`
 	Password      string `json:"password"`
 	TOTPCode      string `json:"totp_code"`
+	CaptchaToken  string `json:"captcha_token"`
 	CaptchaID     string `json:"captcha_id"`
 	CaptchaOption int    `json:"captcha_option"`
 }
@@ -30,6 +31,7 @@ type registerReq struct {
 	Email                   string `json:"email"`
 	Username                string `json:"username"`
 	Password                string `json:"password"`
+	CaptchaToken            string `json:"captcha_token"`
 	CaptchaID               string `json:"captcha_id"`
 	CaptchaOption           int    `json:"captcha_option"`
 	RealName                string `json:"real_name"`
@@ -150,6 +152,8 @@ func writeRegisterRateLimited(c *gin.Context, errMsg string, retryAt time.Time, 
 
 func writeLoginCaptchaError(c *gin.Context, err error) {
 	switch {
+	case errors.Is(err, errAuthCaptchaUnavailable):
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "captcha_unavailable"})
 	case errors.Is(err, errRegisterCaptchaExpired):
 		c.JSON(http.StatusBadRequest, gin.H{"error": "captcha_expired"})
 	case errors.Is(err, errRegisterCaptchaUsed):
@@ -175,15 +179,25 @@ func (s *Server) handleAuthLogin(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "username/password 不能为空"})
 		return
 	}
-	clientIP := trimmedClientIP(c.ClientIP())
 	now := time.Now()
-	if strings.TrimSpace(req.CaptchaID) == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "captcha_missing"})
-		return
-	}
-	if err := s.store.VerifyRegisterCaptcha(c.Request.Context(), req.CaptchaID, clientIP, req.CaptchaOption, now); err != nil {
-		writeLoginCaptchaError(c, err)
-		return
+	if s.turnstileEnabled() {
+		if strings.TrimSpace(req.CaptchaToken) == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "captcha_missing"})
+			return
+		}
+		if err := s.verifyTurnstile(c.Request.Context(), req.CaptchaToken, "login"); err != nil {
+			writeLoginCaptchaError(c, err)
+			return
+		}
+	} else {
+		if strings.TrimSpace(req.CaptchaID) == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "captcha_missing"})
+			return
+		}
+		if err := s.store.VerifyRegisterCaptcha(c.Request.Context(), req.CaptchaID, req.CaptchaOption, now); err != nil {
+			writeLoginCaptchaError(c, err)
+			return
+		}
 	}
 
 	ok, err := s.store.VerifyAdminPassword(c.Request.Context(), req.Username, req.Password)
@@ -251,7 +265,7 @@ func (s *Server) handleAuthLogin(c *gin.Context) {
 				return
 			}
 			if hint != "" {
-				if err := s.store.ConsumeRegisterCaptcha(c.Request.Context(), req.CaptchaID, now); err != nil {
+				if err := s.consumeLocalLoginCaptcha(c.Request.Context(), req.CaptchaID, now); err != nil {
 					writeLoginCaptchaError(c, err)
 					return
 				}
@@ -264,7 +278,7 @@ func (s *Server) handleAuthLogin(c *gin.Context) {
 				return
 			}
 			if !ok {
-				if err := s.store.ConsumeRegisterCaptcha(c.Request.Context(), req.CaptchaID, now); err != nil {
+				if err := s.consumeLocalLoginCaptcha(c.Request.Context(), req.CaptchaID, now); err != nil {
 					writeLoginCaptchaError(c, err)
 					return
 				}
@@ -297,7 +311,7 @@ func (s *Server) handleAuthLogin(c *gin.Context) {
 			return
 		}
 		if !verifyTOTPCode(twoFactorState.Secret, req.TOTPCode, now) {
-			if err := s.store.ConsumeRegisterCaptcha(c.Request.Context(), req.CaptchaID, now); err != nil {
+			if err := s.consumeLocalLoginCaptcha(c.Request.Context(), req.CaptchaID, now); err != nil {
 				writeLoginCaptchaError(c, err)
 				return
 			}
@@ -305,7 +319,7 @@ func (s *Server) handleAuthLogin(c *gin.Context) {
 			return
 		}
 	}
-	if err := s.store.ConsumeRegisterCaptcha(c.Request.Context(), req.CaptchaID, now); err != nil {
+	if err := s.consumeLocalLoginCaptcha(c.Request.Context(), req.CaptchaID, now); err != nil {
 		writeLoginCaptchaError(c, err)
 		return
 	}
@@ -398,7 +412,6 @@ func (s *Server) handleAuthRegister(c *gin.Context) {
 		req.Email,
 		now.Add(-registerIPWindow),
 		now.Add(-registerEmailWindow),
-		now.Add(-registerIPCooldown),
 	)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -422,15 +435,6 @@ func (s *Server) handleAuthRegister(c *gin.Context) {
 		writeRegisterRateLimited(c, "该邮箱请求过于频繁，请稍后再试", retryAt, now)
 		return
 	}
-	if shouldTriggerRegisterIPCooldown(stats, now) {
-		recordEvent("deny", "cooldown_by_ip")
-		retryAt := stats.LastIPFailureAt.Add(registerIPCooldown)
-		if !retryAt.After(now) {
-			retryAt = now.Add(time.Second)
-		}
-		writeRegisterRateLimited(c, "请求过于频繁，请稍后再试", retryAt, now)
-		return
-	}
 	if stats.LastEmailAt != nil && now.Sub(*stats.LastEmailAt) < registerEmailCooldown {
 		recordEvent("deny", "cooldown_by_email")
 		retryAt := stats.LastEmailAt.Add(registerEmailCooldown)
@@ -450,22 +454,40 @@ func (s *Server) handleAuthRegister(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "该邮箱域名不允许注册，请使用学校正式邮箱"})
 		return
 	}
-	if strings.TrimSpace(req.CaptchaID) == "" {
-		recordEvent("deny", "captcha_missing")
-		c.JSON(http.StatusBadRequest, gin.H{"error": "验证码已失效，请刷新后重试"})
-		return
+	var captchaErr error
+	if s.turnstileEnabled() {
+		if strings.TrimSpace(req.CaptchaToken) == "" {
+			recordEvent("deny", "captcha_missing")
+			c.JSON(http.StatusBadRequest, gin.H{"error": "请先完成人机验证"})
+			return
+		}
+		captchaErr = s.verifyTurnstile(c.Request.Context(), req.CaptchaToken, "register")
+	} else {
+		if strings.TrimSpace(req.CaptchaID) == "" {
+			recordEvent("deny", "captcha_missing")
+			c.JSON(http.StatusBadRequest, gin.H{"error": "验证码已失效，请刷新后重试"})
+			return
+		}
+		captchaErr = s.store.VerifyAndConsumeRegisterCaptcha(c.Request.Context(), req.CaptchaID, req.CaptchaOption, now)
 	}
-	if err := s.store.VerifyAndConsumeRegisterCaptcha(c.Request.Context(), req.CaptchaID, clientIP, req.CaptchaOption, now); err != nil {
+	if captchaErr != nil {
 		switch {
-		case errors.Is(err, errRegisterCaptchaExpired):
+		case errors.Is(captchaErr, errAuthCaptchaUnavailable):
+			recordEvent("deny", "captcha_unavailable")
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "人机验证服务暂时不可用，请稍后重试"})
+		case errors.Is(captchaErr, errRegisterCaptchaExpired):
 			recordEvent("deny", "captcha_expired")
 			c.JSON(http.StatusBadRequest, gin.H{"error": "验证码已过期，请刷新后重试"})
-		case errors.Is(err, errRegisterCaptchaUsed):
+		case errors.Is(captchaErr, errRegisterCaptchaUsed):
 			recordEvent("deny", "captcha_used")
 			c.JSON(http.StatusBadRequest, gin.H{"error": "验证码已失效，请刷新后重试"})
 		default:
 			recordEvent("deny", "captcha_invalid")
-			c.JSON(http.StatusBadRequest, gin.H{"error": "验证码错误，请重试"})
+			if s.turnstileEnabled() {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "人机验证未通过，请重试"})
+			} else {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "验证码错误，请重试"})
+			}
 		}
 		return
 	}

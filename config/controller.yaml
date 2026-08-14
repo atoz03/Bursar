@@ -53,6 +53,13 @@ dry_run: false
 # Web 登录会话有效期（小时）；0 表示禁用登录会话（仅支持 admin_token）
 session_hours: 8
 
+# Cloudflare Turnstile。site key 与 secret key 同时填写后启用；留空时使用本地简易验证码。
+# 内网用户通过 NAT 地址访问时，应填写浏览器地址栏里的 hostname，不是 Controller 后端网卡地址。
+turnstile_site_key: ""
+turnstile_secret_key: ""
+turnstile_expected_hostnames:
+  - "192.0.2.20"
+
 # 是否强制 cookie secure（HTTPS 下建议 true；HTTP 调试可 false）
 cookie_secure: false
 

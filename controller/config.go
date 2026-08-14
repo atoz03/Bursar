@@ -53,6 +53,11 @@ type Config struct {
 	// Web 登录会话配置
 	SessionHours int  `yaml:"session_hours"`
 	CookieSecure bool `yaml:"cookie_secure"`
+	// TurnstileSiteKey / TurnstileSecretKey 同时配置后启用 Cloudflare Turnstile。
+	// TurnstileExpectedHostnames 用于校验 Siteverify 返回的 hostname，避免 token 被跨站复用。
+	TurnstileSiteKey           string   `yaml:"turnstile_site_key"`
+	TurnstileSecretKey         string   `yaml:"turnstile_secret_key"`
+	TurnstileExpectedHostnames []string `yaml:"turnstile_expected_hostnames"`
 
 	// 邮件找回密码默认配置（可在管理员页面里在线修改）
 	SMTPHost  string `yaml:"smtp_host"`
@@ -155,6 +160,33 @@ func (c *Config) Validate() error {
 		if len(c.AuthSecret) < 16 {
 			return errors.New("auth_secret 长度过短：建议至少 16 字符（建议 openssl rand -hex 32）")
 		}
+	}
+	turnstileSiteKey := strings.TrimSpace(c.TurnstileSiteKey)
+	turnstileSecretKey := strings.TrimSpace(c.TurnstileSecretKey)
+	if (turnstileSiteKey == "") != (turnstileSecretKey == "") {
+		return errors.New("turnstile_site_key 与 turnstile_secret_key 必须同时配置或同时留空")
+	}
+	if turnstileSiteKey != "" {
+		if len(c.TurnstileExpectedHostnames) == 0 {
+			return errors.New("启用 Turnstile 时 turnstile_expected_hostnames 不能为空")
+		}
+		seenHostnames := make(map[string]struct{}, len(c.TurnstileExpectedHostnames))
+		hostnames := make([]string, 0, len(c.TurnstileExpectedHostnames))
+		for _, raw := range c.TurnstileExpectedHostnames {
+			hostname := strings.ToLower(strings.TrimSpace(raw))
+			if hostname == "" {
+				return errors.New("turnstile_expected_hostnames 不能包含空值")
+			}
+			if strings.ContainsAny(hostname, "/:") {
+				return errors.New("turnstile_expected_hostnames 只能填写 hostname 或 IPv4，不能包含协议、端口或路径")
+			}
+			if _, exists := seenHostnames[hostname]; exists {
+				continue
+			}
+			seenHostnames[hostname] = struct{}{}
+			hostnames = append(hostnames, hostname)
+		}
+		c.TurnstileExpectedHostnames = hostnames
 	}
 	if c.SMTPPort < 0 || c.SMTPPort > 65535 {
 		return errors.New("smtp_port 必须在 [0, 65535]")

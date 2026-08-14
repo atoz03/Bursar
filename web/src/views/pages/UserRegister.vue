@@ -109,15 +109,27 @@
               </el-col>
             </el-row>
             <el-form-item required :class="fieldClass('captcha')">
-              <template #label><span class="required">*</span> {{ t("安全验证码", "Security Captcha") }}</template>
+              <template #label><span class="required">*</span> {{ t("安全验证", "Security Check") }}</template>
               <div class="captcha-wrap">
-                <div class="captcha-question">{{ captchaQuestionLabel }}</div>
-                <el-radio-group v-model="captchaOption" class="captcha-options" @change="clearFieldError('captcha')">
-                  <el-radio-button v-for="(op, idx) in captchaOptions" :key="`${captchaId}-${idx}-${op}`" :label="idx">{{ op }}</el-radio-button>
-                </el-radio-group>
-                <div class="captcha-actions">
-                  <el-button text type="primary" :loading="captchaLoading" @click="loadCaptcha">{{ t("换一题", "Refresh") }}</el-button>
-                </div>
+                <TurnstileWidget
+                  v-if="captchaProvider === 'turnstile' && turnstileSiteKey"
+                  :key="captchaRenderKey"
+                  :sitekey="turnstileSiteKey"
+                  :action="turnstileAction"
+                  :language="uiLocaleState.language === 'en' ? 'en' : 'zh-CN'"
+                  @verified="onTurnstileVerified"
+                  @expired="captchaToken = ''"
+                  @error="captchaToken = ''"
+                />
+                <template v-else>
+                  <div class="captcha-question">{{ captchaQuestionLabel }}</div>
+                  <el-radio-group v-model="captchaOption" class="captcha-options" @change="clearFieldError('captcha')">
+                    <el-radio-button v-for="(op, idx) in captchaOptions" :key="`${captchaId}-${idx}-${op}`" :label="idx">{{ op }}</el-radio-button>
+                  </el-radio-group>
+                  <div class="captcha-actions">
+                    <el-button text type="primary" :loading="captchaLoading" @click="loadCaptcha">{{ t("换一题", "Refresh") }}</el-button>
+                  </div>
+                </template>
               </div>
               <div v-if="fieldErrors.captcha" class="field-error">{{ fieldErrors.captcha }}</div>
             </el-form-item>
@@ -227,6 +239,7 @@ import { renderMarkdown } from "../../lib/markdown";
 import { STRONG_PASSWORD_RULE_TEXT, checkStrongPassword } from "../../lib/passwordPolicy";
 import { getServerCurrentYear } from "../../lib/time";
 import { pickText, toggleUiLanguage, uiLocaleState } from "../../lib/uiLocale";
+import TurnstileWidget from "../../components/TurnstileWidget.vue";
 
 type FieldKey =
   | "username"
@@ -273,10 +286,15 @@ const passwordRuleText = STRONG_PASSWORD_RULE_TEXT;
 const route = useRoute();
 const router = useRouter();
 const captchaLoading = ref(false);
+const captchaProvider = ref<"numeric" | "turnstile">("numeric");
 const captchaId = ref("");
 const captchaQuestion = ref("");
 const captchaOptions = ref<number[]>([]);
 const captchaOption = ref<number | null>(null);
+const captchaToken = ref("");
+const turnstileSiteKey = ref("");
+const turnstileAction = ref("register");
+const captchaRenderKey = ref(0);
 let cooldownTimer: ReturnType<typeof setInterval> | null = null;
 const captchaQuestionLabel = computed(() => captchaQuestion.value || t("验证码加载中...", "Loading captcha..."));
 const registerLocked = computed(() => cooldownRemainingSeconds.value > 0);
@@ -494,6 +512,9 @@ function normalizeRegisterError(msg: string): string {
   if (text === "该邮箱请求过于频繁，请稍后再试") return "该邮箱请求过于频繁，请稍后再试。";
   if (text === "验证码错误，请重试") return "验证码错误，请重新选择后再提交。";
   if (text === "验证码已过期，请刷新后重试" || text === "验证码已失效，请刷新后重试") return "验证码已失效，请点击“换一题”后重试。";
+  if (text === "请先完成人机验证") return "请先完成人机验证。";
+  if (text === "人机验证未通过，请重试") return "人机验证未通过，请重新验证后提交。";
+  if (text === "人机验证服务暂时不可用，请稍后重试") return "人机验证服务暂时不可用，请检查网络后重试。";
   if (text === "该邮箱域名不允许注册，请使用学校正式邮箱") return "该邮箱域名不允许注册，请使用学校正式邮箱。";
   if (text === "请先阅读并勾选同意《用户准则》后再提交") return "请先阅读并勾选同意《用户准则》后再提交。";
   if (text === "请求的资源不存在") return "注册接口不可用，请确认控制器服务已更新并重启。";
@@ -520,7 +541,7 @@ function applyRegisterErrorToFields(msg: string) {
     fieldErrors.accept_guideline = "请先阅读并勾选同意《用户准则》。";
     return;
   }
-  if (text === "验证码错误，请重试" || text === "验证码已过期，请刷新后重试" || text === "验证码已失效，请刷新后重试") {
+  if (text === "验证码错误，请重试" || text === "验证码已过期，请刷新后重试" || text === "验证码已失效，请刷新后重试" || text === "请先完成人机验证" || text === "人机验证未通过，请重试" || text === "人机验证服务暂时不可用，请稍后重试") {
     fieldErrors.captcha = normalizeRegisterError(text);
     return;
   }
@@ -633,8 +654,11 @@ function validateRegisterFormLocal(): boolean {
   if (!acceptGuideline.value) {
     fieldErrors.accept_guideline = "请先阅读并勾选同意《用户准则》。";
   }
-  if (!captchaId.value || captchaOption.value === null) {
-    fieldErrors.captcha = "请先完成安全验证码。";
+  const captchaComplete = captchaProvider.value === "turnstile"
+    ? Boolean(captchaToken.value)
+    : Boolean(captchaId.value && captchaOption.value !== null);
+  if (!captchaComplete) {
+    fieldErrors.captcha = "请先完成安全验证。";
   }
   return !(Object.keys(fieldErrors) as FieldKey[]).some((k) => String(fieldErrors[k] || "").trim());
 }
@@ -710,8 +734,9 @@ async function submit() {
       ...form,
       username: fullUsername.value,
       accept_guideline: acceptGuideline.value,
+      captcha_token: captchaToken.value,
       captcha_id: captchaId.value,
-      captcha_option: Number(captchaOption.value),
+      captcha_option: Number(captchaOption.value ?? 0),
     });
     success.value = r.message || t("验证邮件已发送，请前往邮箱点击链接完成提交。", "Verification email sent. Open the link in your mailbox to finish submission.");
     submitted.value = true;
@@ -749,12 +774,20 @@ async function loadCaptcha() {
   try {
     const client = new ApiClient(settingsState.baseUrl);
     const r = await client.authRegisterCaptcha();
+    captchaProvider.value = r.provider === "turnstile" ? "turnstile" : "numeric";
+    turnstileSiteKey.value = String(r.site_key || "").trim();
+    turnstileAction.value = String(r.action || "register").trim() || "register";
+    captchaToken.value = "";
+    captchaRenderKey.value += 1;
     captchaId.value = String(r.captcha_id || "").trim();
     captchaQuestion.value = String(r.question || "").trim();
     captchaOptions.value = Array.isArray(r.options) ? r.options.map((v) => Number(v)) : [];
     captchaOption.value = null;
     clearFieldError("captcha");
   } catch (e: any) {
+    captchaProvider.value = "numeric";
+    turnstileSiteKey.value = "";
+    captchaToken.value = "";
     captchaId.value = "";
     captchaQuestion.value = t("验证码加载失败，请稍后重试", "Captcha failed to load. Try again later.");
     captchaOptions.value = [];
@@ -762,6 +795,11 @@ async function loadCaptcha() {
   } finally {
     captchaLoading.value = false;
   }
+}
+
+function onTurnstileVerified(token: string) {
+  captchaToken.value = String(token || "").trim();
+  if (captchaToken.value) clearFieldError("captcha");
 }
 
 async function loadGuideline() {
