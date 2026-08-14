@@ -6,7 +6,7 @@
           <span class="section-icon"><el-icon><Coin /></el-icon></span>
           <div>
           <div class="title">价格配置</div>
-          <div class="sub">需要管理员登录：GET/POST /api/admin/prices（CPU 使用模型名 CPU_CORE，单位：积分）</div>
+          <div class="sub">配置 CPU 与 GPU 模型的积分单价</div>
           </div>
         </div>
         <div class="row">

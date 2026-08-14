@@ -109,7 +109,7 @@
               </el-col>
             </el-row>
             <el-form-item required :class="fieldClass('captcha')">
-              <template #label><span class="required">*</span> {{ t("安全验证码（每次注册必做）", "Security Captcha (required for every registration)") }}</template>
+              <template #label><span class="required">*</span> {{ t("安全验证码", "Security Captcha") }}</template>
               <div class="captcha-wrap">
                 <div class="captcha-question">{{ captchaQuestionLabel }}</div>
                 <el-radio-group v-model="captchaOption" class="captcha-options" @change="clearFieldError('captcha')">
@@ -159,7 +159,7 @@
               </el-col>
               <el-col :span="24">
                 <el-form-item required :class="fieldClass('expected_graduation')">
-                  <template #label><span class="required">*</span> {{ t("预计毕业时间（年-月）", "Expected Graduation (YYYY-MM)") }}</template>
+                  <template #label><span class="required">*</span> {{ t("预计毕业年月", "Expected Graduation") }}</template>
                   <el-date-picker
                     v-model="graduationYm"
                     type="month"

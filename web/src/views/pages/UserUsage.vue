@@ -77,7 +77,7 @@
         <el-table-column label="积分消耗" width="100">
           <template #default="{ row }">{{ fmt2(row.cost) }}</template>
         </el-table-column>
-        <el-table-column label="GPU明细(JSON)" min-width="360">
+        <el-table-column label="GPU 明细" min-width="360">
           <template #default="{ row, $index }">
             <div class="gpu-cell">
               <span class="gpu-text">{{ gpuDisplayText(row, $index) }}</span>

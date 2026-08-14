@@ -6,7 +6,7 @@
           <span class="section-icon"><el-icon><DataBoard /></el-icon></span>
           <div>
           <div class="title">进程记录</div>
-          <div class="sub">需要管理员登录：GET /api/admin/usage，GET /api/admin/usage/export.csv</div>
+          <div class="sub">查询、审计和导出节点进程记录</div>
           </div>
         </div>
         <div class="row">
@@ -96,7 +96,7 @@
           <el-table-column label="积分消耗" width="100" prop="cost" sortable>
             <template #default="{ row }">{{ fmt2(row.cost) }}</template>
           </el-table-column>
-          <el-table-column prop="gpu_usage" label="GPU明细(JSON)" />
+          <el-table-column prop="gpu_usage" label="GPU 明细" />
         </el-table>
       </el-card>
 

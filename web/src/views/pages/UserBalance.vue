@@ -31,7 +31,7 @@
       <el-alert v-if="error" :title="error" type="error" show-icon />
       <el-alert
         v-if="authState.authenticated && !authState.twoFactorEnabled"
-        title="建议开启双重验证（2FA）。启用后，登录时需要额外输入 Microsoft Authenticator、数盾等验证器生成的 6 位动态码。"
+        title="建议开启双重验证，提升账号安全性。"
         type="warning"
         show-icon
         :closable="false"

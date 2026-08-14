@@ -47,7 +47,7 @@
               @keyup.enter="doLogin"
             />
           </el-form-item>
-          <el-form-item v-if="showTotpInput" :label="t('双重验证码（已开启 2FA 时必填）', '2FA Code (required when enabled)')">
+          <el-form-item v-if="showTotpInput" :label="t('双重验证码', '2FA Code')">
             <el-input
               v-model="totpCode"
               size="large"

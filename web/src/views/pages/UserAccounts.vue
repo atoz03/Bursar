@@ -40,7 +40,7 @@
           <div class="head">
             <div>
               <strong>
-                节点账号开通密钥通知（平台内）
+                节点账号密钥通知
                 <span v-if="hasNewProvisionMessage" class="menu-red-dot inline-dot" aria-label="账号已开通提醒" />
               </strong>
               <div class="mini">密文与解密步骤在这里，提取码请查收注册邮箱。</div>
@@ -55,7 +55,7 @@
           class="mb"
         />
         <el-alert
-          title="注意：首次点击“去解密”后开始计时，24 小时后该条密文会自动销毁（记录保留，但操作会置灰）。"
+          title="密文首次解密后保留 24 小时，请及时下载私钥。"
           type="warning"
           :closable="false"
           show-icon
@@ -283,7 +283,7 @@
               class="mb"
             />
             <el-form label-position="top">
-              <el-form-item label="开通理由（必填，至少 20 字，且必须包含“研究方向”这四个字）">
+              <el-form-item label="开通理由">
                 <el-input
                   v-model="openReason"
                   type="textarea"
@@ -688,7 +688,7 @@ function syncAutoRefreshTimer() {
   const shouldPoll = !!activeChallenge.value || hasPendingAccounts.value;
   if (shouldPoll && !autoRefreshTimer) {
     autoRefreshTimer = setInterval(() => {
-      void reload(true);
+      if (!document.hidden) void reload(true);
     }, 5000);
     return;
   }
@@ -704,14 +704,17 @@ async function reload(silent = false) {
     error.value = "";
   }
   try {
-    const r = await client().userAccounts();
+    const api = client();
+    const [r, m, reqs] = await Promise.all([
+      api.userAccounts(),
+      api.userProvisionMessages(120),
+      api.userRequests(200),
+    ]);
     rows.value = r.accounts ?? [];
     mappedNodeInfos.value = r.mapped_node_infos ?? [];
     activeChallenge.value = (r.active_challenge as UserNodeBindChallengeInfo) || null;
     bindCooldown.value = (r.bind_cooldown as UserNodeBindCooldown) || null;
-    const m = await client().userProvisionMessages(120);
     provisionMessages.value = m.messages ?? [];
-    const reqs = await client().userRequests(200);
     userRequests.value = reqs.requests ?? [];
     userOpenRequests.value = userRequests.value.filter((x) => String(x.request_type || "") === "open");
     syncAutoRefreshTimer();

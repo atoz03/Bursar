@@ -14,19 +14,13 @@
       </template>
       <el-alert v-if="error" :title="error" type="error" show-icon class="mb" />
       <el-alert v-if="success" :title="success" type="success" show-icon class="mb" />
-      <el-alert
-        title="本页专门处理节点账号开通：包含“开通申请审核”、“开通执行”和“开通历史”。账号映射的增删改查已单独保留在“账号映射”页面。"
-        type="info"
-        show-icon
-        :closable="false"
-      />
     </el-card>
 
     <el-card class="section-card provision-card">
       <template #header>
         <div class="section-title-wrap provision-head">
           <span class="section-icon tone-provision"><el-icon><Key /></el-icon></span>
-          <span>节点账号开通（密文进平台内，提取码走邮箱）</span>
+          <span>节点账号开通</span>
         </div>
       </template>
       <el-form label-position="top">
@@ -74,16 +68,16 @@
         </el-row>
         <el-row :gutter="12">
           <el-col :span="12">
-            <el-form-item label="SSH 主机地址（可选）">
+            <el-form-item label="SSH 主机地址">
               <el-input
                 v-model="provisionForm.ssh_host"
-                placeholder="默认 controller.example.org（可修改，系统会记住上次使用地址）"
+                placeholder="默认 controller.example.org"
                 @blur="rememberProvisionSSHHostFromForm"
               />
             </el-form-item>
           </el-col>
           <el-col :span="12">
-            <el-form-item label="SSH 端口（可选）">
+            <el-form-item label="SSH 端口">
               <el-input-number v-model="provisionForm.ssh_port" :min="0" :max="65535" style="width: 100%" />
             </el-form-item>
           </el-col>
@@ -93,7 +87,7 @@
         <div class="preview-head">
           <div class="section-title-wrap">
             <span class="section-icon tone-node"><el-icon><Monitor /></el-icon></span>
-            <span>已选节点核对信息</span>
+            <span>节点信息</span>
           </div>
         </div>
         <el-empty
@@ -125,7 +119,7 @@
         <div class="preview-head">
           <div class="section-title-wrap">
             <span class="section-icon tone-user"><el-icon><UserFilled /></el-icon></span>
-            <span>已选平台账号核对信息</span>
+            <span>用户信息</span>
           </div>
           <el-button v-if="provisionUserDetail?.username" link type="primary" @click="openProfile(provisionUserDetail.username)">
             打开完整详情
@@ -159,7 +153,7 @@
         </el-descriptions>
       </div>
       <el-alert
-        title="若节点上已存在同名账号，系统会复用该账号并刷新 authorized_keys；若用户丢失密钥，可在冲突提示后选择“重新生成新密钥并重发”。系统默认生成 ed25519 密钥，密文发送到平台内通知，提取码单独邮件发送。"
+        title="同名节点账号将被复用并更新登录密钥。密文和提取码会分开发送。"
         type="warning"
         :closable="false"
         show-icon
@@ -409,10 +403,10 @@
           <el-input :model-value="provisionResult.ssh_command" readonly />
           <el-button @click="copyText(provisionResult.ssh_command)">复制</el-button>
         </div>
-        <el-form-item label="加密密钥串（完整复制）">
+        <el-form-item label="加密密钥串">
           <el-input :model-value="provisionResult.encrypted_payload" type="textarea" :rows="7" readonly />
           <div class="payload-actions">
-            <el-button @click="copyText(provisionResult.encrypted_payload)">复制密文（应发平台内，不发邮箱）</el-button>
+            <el-button @click="copyText(provisionResult.encrypted_payload)">复制密文</el-button>
           </div>
         </el-form-item>
       </template>

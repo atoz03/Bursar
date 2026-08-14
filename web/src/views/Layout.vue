@@ -129,7 +129,7 @@
           <template v-if="authState.role === 'admin'">
             <el-button text class="controller-toggle" @click="showControllerConfig = !showControllerConfig">
               <el-icon><Link /></el-icon>
-              <span>{{ showControllerConfig ? t("收起控制器地址", "Hide Controller URL") : t("控制器地址（高级）", "Controller URL") }}</span>
+              <span>{{ showControllerConfig ? t("收起控制器地址", "Hide Controller URL") : t("控制器地址", "Controller URL") }}</span>
             </el-button>
             <div v-if="showControllerConfig" class="controller-editor">
               <span class="muted">{{ t("控制器地址", "Controller URL") }}</span>
@@ -225,6 +225,7 @@ let reviewTodoTimer: ReturnType<typeof setInterval> | null = null;
 let userNoticeTimer: ReturnType<typeof setInterval> | null = null;
 let userPointsTimer: ReturnType<typeof setInterval> | null = null;
 let userAccountProvisionTimer: ReturnType<typeof setInterval> | null = null;
+const NAV_POLL_INTERVAL_MS = 60 * 1000;
 
 function t(zh: string, en: string): string {
   return pickText(zh, en);
@@ -398,7 +399,7 @@ function resetReviewTodoPolling() {
   reviewTodoTimer = setInterval(() => {
     if (!isDocumentVisible()) return;
     loadReviewTodoCount();
-  }, 30000);
+  }, NAV_POLL_INTERVAL_MS);
 }
 
 async function loadUserNoticeState() {
@@ -439,7 +440,7 @@ function resetUserNoticePolling() {
   userNoticeTimer = setInterval(() => {
     if (!isDocumentVisible()) return;
     loadUserNoticeState();
-  }, 30000);
+  }, NAV_POLL_INTERVAL_MS);
 }
 
 async function loadUserPointsState() {
@@ -472,7 +473,7 @@ function resetUserPointsPolling() {
   userPointsTimer = setInterval(() => {
     if (!isDocumentVisible()) return;
     loadUserPointsState();
-  }, 30000);
+  }, NAV_POLL_INTERVAL_MS);
 }
 
 function isProvisionMessageDestroyedLike(row: any): boolean {
@@ -516,7 +517,7 @@ function resetUserAccountProvisionPolling() {
   userAccountProvisionTimer = setInterval(() => {
     if (!isDocumentVisible()) return;
     loadUserAccountProvisionState();
-  }, 30000);
+  }, NAV_POLL_INTERVAL_MS);
 }
 
 function onVisibilityChange() {
@@ -555,10 +556,6 @@ watch(
 
 onMounted(() => {
   syncMobileState();
-  resetReviewTodoPolling();
-  resetUserNoticePolling();
-  resetUserPointsPolling();
-  resetUserAccountProvisionPolling();
   window.addEventListener("resize", syncMobileState);
   window.addEventListener("gpuops-announcement-seen", loadUserNoticeState);
   window.addEventListener("gpuops-points-seen", loadUserPointsState);
@@ -581,58 +578,69 @@ onBeforeUnmount(() => {
 .shell {
   position: relative;
   min-height: 100vh;
-  overflow: hidden;
-  background: linear-gradient(160deg, #edf5ff 0%, #f3f8ff 52%, #f8fbff 100%);
+  background: #f4f7fb;
 }
 .aside {
-  border-right: 1px solid #c7d2fe;
-  background: linear-gradient(190deg, #0f172a 0%, #1e3a8a 100%);
-  position: relative;
-  z-index: 1;
-  box-shadow: 2px 0 14px rgba(15, 23, 42, 0.08);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid rgba(148, 163, 184, .14);
+  background: linear-gradient(180deg, #111827 0%, #0b1220 100%);
+  box-shadow: 5px 0 24px rgba(15, 23, 42, .08);
 }
 .brand {
   display: flex;
   gap: 10px;
   align-items: center;
-  padding: 18px 16px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.35);
+  min-height: 72px;
+  padding: 17px 18px;
+  border-bottom: 1px solid rgba(148, 163, 184, .14);
   color: #f8fafc;
 }
 .brand-title {
   font-weight: 800;
-  letter-spacing: 0.3px;
+  letter-spacing: .06em;
 }
 .brand-sub {
   font-size: 12px;
   color: rgba(226, 232, 240, 0.8);
 }
 .menu {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   border-right: none;
-  padding: 8px;
+  padding: 10px 9px 24px;
   background: transparent;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, .28) transparent;
 }
 .menu :deep(.el-menu) {
   border-right: none !important;
   background: transparent !important;
 }
 .menu :deep(.el-sub-menu .el-menu) {
-  margin: 4px 0 10px;
-  padding: 6px;
-  border-radius: 12px;
-  background: #1e293b !important;
+  margin: 2px 0 8px;
+  padding: 3px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .035) !important;
 }
 .menu :deep(.el-sub-menu__title) {
-  color: #ecfeff !important;
+  height: 46px;
+  color: #cbd5e1 !important;
   border-radius: 10px;
-  font-weight: 700;
+  font-weight: 650;
 }
 .menu :deep(.el-sub-menu__icon-arrow) {
   color: rgba(236, 254, 255, 0.9) !important;
 }
 .menu :deep(.el-menu-item) {
-  color: #dff8f5 !important;
-  border-radius: 10px;
+  height: 40px;
+  color: #b8c3d4 !important;
+  border-radius: 8px;
 }
 .menu :deep(.el-sub-menu .el-menu-item) {
   min-width: auto;
@@ -640,29 +648,33 @@ onBeforeUnmount(() => {
 }
 .menu :deep(.el-menu-item:hover) {
   color: #ffffff !important;
-  background: #1d4ed8 !important;
+  background: rgba(59, 130, 246, .14) !important;
 }
 .menu :deep(.el-menu-item.is-active) {
-  color: #67e8f9 !important;
-  background: #0f2d73 !important;
-  border-radius: 10px;
+  color: #ffffff !important;
+  background: linear-gradient(90deg, rgba(37, 99, 235, .9), rgba(59, 130, 246, .7)) !important;
+  border-radius: 8px;
   font-weight: 700;
-  box-shadow: inset 3px 0 0 #38bdf8;
+  box-shadow: 0 6px 16px rgba(37, 99, 235, .2);
 }
 .menu :deep(.el-menu-item.is-disabled) {
   color: rgba(226, 232, 240, 0.7) !important;
 }
 .header {
+  position: sticky;
+  top: 0;
+  z-index: 19;
+  min-height: 64px;
+  height: auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  border-bottom: 1px solid #d7e2f0;
-  background: #ffffff;
-  border-radius: 0 0 14px 14px;
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
-  position: relative;
-  z-index: 1;
+  padding: 10px 22px;
+  border-bottom: 1px solid rgba(203, 213, 225, .72);
+  background: rgba(255, 255, 255, .88);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 4px 18px rgba(15, 23, 42, .045);
 }
 .header-left {
   display: flex;
@@ -670,8 +682,8 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 .controller-toggle {
-  color: #0f766e;
-  font-weight: 700;
+  color: #475569;
+  font-weight: 650;
   padding: 0;
 }
 .controller-editor {
@@ -688,7 +700,9 @@ onBeforeUnmount(() => {
   align-items: center;
 }
 .main {
-  padding: 18px;
+  width: 100%;
+  min-width: 0;
+  padding: 22px;
   position: relative;
   z-index: 1;
 }
@@ -724,7 +738,7 @@ onBeforeUnmount(() => {
     transform: translateX(0);
   }
   .mobile-shell .header {
-    border-radius: 0;
+    padding: 8px 12px;
   }
   .mobile-shell .main {
     padding: 10px;
@@ -737,7 +751,8 @@ onBeforeUnmount(() => {
     width: 100%;
   }
   .header-right {
-    justify-content: flex-start;
+    justify-content: space-between;
+    overflow-x: auto;
   }
   .controller-editor {
     width: 100%;

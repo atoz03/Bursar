@@ -9,7 +9,7 @@
           v-model="payload"
           type="textarea"
           :rows="8"
-          placeholder="粘贴整段加密密钥串（base64url）"
+          placeholder="粘贴加密密钥串"
         />
       </el-form-item>
       <el-form-item label="提取码">
@@ -43,11 +43,11 @@
       <el-form-item label="SSH 连接命令">
         <el-input :model-value="sshCommand" readonly />
       </el-form-item>
-      <el-form-item label="解密后的私钥（可选查看）">
+      <el-form-item label="解密后的私钥">
         <el-input :model-value="decryptedKey" type="textarea" :rows="7" readonly />
       </el-form-item>
       <div class="actions">
-        <el-button type="success" @click="downloadKey">下载私钥文件（txt）</el-button>
+        <el-button type="success" @click="downloadKey">下载私钥</el-button>
         <el-button @click="copySSHCommand">复制 SSH 命令</el-button>
       </div>
     </template>

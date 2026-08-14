@@ -10,7 +10,17 @@ export default defineConfig({
   build: {
     outDir: "dist",
     assetsDir: "static",
-    sourcemap: true,
+    // 生产环境不发布源码映射，显著减小静态目录体积，也避免暴露源码结构。
+    sourcemap: false,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("node_modules/element-plus") || id.includes("node_modules/@element-plus")) return "element-plus";
+          if (id.includes("node_modules/vue") || id.includes("node_modules/@vue") || id.includes("node_modules/vue-router")) return "vue-vendor";
+          if (id.includes("node_modules/dayjs")) return "dayjs";
+        },
+      },
+    },
   },
   server: {
     host: "0.0.0.0",
@@ -31,4 +41,3 @@ export default defineConfig({
     },
   },
 });
-

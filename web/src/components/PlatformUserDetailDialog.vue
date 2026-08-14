@@ -28,7 +28,7 @@
         <el-table-column prop="updated_by" label="最后调整人" width="140" />
         <el-table-column prop="updated_at" label="更新时间" min-width="180" :formatter="tableTimeFormatter" />
       </el-table>
-      <div class="title">节点账号映射（该平台账号在哪些节点有号）</div>
+      <div class="title">节点账号映射</div>
       <el-table :data="user.node_accounts || []" stripe max-height="240" empty-text="暂无映射">
         <el-table-column prop="node_id" label="节点编号" width="140" />
         <el-table-column prop="local_username" label="节点账号" width="180" />

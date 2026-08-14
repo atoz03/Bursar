@@ -7,7 +7,7 @@
         </div>
         <div>
           <h1 class="page-title">节点状态监控</h1>
-          <p class="page-subtitle">实时监控集群节点运行状态和资源使用情况（节点在线状态基于 Agent 心跳，不等同于 SSH 连通性）</p>
+          <p class="page-subtitle">查看节点运行状态、资源使用和安全事件</p>
         </div>
       </div>
       <div class="header-actions">
@@ -454,7 +454,7 @@
       <template v-else-if="detailData">
         <div class="detail-actions">
           <el-text type="info" size="small" class="refresh-time-text">详情刷新：{{ detailRefreshTimeText }}</el-text>
-          <el-tooltip content="立即刷新（并重置5分钟自动刷新计时）" placement="top">
+          <el-tooltip content="立即刷新" placement="top">
             <el-button link class="icon-action-btn" @click="refreshDetailNow">
               <el-icon :size="20"><Refresh /></el-icon>
             </el-button>
@@ -598,7 +598,7 @@
           <div class="section-inline-title-row">
             <div class="ssh-users-title section-inline-title">
               <el-icon><UserFilled /></el-icon>
-              <span>节点内全部本地用户（含映射状态）</span>
+            <span>节点用户</span>
             </div>
             <el-button
               type="danger"
@@ -617,7 +617,7 @@
             stripe
             style="width: 100%"
             :header-cell-style="{ background: 'var(--bg-tertiary)', color: 'var(--text-primary)' }"
-            empty-text="暂无节点用户数据（请更新 node-agent 并等待上报）"
+            empty-text="暂无节点用户数据"
           >
             <el-table-column prop="local_username" label="节点账号" min-width="180" />
             <el-table-column label="映射状态" min-width="120">
@@ -737,7 +737,7 @@
         <div class="ssh-users-wrap">
           <div class="ssh-users-title section-inline-title">
             <el-icon><Coin /></el-icon>
-            <span>本节点当月积分消耗（按平台账号汇总）</span>
+            <span>本月积分消耗</span>
             <el-text type="info" size="small" style="margin-left: 8px">
               {{ formatTime(detailData.monthly_from || "") }} ~ {{ formatTime(detailData.monthly_to || "") }}
             </el-text>
@@ -772,7 +772,7 @@
         <div class="ssh-users-wrap">
           <div class="ssh-users-title section-inline-title">
             <el-icon><WarningFilled /></el-icon>
-            <span>疑似恶意用户名单（近7天自动统计）</span>
+            <span>近期风险用户</span>
           </div>
           <el-table
             :data="detailData.suspicious_users || []"
@@ -819,7 +819,7 @@
         <div class="ssh-users-wrap">
           <div class="ssh-users-title section-inline-title">
             <el-icon><Document /></el-icon>
-            <span>安全审计日志（节点维度）</span>
+            <span>安全审计日志</span>
           </div>
           <div class="security-filter-bar">
             <el-date-picker
@@ -832,7 +832,7 @@
               range-separator="至"
               style="width: 420px"
             />
-            <el-select v-model="securityEventTypeFilter" clearable filterable placeholder="事件类型（可选）" style="width: 220px">
+            <el-select v-model="securityEventTypeFilter" clearable filterable placeholder="事件类型" style="width: 220px">
               <el-option label="全部事件" value="" />
               <el-option label="疑似挖矿" value="suspected_mining" />
               <el-option label="高CPU负载" value="high_cpu_load" />
@@ -913,7 +913,7 @@
             <template #header>
               <div class="chart-head">
                 <el-icon><Cpu /></el-icon>
-                <span>CPU 利用率趋势（估算）</span>
+                <span>CPU 利用率趋势</span>
               </div>
             </template>
             <div class="chart-value">{{ cpuUtilNow.toFixed(2) }}%</div>
@@ -925,7 +925,7 @@
             <template #header>
               <div class="chart-head">
                 <el-icon><Monitor /></el-icon>
-                <span>内存占用趋势（MB）</span>
+                <span>内存占用趋势</span>
               </div>
             </template>
             <div class="chart-value">{{ (detailData.latest.memory_mb_sum || 0).toFixed(2) }}</div>
@@ -1031,7 +1031,7 @@
             type="info"
             show-icon
             :closable="false"
-            title="当前没有可分配的高级用户（或暂无节点查看权限的高级用户）。你可以先在“高级用户管理”新增/授权后再设置。"
+            title="暂无可分配的高级用户。"
           />
         </el-form-item>
       </el-form>
@@ -1041,7 +1041,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="nodeExclusiveVisible" title="节点独享设置（SSH/GPU）" width="760px">
+    <el-dialog v-model="nodeExclusiveVisible" title="节点独享设置" width="760px">
       <el-form label-width="110px">
         <el-form-item label="节点编号">
           <el-text>{{ nodeExclusiveNodeId || "-" }}</el-text>
@@ -1110,7 +1110,7 @@
             type="warning"
             show-icon
             :closable="false"
-            title="豁免用户始终可见全部 GPU，且不受独享规则影响（无视封锁 SSH 与卡分配）。"
+            title="豁免用户始终可见全部 GPU，不受独享规则影响。"
           />
         </el-form-item>
       </el-form>
@@ -1182,7 +1182,7 @@
             :closable="false"
             class="points-policy-help"
           >
-            <template #title>可调项说明（避免误操作）</template>
+            <template #title>策略说明</template>
             <div class="points-policy-help-lines">
               <div>1. 积分拦截开关：关闭时本节点不扣分且不触发限速，仅保留使用记录。</div>
               <div>2. 低积分限速阈值：当账号余额 ≤ 该值时，触发“低积分限速比例”。</div>
@@ -1249,7 +1249,7 @@
       <div class="ssh-users-wrap">
         <div class="ssh-users-title section-inline-title">
           <el-icon><UserFilled /></el-icon>
-          <span>用户配额（可逐个调整）</span>
+          <span>用户配额</span>
         </div>
         <el-table
           :data="nodeDiskQuotaUsers"
@@ -1599,8 +1599,8 @@ const platformProfile = ref<{
 let detailTimer: ReturnType<typeof setTimeout> | null = null;
 let listTimer: ReturnType<typeof setTimeout> | null = null;
 let sshResolveSeq = 0;
-const DETAIL_AUTO_REFRESH_MS = 10 * 1000;
-const LIST_AUTO_REFRESH_MS = 10 * 1000;
+const DETAIL_AUTO_REFRESH_MS = 15 * 1000;
+const LIST_AUTO_REFRESH_MS = 20 * 1000;
 
 const totalGpuProcesses = computed(() => rows.value.reduce((sum, node) => sum + node.gpu_process_count, 0));
 const totalCpuProcesses = computed(() => rows.value.reduce((sum, node) => sum + node.cpu_process_count, 0));
@@ -3020,7 +3020,7 @@ function stopListAutoRefresh() {
 function startDetailAutoRefresh() {
   stopDetailAutoRefresh();
   detailTimer = setTimeout(async () => {
-    if (detailVisible.value && detailNodeId.value) {
+    if (!document.hidden && detailVisible.value && detailNodeId.value) {
       await loadNodeDetail(detailNodeId.value, false);
       startDetailAutoRefresh();
     }
@@ -3031,7 +3031,7 @@ function startListAutoRefresh() {
   stopListAutoRefresh();
   listTimer = setTimeout(async () => {
     try {
-      if (!loading.value) {
+      if (!document.hidden && !loading.value) {
         await reload();
       }
     } finally {

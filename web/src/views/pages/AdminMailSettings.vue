@@ -77,9 +77,9 @@
       </template>
       <el-form label-position="top">
         <el-form-item>
-          <el-checkbox v-model="mailAllUsers">发送给全部普通用户（有邮箱）</el-checkbox>
+          <el-checkbox v-model="mailAllUsers">发送给全部普通用户</el-checkbox>
         </el-form-item>
-        <el-form-item label="指定用户（不勾选“全部用户”时必填）">
+        <el-form-item label="指定用户">
           <el-select
             v-model="mailUsernames"
             multiple

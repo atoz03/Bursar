@@ -17,7 +17,7 @@
     <el-alert v-if="success" :title="success" type="success" show-icon class="mb" />
 
     <el-form label-position="top">
-      <el-form-item label="用户准则（Markdown）">
+      <el-form-item label="用户准则">
         <el-input v-model="content" type="textarea" :rows="14" placeholder="请输入用户准则内容" />
       </el-form-item>
       <el-form-item>
