@@ -20,7 +20,8 @@ BACKUP_STAGING_ROOT="${BACKUP_STAGING_ROOT:-/var/lib/gpu-controller/backup-stagi
 BACKUP_DATA_PATHS="${BACKUP_DATA_PATHS:-}"
 CONTROLLER_CONFIG_PATH="${CONTROLLER_CONFIG_PATH:-/home/gpuops/gpu-ops/config/controller.local.yaml}"
 WEB_DIST_PATH="${WEB_DIST_PATH:-/home/gpuops/gpu-ops/web/dist}"
-POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-gpuops-postgres}"
+POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-}"
+POSTGRES_PUBLISHED_PORT="${POSTGRES_PUBLISHED_PORT:-5432}"
 POSTGRES_DATABASE="${POSTGRES_DATABASE:-gpuops}"
 POSTGRES_USER="${POSTGRES_USER:-gpuops}"
 KEEP_DAILY="${KEEP_DAILY:-7}"
@@ -31,6 +32,24 @@ command -v docker >/dev/null 2>&1 || { echo "缺少 docker" >&2; exit 2; }
 command -v restic >/dev/null 2>&1 || { echo "缺少 restic" >&2; exit 2; }
 command -v jq >/dev/null 2>&1 || { echo "缺少 jq" >&2; exit 2; }
 command -v flock >/dev/null 2>&1 || { echo "缺少 flock" >&2; exit 2; }
+
+resolve_postgres_container() {
+  if [[ -n "${POSTGRES_CONTAINER}" ]]; then
+    docker inspect "${POSTGRES_CONTAINER}" >/dev/null 2>&1 || {
+      echo "指定的 PostgreSQL 容器不存在：${POSTGRES_CONTAINER}" >&2
+      return 1
+    }
+    return 0
+  fi
+  mapfile -t candidates < <(docker ps --filter "publish=${POSTGRES_PUBLISHED_PORT}" --format '{{.Names}}')
+  if (( ${#candidates[@]} != 1 )); then
+    echo "无法按发布端口 ${POSTGRES_PUBLISHED_PORT} 唯一识别 PostgreSQL 容器（找到 ${#candidates[@]} 个），请设置 POSTGRES_CONTAINER" >&2
+    return 1
+  fi
+  POSTGRES_CONTAINER="${candidates[0]}"
+}
+
+resolve_postgres_container
 
 mkdir -p "$(dirname "${BACKUP_STATUS_FILE}")" "${BACKUP_STAGING_ROOT}/database" "${BACKUP_STAGING_ROOT}/system"
 exec 9>"${BACKUP_STAGING_ROOT}/backup.lock"
