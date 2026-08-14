@@ -22,7 +22,7 @@ SSH_OPTS="${SSH_OPTS:--o StrictHostKeyChecking=no}"
 # 依赖安装
 INSTALL_PREREQS="${INSTALL_PREREQS:-1}"   # 1: 安装运行依赖
 INSTALL_GO="${INSTALL_GO:-0}"             # 1: 额外安装 Go
-GO_VERSION="${GO_VERSION:-1.22.5}"
+GO_VERSION="${GO_VERSION:-1.26.6}"
 SET_GO_PROXY="${SET_GO_PROXY:-1}"
 REMOTE_GOPROXY="${REMOTE_GOPROXY:-https://goproxy.cn,direct}"
 REMOTE_GOSUMDB="${REMOTE_GOSUMDB:-sum.golang.google.cn}"
