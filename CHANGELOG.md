@@ -2,40 +2,39 @@
 
 **English** | [简体中文](CHANGELOG.zh-CN.md)
 
-Notable project changes are recorded here. Releases follow [Semantic Versioning](https://semver.org/); GitHub Releases and their Git tags are the authoritative release artifacts.
+Notable changes are recorded here. Releases follow [Semantic Versioning](https://semver.org/); GitHub Releases and their Git tags are the authoritative release artifacts.
 
-## [Unreleased]
+## [3.2.0] — 2026-08-14
 
-### Added
+First public release. The version number continues the internal series this project was developed under; there are no earlier public releases.
 
-- A first-run administrator Setup wizard for platform identity, registration domains, SSH entry, pricing, user guidelines, SMTP, and HA.
-- Complete bilingual open-source documentation, contribution workflow, security policy, and Apache-2.0 licensing.
-- A container deployment path: multi-stage `Dockerfile` and a `docker compose` profile that runs PostgreSQL and the controller together.
-- `GPUOPS_*` environment overrides for listeners, paths, and secrets, so a container can be configured without editing YAML.
-- `controller --healthcheck`, used by the container health check because the distroless runtime image has no shell.
-- `scripts/check_docs.sh`, which verifies relative links, English/Chinese parity, and language-switcher headers; CI runs it on every push.
+### Included
 
-### Changed
+- **Controller** — HTTP API, policy engine, usage accounting, ordered forward-only migrations applied at startup, scheduled jobs, and same-origin hosting of the Web UI.
+- **Node agent** — metric collection, action execution, CPU and memory limits, SSH state reporting, and security signals.
+- **Web UI** — Vue 3 and Element Plus, built to `web/dist` and served by the controller.
+- **Two deployment paths** — a source build supervised by systemd, and a container image with a `docker compose` profile that runs PostgreSQL and the controller together.
+- **First-run Setup** — a wizard for platform identity, registration domains, SSH entry, pricing, user guidelines, SMTP, and HA. It refuses to save while a required readiness check fails.
+- **Bilingual documentation** — English is the source language and `docs/zh-CN/` is a complete mirror, enforced by `scripts/check_docs.sh` in CI.
 
-- The project is now called **Bursar**. This is a rename of the product name only: module paths, binary names, systemd unit names, on-disk paths, `GPUOPS_*` environment variables, `gpuops_controller_*` metric names, and database identifiers are all unchanged, so existing deployments, scrape configs, and dashboards keep working. The default platform name and email `from_name` change for new installations only; an existing install keeps whatever is stored in its settings.
-- Public examples now use reusable hostnames, paths, identities, and test data.
-- **Breaking:** default ports changed to `8080` (Web/API) and `8081` (internal agent/HA listener), replacing `60039`/`60040`. Existing deployments keep working by setting `listen_addr` and `internal_listen_addr` explicitly; update firewall rules, `CONTROLLER_URL` on every node, and reverse proxies before upgrading.
-- The controller now runs Gin in release mode unless `GIN_MODE` is set explicitly.
-- The Vite dev proxy targets `127.0.0.1:8080`. It previously pointed at port 8000, where no controller has ever listened.
-- `tools/balance-query` and `tools/check_quota.sh` send an operator credential, read from `GPUOPS_QUERY_TOKEN` or `/etc/gpu-ops/query-token`, because the balance endpoint is no longer anonymous.
+### Defaults worth knowing
 
-### Fixed
+- The Web and API listener defaults to `8080`; the internal agent and HA listener defaults to `8081`.
+- `dry_run` should stay `true` for the first days of a rollout. Usage is recorded and cost is calculated, but nothing is deducted.
+- The balance, usage, and `/metrics` endpoints all require a credential. None of them is anonymous.
+- Session cookies are `HttpOnly` and `SameSite=Lax`, and every non-GET session request must carry `X-CSRF-Token`.
+- All credential comparisons are constant-time.
 
-- `docker-compose.yml` no longer ships a hardcoded database password; `POSTGRES_PASSWORD` must be supplied and PostgreSQL publishes to `127.0.0.1` by default.
+### Known limitations
 
-### Security
+- HA is operational automation, not a consensus protocol: no quorum, no automatic leader election, and no split-brain protection. Preventing two simultaneously active primaries is the operator's responsibility.
+- The platform is not a multi-tenant isolation boundary. A user who can escalate to root on a compute node can defeat node-local enforcement.
+- Migrations are forward-only. Rolling back means restoring a backup.
 
-- Expanded ignore rules for local configuration, credentials, node inventories, backups, and exports.
-- Public registration remains closed until Setup is complete and startup secrets pass readiness checks.
-- `GET /api/users/:username/balance` and `GET /api/users/:username/usage` now require authentication. They were reachable anonymously, which disclosed any user's balance, status, and usage history to unauthenticated callers.
-- `GET /api/users/:username/balance` no longer creates a user row as a side effect of a read, closing an anonymous write path into the `users` table.
-- `GET /metrics` now requires an operator credential (`admin_token`, agent token, or an administrator session).
-- All credential comparisons — admin, agent, legacy, per-node, administrator bootstrap, and the CSRF nonce — use constant-time comparison; previously only the HA token and TOTP codes did.
-- Session cookies are issued with `SameSite=Lax` in addition to the existing CSRF token check.
+### Upgrading from an internal deployment
 
-[Unreleased]: https://github.com/atoz03/gpu-ops/commits/main
+- Ports moved to `8080` and `8081` from `60039` and `60040`. Set `listen_addr` and `internal_listen_addr` explicitly to keep the old values, and update firewall rules, `CONTROLLER_URL` on every node, and reverse proxies before upgrading.
+- Node-side helpers now send an operator credential, read from `GPUOPS_QUERY_TOKEN` or `/etc/gpu-ops/query-token`, because the balance endpoint is no longer anonymous.
+- `docker-compose.yml` no longer carries a database password. Supply `POSTGRES_PASSWORD` in `.env`.
+
+[3.2.0]: https://github.com/atoz03/gpu-ops/releases/tag/v3.2.0
