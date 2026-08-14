@@ -131,7 +131,7 @@ router.beforeEach(async (to) => {
     if (authState.role === "power_user") {
       const p = to.path;
       if (p.startsWith("/admin/board") && authState.canViewBoard) return true;
-      if ((p.startsWith("/admin/nodes") || p.startsWith("/admin/status")) && authState.canViewNodes) return true;
+      if (p.startsWith("/admin/nodes") && authState.canViewNodes) return true;
       if (p.startsWith("/admin/points") && hasPointsAccess()) return true;
       if (p.startsWith("/admin/users") && authState.canManagePlatformUsers) return true;
       if (p.startsWith("/admin/requests") && authState.canReviewRequests) return true;
