@@ -5,15 +5,11 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 )
 
 var (
-	captchaAddPattern      = regexp.MustCompile(`^请计算：(\d+) \+ (\d+) \+ (\d+) = \?$`)
-	captchaMulSubPattern   = regexp.MustCompile(`^请计算：(\d+) × (\d+) - (\d+) = \?$`)
-	captchaCountPattern    = regexp.MustCompile(`^观察序列：([0-9 ]+)。数字 (\d) 一共出现了几次？$`)
-	captchaGCDPattern      = regexp.MustCompile(`^请计算 (\d+) 和 (\d+) 的最大公约数。$`)
-	captchaDigitSumPattern = regexp.MustCompile(`^请计算数字 (\d+) 的各位数字之和。$`)
+	captchaAddPattern = regexp.MustCompile(`^简单验证：(\d+) \+ (\d+) = \?$`)
+	captchaSubPattern = regexp.MustCompile(`^简单验证：(\d+) - (\d+) = \?$`)
 )
 
 func mustAtoiForTest(t *testing.T, raw string) int {
@@ -27,27 +23,11 @@ func mustAtoiForTest(t *testing.T, raw string) int {
 
 func solveCaptchaQuestionForTest(t *testing.T, question string) (string, int) {
 	t.Helper()
-	if m := captchaAddPattern.FindStringSubmatch(question); len(m) == 4 {
-		return "add", mustAtoiForTest(t, m[1]) + mustAtoiForTest(t, m[2]) + mustAtoiForTest(t, m[3])
+	if m := captchaAddPattern.FindStringSubmatch(question); len(m) == 3 {
+		return "add", mustAtoiForTest(t, m[1]) + mustAtoiForTest(t, m[2])
 	}
-	if m := captchaMulSubPattern.FindStringSubmatch(question); len(m) == 4 {
-		return "mul_sub", mustAtoiForTest(t, m[1])*mustAtoiForTest(t, m[2]) - mustAtoiForTest(t, m[3])
-	}
-	if m := captchaCountPattern.FindStringSubmatch(question); len(m) == 3 {
-		target := mustAtoiForTest(t, m[2])
-		count := 0
-		for _, part := range strings.Fields(m[1]) {
-			if mustAtoiForTest(t, part) == target {
-				count++
-			}
-		}
-		return "count", count
-	}
-	if m := captchaGCDPattern.FindStringSubmatch(question); len(m) == 3 {
-		return "gcd", gcdInt(mustAtoiForTest(t, m[1]), mustAtoiForTest(t, m[2]))
-	}
-	if m := captchaDigitSumPattern.FindStringSubmatch(question); len(m) == 2 {
-		return "digit_sum", sumDigitsInt(mustAtoiForTest(t, m[1]))
+	if m := captchaSubPattern.FindStringSubmatch(question); len(m) == 3 {
+		return "sub", mustAtoiForTest(t, m[1]) - mustAtoiForTest(t, m[2])
 	}
 	t.Fatalf("unexpected captcha question: %q", question)
 	return "", 0
@@ -85,38 +65,8 @@ func TestBuildNumericChoiceCaptcha(t *testing.T) {
 			t.Fatalf("question=%q answer option=%d, want %d (options=%v index=%d)", question, got, expected, options, answerIndex)
 		}
 	}
-	if len(seenKinds) != 5 {
-		t.Fatalf("seen captcha kinds=%v, want all 5 kinds", seenKinds)
-	}
-}
-
-func TestShouldTriggerRegisterIPCooldown(t *testing.T) {
-	t.Parallel()
-
-	now := time.Now()
-	recent := now.Add(-(registerIPCooldown - time.Second))
-	expired := now.Add(-(registerIPCooldown + time.Second))
-
-	if shouldTriggerRegisterIPCooldown(RegistrationRateStats{}, now) {
-		t.Fatal("unexpected cooldown for empty stats")
-	}
-	if shouldTriggerRegisterIPCooldown(RegistrationRateStats{
-		RecentIPFailureCount: registerIPCooldownFailures - 1,
-		LastIPFailureAt:      &recent,
-	}, now) {
-		t.Fatal("unexpected cooldown below failure threshold")
-	}
-	if shouldTriggerRegisterIPCooldown(RegistrationRateStats{
-		RecentIPFailureCount: registerIPCooldownFailures,
-		LastIPFailureAt:      &expired,
-	}, now) {
-		t.Fatal("unexpected cooldown after cooldown window expired")
-	}
-	if !shouldTriggerRegisterIPCooldown(RegistrationRateStats{
-		RecentIPFailureCount: registerIPCooldownFailures,
-		LastIPFailureAt:      &recent,
-	}, now) {
-		t.Fatal("expected cooldown for recent failures at threshold")
+	if len(seenKinds) != 2 {
+		t.Fatalf("seen captcha kinds=%v, want add and sub", seenKinds)
 	}
 }
 

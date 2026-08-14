@@ -390,8 +390,6 @@ const registerSecurityPolicy = reactive({
   ip_limit: 0,
   email_window_seconds: 0,
   email_limit: 0,
-  ip_cooldown_seconds: 0,
-  ip_cooldown_failures: 0,
   email_cooldown_seconds: 0,
   captcha_ttl_seconds: 0,
   allowed_email_domains: [] as string[],
@@ -575,8 +573,6 @@ async function reloadRegisterSecurityPolicy() {
     registerSecurityPolicy.ip_limit = Number(r.ip_limit || 0);
     registerSecurityPolicy.email_window_seconds = Number(r.email_window_seconds || 0);
     registerSecurityPolicy.email_limit = Number(r.email_limit || 0);
-    registerSecurityPolicy.ip_cooldown_seconds = Number(r.ip_cooldown_seconds || 0);
-    registerSecurityPolicy.ip_cooldown_failures = Number(r.ip_cooldown_failures || 0);
     registerSecurityPolicy.email_cooldown_seconds = Number(r.email_cooldown_seconds || 0);
     registerSecurityPolicy.captcha_ttl_seconds = Number(r.captcha_ttl_seconds || 0);
     registerSecurityPolicy.allowed_email_domains = Array.isArray(r.allowed_email_domains) ? r.allowed_email_domains : [];

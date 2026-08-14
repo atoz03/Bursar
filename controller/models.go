@@ -646,14 +646,12 @@ type RegistrationSecurityEvent struct {
 }
 
 type RegistrationRateStats struct {
-	IPCount              int
-	EmailCount           int
-	LastIPAt             *time.Time
-	LastEmailAt          *time.Time
-	RecentIPFailureCount int
-	LastIPFailureAt      *time.Time
-	IPWindowRetryAt      *time.Time
-	EmailWindowRetryAt   *time.Time
+	IPCount            int
+	EmailCount         int
+	LastIPAt           *time.Time
+	LastEmailAt        *time.Time
+	IPWindowRetryAt    *time.Time
+	EmailWindowRetryAt *time.Time
 }
 
 type DeletedUserAccount struct {

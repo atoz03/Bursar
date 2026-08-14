@@ -25,9 +25,10 @@ function normalizeServerError(status: number, bodyText: string): ApiError {
     pending_email_verification: "该账号尚未完成邮箱验证，请先前往邮箱点击验证链接",
     blacklisted_account: "该账号已进入黑名单，无法登录",
     captcha_missing: "请先完成登录验证码",
-    captcha_invalid: "验证码错误，请换一题后重试",
+    captcha_invalid: "安全验证未通过，请重试",
     captcha_expired: "验证码已过期，请换一题后重试",
     captcha_used: "验证码已失效，请换一题后重试",
+    captcha_unavailable: "人机验证服务暂时不可用，请稍后重试",
     session_disabled: "当前未启用登录会话",
     not_found: "请求的资源不存在",
     forbidden: "当前账号没有权限执行该操作",
@@ -811,10 +812,13 @@ export type RegistrationRequestView = RegistrationRequest & {
 };
 
 export type RegisterCaptchaChallenge = {
-  captcha_id: string;
-  question: string;
-  options: number[];
-  expire_at: string;
+  provider?: "numeric" | "turnstile";
+  site_key?: string;
+  action?: string;
+  captcha_id?: string;
+  question?: string;
+  options?: number[];
+  expire_at?: string;
 };
 
 export type RegistrationDisposableEmailDomain = {
@@ -1255,11 +1259,12 @@ export class ApiClient {
     return await this.getJson("/api/auth/me");
   }
 
-  async authLogin(username: string, password: string, captchaID: string, captchaOption: number, totpCode = ""): Promise<{ ok: boolean }> {
+  async authLogin(username: string, password: string, captchaID: string, captchaOption: number, totpCode = "", captchaToken = ""): Promise<{ ok: boolean }> {
     return await this.postJson("/api/auth/login", {
       username,
       password,
       totp_code: totpCode,
+      captcha_token: captchaToken,
       captcha_id: captchaID,
       captcha_option: captchaOption,
     });
@@ -1273,6 +1278,7 @@ export class ApiClient {
     email: string;
     username: string;
     password: string;
+    captcha_token?: string;
     captcha_id: string;
     captcha_option: number;
     real_name: string;
@@ -2410,8 +2416,6 @@ export class ApiClient {
     ip_limit: number;
     email_window_seconds: number;
     email_limit: number;
-    ip_cooldown_seconds: number;
-    ip_cooldown_failures: number;
     email_cooldown_seconds: number;
     captcha_ttl_seconds: number;
     allowed_email_domains: string[];

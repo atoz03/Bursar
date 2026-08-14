@@ -30,6 +30,9 @@ type Server struct {
 	store *Store
 	metr  *controllerMetrics
 
+	turnstileVerifyURL  string
+	turnstileHTTPClient *http.Client
+
 	nodeActionsMu      sync.Mutex
 	nodeActions        map[string][]Action
 	pointsResetMu      sync.Mutex
@@ -77,6 +80,10 @@ func NewServer(cfg Config, store *Store) *Server {
 		cfg:                cfg,
 		store:              store,
 		metr:               &controllerMetrics{},
+		turnstileVerifyURL: "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+		turnstileHTTPClient: &http.Client{
+			Timeout: 8 * time.Second,
+		},
 		nodeActions:        make(map[string][]Action),
 		cpuQuotaState:      make(map[string]float64),
 		memoryLimitState:   make(map[string]float64),

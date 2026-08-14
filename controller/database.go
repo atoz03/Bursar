@@ -10569,25 +10569,23 @@ VALUES($1,$2,$3,$4::jsonb,$5,$6)`,
 	})
 }
 
-func (s *Store) VerifyRegisterCaptcha(ctx context.Context, captchaID string, clientIP string, selectedOption int, now time.Time) error {
-	return s.verifyRegisterCaptcha(ctx, captchaID, clientIP, selectedOption, now, false, true)
+func (s *Store) VerifyRegisterCaptcha(ctx context.Context, captchaID string, selectedOption int, now time.Time) error {
+	return s.verifyRegisterCaptcha(ctx, captchaID, selectedOption, now, false, true)
 }
 
-func (s *Store) VerifyAndConsumeRegisterCaptcha(ctx context.Context, captchaID string, clientIP string, selectedOption int, now time.Time) error {
-	return s.verifyRegisterCaptcha(ctx, captchaID, clientIP, selectedOption, now, true, true)
+func (s *Store) VerifyAndConsumeRegisterCaptcha(ctx context.Context, captchaID string, selectedOption int, now time.Time) error {
+	return s.verifyRegisterCaptcha(ctx, captchaID, selectedOption, now, true, true)
 }
 
 func (s *Store) verifyRegisterCaptcha(
 	ctx context.Context,
 	captchaID string,
-	clientIP string,
 	selectedOption int,
 	now time.Time,
 	consumeOnSuccess bool,
 	consumeOnFailure bool,
 ) error {
 	captchaID = strings.TrimSpace(captchaID)
-	clientIP = strings.TrimSpace(clientIP)
 	if captchaID == "" {
 		return errRegisterCaptchaInvalid
 	}
@@ -10596,16 +10594,15 @@ func (s *Store) verifyRegisterCaptcha(
 			return err
 		}
 		var (
-			dbClientIP string
 			answerIdx  int
 			expireAt   time.Time
 			consumedAt sql.NullTime
 		)
 		if err := tx.QueryRowContext(ctx, `
-SELECT client_ip, answer_index, expire_at, consumed_at
+SELECT answer_index, expire_at, consumed_at
 FROM registration_captcha_challenges
 WHERE captcha_id=$1
-FOR UPDATE`, captchaID).Scan(&dbClientIP, &answerIdx, &expireAt, &consumedAt); err != nil {
+FOR UPDATE`, captchaID).Scan(&answerIdx, &expireAt, &consumedAt); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return errRegisterCaptchaInvalid
 			}
@@ -10617,11 +10614,6 @@ FOR UPDATE`, captchaID).Scan(&dbClientIP, &answerIdx, &expireAt, &consumedAt); e
 		if !expireAt.After(now) {
 			return errRegisterCaptchaExpired
 		}
-		// 绑定客户端 IP，避免挑战被跨端复用。
-		if strings.TrimSpace(dbClientIP) != "" && strings.TrimSpace(clientIP) != "" && strings.TrimSpace(dbClientIP) != strings.TrimSpace(clientIP) {
-			return errRegisterCaptchaInvalid
-		}
-
 		isAnswerCorrect := answerIdx == selectedOption
 		shouldConsume := (isAnswerCorrect && consumeOnSuccess) || (!isAnswerCorrect && consumeOnFailure)
 		if shouldConsume {
@@ -10683,7 +10675,6 @@ func (s *Store) LoadRegistrationRateStats(
 	email string,
 	ipSince time.Time,
 	emailSince time.Time,
-	ipFailureSince time.Time,
 ) (RegistrationRateStats, error) {
 	clientIP = strings.TrimSpace(clientIP)
 	email = strings.TrimSpace(strings.ToLower(email))
@@ -10701,21 +10692,6 @@ WHERE action='register_submit'
 		if last.Valid {
 			v := last.Time
 			out.LastIPAt = &v
-		}
-		var lastFailure sql.NullTime
-		if err := s.db.QueryRowContext(ctx, `
-SELECT COUNT(1), MAX(created_at)
-FROM registration_security_events
-WHERE action='register_submit'
-  AND decision='deny'
-  AND client_ip=$1
-  AND created_at >= $2
-  AND reason NOT IN ('cooldown_by_ip', 'rate_limited_by_ip_window', 'cooldown_by_email', 'rate_limited_by_email_window')`, clientIP, ipFailureSince).Scan(&out.RecentIPFailureCount, &lastFailure); err != nil {
-			return out, err
-		}
-		if lastFailure.Valid {
-			v := lastFailure.Time
-			out.LastIPFailureAt = &v
 		}
 		if out.IPCount >= registerIPLimit {
 			var unlockBase time.Time
@@ -10913,8 +10889,8 @@ AND ($3='' OR e.action=$3)
 AND ($4='' OR e.decision=$4)
 ORDER BY e.event_id DESC
 LIMIT $5`,
-		int(registerIPCooldown/time.Second),
-		int(registerIPCooldown/time.Second),
+		int(legacyRegisterIPCooldown/time.Second),
+		int(legacyRegisterIPCooldown/time.Second),
 		int(registerEmailCooldown/time.Second),
 		int(registerIPWindow/time.Second),
 		int(registerIPWindow/time.Second),

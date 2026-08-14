@@ -189,6 +189,19 @@ curl -fsS -H "Authorization: Bearer <admin_token>" \
 
 登录地址：`http://127.0.0.1:60039/login`
 
+#### 可选：启用 Cloudflare Turnstile
+
+登录与注册默认使用本地简易验证；同时配置 sitekey 和 secret key 后自动切换为 Turnstile：
+
+```yaml
+turnstile_site_key: "<Cloudflare sitekey>"
+turnstile_secret_key: "<Cloudflare secret key>"
+turnstile_expected_hostnames:
+  - "192.0.2.20"
+```
+
+Turnstile widget 的允许主机也填写 `192.0.2.20`，不要填写协议或端口。内网页面不需要暴露到公网，但用户浏览器和 Controller 都必须能通过 HTTPS 访问 `challenges.cloudflare.com`。生产 secret key 只保存在 Controller 配置中，不能写入前端。
+
 ### 🤖 5) 本机模拟启动 Agent
 
 ```bash

@@ -58,17 +58,29 @@
             />
             <div class="captcha-tip">{{ t("支持微软验证器、数盾等标准 TOTP 应用。未开启 2FA 的账号可留空。", "Supports Microsoft Authenticator and standard TOTP apps. Leave blank if 2FA is not enabled.") }}</div>
           </el-form-item>
-          <el-form-item :label="t('登录验证码', 'Login Captcha')">
+          <el-form-item :label="t('安全验证', 'Security Check')">
             <div class="captcha-wrap">
-              <div class="captcha-head">
-                <div class="captcha-title">{{ captchaQuestionLabel }}</div>
-                <el-button text type="primary" :loading="captchaLoading" @click="loadCaptcha">{{ t("换一题", "Refresh") }}</el-button>
-              </div>
-              <el-radio-group v-model="captchaOption" class="captcha-options">
-                <el-radio-button v-for="(op, idx) in captchaOptions" :key="`${captchaId}-${idx}-${op}`" :label="idx">
-                  {{ op }}
-                </el-radio-button>
-              </el-radio-group>
+              <TurnstileWidget
+                v-if="captchaProvider === 'turnstile' && turnstileSiteKey"
+                :key="captchaRenderKey"
+                :sitekey="turnstileSiteKey"
+                :action="turnstileAction"
+                :language="uiLocaleState.language === 'en' ? 'en' : 'zh-CN'"
+                @verified="onTurnstileVerified"
+                @expired="captchaToken = ''"
+                @error="captchaToken = ''"
+              />
+              <template v-else>
+                <div class="captcha-head">
+                  <div class="captcha-title">{{ captchaQuestionLabel }}</div>
+                  <el-button text type="primary" :loading="captchaLoading" @click="loadCaptcha">{{ t("换一题", "Refresh") }}</el-button>
+                </div>
+                <el-radio-group v-model="captchaOption" class="captcha-options">
+                  <el-radio-button v-for="(op, idx) in captchaOptions" :key="`${captchaId}-${idx}-${op}`" :label="idx">
+                    {{ op }}
+                  </el-radio-button>
+                </el-radio-group>
+              </template>
             </div>
           </el-form-item>
         </el-form>
@@ -92,6 +104,7 @@ import { ApiClient } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { pickText, toggleUiLanguage, uiLocaleState } from "../../lib/uiLocale";
 import { Cpu, Key, Lock, User } from "@element-plus/icons-vue";
+import TurnstileWidget from "../../components/TurnstileWidget.vue";
 
 const router = useRouter();
 const loading = ref(false);
@@ -101,10 +114,15 @@ const password = ref("");
 const totpCode = ref("");
 const showTotpInput = ref(false);
 const captchaLoading = ref(false);
+const captchaProvider = ref<"numeric" | "turnstile">("numeric");
 const captchaId = ref("");
 const captchaQuestion = ref("");
 const captchaOptions = ref<number[]>([]);
 const captchaOption = ref<number | null>(null);
+const captchaToken = ref("");
+const turnstileSiteKey = ref("");
+const turnstileAction = ref("login");
+const captchaRenderKey = ref(0);
 const captchaQuestionLabel = computed(() => captchaQuestion.value || t("验证码加载中...", "Loading captcha..."));
 
 function t(zh: string, en: string): string {
@@ -116,11 +134,19 @@ async function loadCaptcha() {
   try {
     const client = new ApiClient(settingsState.baseUrl);
     const r = await client.authLoginCaptcha();
+    captchaProvider.value = r.provider === "turnstile" ? "turnstile" : "numeric";
+    turnstileSiteKey.value = String(r.site_key || "").trim();
+    turnstileAction.value = String(r.action || "login").trim() || "login";
+    captchaToken.value = "";
+    captchaRenderKey.value += 1;
     captchaId.value = String(r.captcha_id || "").trim();
     captchaQuestion.value = String(r.question || "").trim();
     captchaOptions.value = Array.isArray(r.options) ? r.options.map((v) => Number(v)) : [];
     captchaOption.value = null;
   } catch {
+    captchaProvider.value = "numeric";
+    turnstileSiteKey.value = "";
+    captchaToken.value = "";
     captchaId.value = "";
     captchaQuestion.value = t("验证码加载失败，请稍后重试", "Captcha failed to load. Try again later.");
     captchaOptions.value = [];
@@ -130,15 +156,22 @@ async function loadCaptcha() {
   }
 }
 
+function onTurnstileVerified(token: string) {
+  captchaToken.value = String(token || "").trim();
+}
+
 async function doLogin() {
-  if (!captchaId.value || captchaOption.value === null) {
-    error.value = t("请先完成登录验证码", "Complete the login captcha first");
+  const captchaComplete = captchaProvider.value === "turnstile"
+    ? Boolean(captchaToken.value)
+    : Boolean(captchaId.value && captchaOption.value !== null);
+  if (!captchaComplete) {
+    error.value = t("请先完成安全验证", "Complete the security check first");
     return;
   }
   loading.value = true;
   error.value = "";
   try {
-    await login(username.value.trim(), password.value, captchaId.value, Number(captchaOption.value), totpCode.value.trim());
+    await login(username.value.trim(), password.value, captchaId.value, Number(captchaOption.value ?? 0), totpCode.value.trim(), captchaToken.value);
     if (authState.role === "admin") {
       await router.push("/admin/board");
     } else if (authState.role === "power_user") {
@@ -159,6 +192,7 @@ async function doLogin() {
     const raw = String(e?.body ?? "").trim();
     if (raw.includes("totp_required")) {
       showTotpInput.value = true;
+      await loadCaptcha();
       return;
     }
     if (raw.includes("totp_invalid")) {
