@@ -1,9 +1,13 @@
 <template>
-  <div class="turnstile-shell" :class="{ 'is-loading': loading }">
+  <div class="turnstile-shell" :class="{ 'is-loading': loading, 'is-verified': verified }">
     <div ref="containerRef" class="turnstile-container" />
     <div v-if="loading" class="turnstile-loading">
       <span class="turnstile-spinner" />
       <span>正在进行安全验证</span>
+    </div>
+    <div v-if="verified" class="turnstile-success">
+      <span class="turnstile-check">✓</span>
+      <span>安全验证已通过</span>
     </div>
     <div v-if="message" class="turnstile-message">{{ message }}</div>
   </div>
@@ -40,6 +44,7 @@ const emit = defineEmits<{
 
 const containerRef = ref<HTMLElement | null>(null);
 const loading = ref(true);
+const verified = ref(false);
 const message = ref("");
 let widgetId = "";
 let disposed = false;
@@ -69,6 +74,7 @@ function loadTurnstileScript(): Promise<void> {
 
 async function renderWidget() {
   loading.value = true;
+  verified.value = false;
   message.value = "";
   emit("verified", "");
   try {
@@ -90,22 +96,28 @@ async function renderWidget() {
       "refresh-expired": "auto",
       callback: (token: string) => {
         loading.value = false;
+        verified.value = true;
         message.value = "";
         emit("verified", token);
       },
       "expired-callback": () => {
-        loading.value = true;
+        loading.value = false;
+        verified.value = false;
         message.value = "验证已过期，正在重新验证";
         emit("expired");
       },
       "error-callback": () => {
         loading.value = false;
+        verified.value = false;
         message.value = "安全验证加载失败，请检查网络后重试";
         emit("error");
       },
     });
+    // render() 返回后 Cloudflare 控件已经可交互，不能继续用加载层覆盖复选框。
+    loading.value = false;
   } catch {
     loading.value = false;
+    verified.value = false;
     message.value = "无法连接安全验证服务，请检查网络后重试";
     emit("error");
   }
@@ -114,9 +126,11 @@ async function renderWidget() {
 function reset() {
   emit("verified", "");
   loading.value = true;
+  verified.value = false;
   message.value = "";
   if (window.turnstile && widgetId) {
     window.turnstile.reset(widgetId);
+    loading.value = false;
     return;
   }
   void renderWidget();
@@ -161,6 +175,33 @@ onBeforeUnmount(() => {
   color: #64748b;
   background: rgba(248, 250, 252, .82);
   font-size: 13px;
+}
+.turnstile-success {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  min-height: 44px;
+  border: 1px solid rgba(16, 185, 129, .28);
+  border-radius: 11px;
+  color: #047857;
+  background: linear-gradient(120deg, rgba(236, 253, 245, .96), rgba(240, 253, 250, .9));
+  font-size: 13px;
+  font-weight: 650;
+}
+.turnstile-check {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  color: #fff;
+  background: #10b981;
+  font-size: 13px;
+  line-height: 1;
 }
 .turnstile-spinner {
   width: 15px;
