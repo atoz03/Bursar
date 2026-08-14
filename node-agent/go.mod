@@ -2,6 +2,8 @@ module gpu-ops/node-agent
 
 go 1.26.0
 
+toolchain go1.26.6
+
 require (
 	github.com/shirou/gopsutil/v3 v3.24.5
 	golang.org/x/sys v0.47.0
