@@ -1,169 +1,223 @@
+<p align="center">
+  <img src="web/public/logo.svg" width="96" alt="GPU Ops logo">
+</p>
+
 # GPU Ops
 
-GPU Ops 是一个面向共享 GPU 服务器的轻量运维平台。它保留用户直接通过 SSH 使用计算节点的习惯，由控制器统一完成资源监控、积分计费、配额限制、账号映射和安全审计。
+[![CI](https://github.com/atoz03/gpu-ops/actions/workflows/go-test.yml/badge.svg)](https://github.com/atoz03/gpu-ops/actions/workflows/go-test.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Go](https://img.shields.io/badge/Go-1.26-00ADD8.svg)](controller/go.mod)
+[![Vue](https://img.shields.io/badge/Vue-3-42b883.svg)](web/package.json)
 
-## 主要能力
+**English** | [简体中文](README.zh-CN.md)
 
-- Go 节点 Agent：采集 GPU、CPU、内存、磁盘、登录会话和安全事件。
-- Go 控制器：提供管理 API、计费、策略下发、账号开通、邮件通知和 PostgreSQL 持久化。
-- Vue 3 管理端：包含运营看板、节点管理、积分管理、注册审核、账号映射和系统设置。
-- 首次运行向导：管理员首次登录后配置平台名称、注册邮箱域名、SSH 入口、资源价格、用户准则、SMTP 和可选 HA。
-- 安全能力：节点独立 token、Web 会话、CSRF、2FA、Turnstile、SSH 名单与主机安全事件。
-- 运维能力：主备同步、加密备份、恢复验证和批量 Agent 部署。
+GPU Ops is a self-hosted operations and governance platform for shared Linux GPU servers. Users keep their normal SSH workflow while a central controller handles node visibility, usage accounting, points, quotas, account mapping, access policy, and security events.
 
-## 目录结构
+> [!IMPORTANT]
+> GPU Ops can execute privileged actions on compute nodes. Review the [security model](docs/security.md), start with `dry_run: true`, and complete the [go-live checklist](docs/go-live-checklist.md) before production rollout.
 
-```text
-gpu-ops/
-├── controller/       # 控制器与 API
-├── node-agent/       # 计算节点 Agent
-├── web/              # Vue 3 前端
-├── database/         # Schema 与增量迁移
-├── config/           # 配置示例
-├── scripts/          # 构建、安装、部署、HA 与备份脚本
-├── systemd/          # systemd 服务模板
-└── docs/             # 管理、用户与 API 文档
+## Why GPU Ops
+
+- **Keep SSH workflows:** no notebook gateway or custom job scheduler is required.
+- **See the whole fleet:** GPU, CPU, memory, disk, processes, sessions, services, and agent health are reported centrally.
+- **Account for shared resources:** GPU model and CPU-core-minute pricing, points pools, carryover, overdraft policy, and per-node overrides.
+- **Enforce policies:** CPU, memory, disk, GPU visibility, exclusive use, SSH allow/deny/exemption lists, and remote process actions.
+- **Manage identity:** registration review, platform-to-node account mapping, provisioning, temporary users, and delegated administrators.
+- **Operate safely:** per-node agent tokens, browser sessions, CSRF protection, TOTP 2FA, optional Turnstile, audit events, encrypted backups, and optional controller HA.
+- **Configure explicitly:** the first administrator is guided through platform identity, registration domains, SSH entry, prices, user policy, SMTP, and HA.
+
+## Intended use
+
+GPU Ops is designed for teams that already operate Linux GPU hosts and want governance without replacing SSH. It is not a scheduler, Kubernetes operator, hosted control plane, or substitute for network segmentation, OS hardening, monitoring, and tested backups.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    U[Users and administrators] -->|HTTPS / Web UI| C[GPU Ops Controller]
+    A[Node Agent] -->|Internal HTTPS + node token| C
+    C --> P[(PostgreSQL)]
+    C -->|Actions and policy| A
+    A -->|OS, GPU, cgroup, SSH| N[Linux compute node]
+    C -. optional encrypted sync .-> S[Standby controller]
+    C -. encrypted backup .-> B[Independent backup repository]
 ```
 
-## 环境要求
+The controller can run in single-port mode or expose a separate TLS-only internal listener for agents and HA. See [architecture](docs/architecture.md) for trust boundaries and data flow.
 
-- Go 1.26.6
-- Node.js 24 与 pnpm 10
-- PostgreSQL 18
-- Linux 计算节点；GPU 采集依赖 `nvidia-smi`
+## Components
 
-## 快速启动
+| Component | Purpose |
+| --- | --- |
+| `controller/` | Go API, policy engine, accounting, migrations, Web hosting, schedulers |
+| `node-agent/` | Go agent for metrics, actions, limits, SSH state, and security signals |
+| `web/` | Vue 3 and Element Plus administrator/user interface |
+| `database/` | PostgreSQL schema and ordered migrations |
+| `scripts/` | Build, install, deployment, backup, HA, and fleet utilities |
+| `config/` | Safe controller configuration example |
 
-### 1. 准备配置
+## Quick start for evaluation
 
-复制示例配置，并生成三组不同的随机密钥：
+There are two ways to run the controller. Both build from source; the project does not publish container images.
+
+| Path | Choose it when |
+| --- | --- |
+| [Docker](#option-a-docker) | You want the fastest reproducible start. One command after secrets are in place. |
+| [From source](#option-b-from-source) | You want systemd supervision and the same lifecycle as the node agents. The HA and backup scripts assume this. |
+
+The node agent always runs directly on each compute host — it needs cgroup, systemd, SSH, and GPU driver access. See [node-agent deployment](docs/node-agent.md).
+
+### Prerequisites
+
+- Linux or macOS host;
+- Docker with Compose (both paths — the source path still uses it for PostgreSQL);
+- for the source path: Go 1.26.6, Node.js 20.20 or newer, pnpm 10.28.2;
+- OpenSSL and curl.
+
+## Option A: Docker
 
 ```bash
-cp config/controller.yaml config/controller.local.yaml
-openssl rand -hex 32  # agent_token
-openssl rand -hex 32  # admin_token
-openssl rand -hex 32  # auth_secret
+git clone https://github.com/atoz03/gpu-ops.git
+cd gpu-ops
+cp .env.example .env
 ```
 
-将结果分别写入 `config/controller.local.yaml`。生产环境还应修改数据库账号密码，并根据部署方式配置 HTTPS、内部监听和共享目录。
+Fill in `.env` with four distinct random values — `POSTGRES_PASSWORD`, `GPUOPS_AGENT_TOKEN`, `GPUOPS_ADMIN_TOKEN`, and `GPUOPS_AUTH_SECRET`. Generate each with `openssl rand -hex 32`. Compose refuses to start if any is empty, and `.env` is ignored by Git.
 
-真实配置、私钥、节点映射与生成的 token 文件已经被 `.gitignore` 排除，不要提交到版本库。
+```bash
+docker compose --profile full up -d --build
+curl -fsS http://127.0.0.1:8080/readyz
+```
 
-### 2. 启动数据库
+Migrations run automatically at startup. Continue at [Bootstrap the first administrator](#bootstrap-the-first-administrator).
 
-开发环境可以使用项目内的 Compose 配置：
+## Option B: From source
+
+### 1. Clone and configure
+
+```bash
+git clone https://github.com/atoz03/gpu-ops.git
+cd gpu-ops
+cp .env.example .env
+cp config/controller.yaml config/controller.local.yaml
+openssl rand -hex 32
+openssl rand -hex 32
+openssl rand -hex 32
+```
+
+Put the three different random values into `agent_token`, `admin_token`, and `auth_secret` in `config/controller.local.yaml`, and set `POSTGRES_PASSWORD` in `.env`. Placeholder values are rejected by the first-run readiness checks. Local configuration files are ignored by Git.
+
+### 2. Start PostgreSQL
 
 ```bash
 docker compose up -d postgres
+docker compose ps
 ```
 
-### 3. 构建前端
+The Compose file uses development credentials from `.env` matching the example DSN. Set a strong database password and TLS policy before any non-local deployment.
+
+### 3. Build the Web UI
 
 ```bash
-cd web
 corepack enable
-pnpm install --frozen-lockfile
-pnpm build
-cd ..
+pnpm --dir web install --frozen-lockfile
+pnpm --dir web build
 ```
 
-### 4. 启动控制器
+### 4. Start the controller
 
 ```bash
-cd controller
-go run . --config ../config/controller.local.yaml
+go run ./controller --config config/controller.local.yaml
 ```
 
-控制器默认监听 `http://127.0.0.1:60039`。可用以下命令检查状态：
+In another terminal:
 
 ```bash
-curl -fsS http://127.0.0.1:60039/readyz
+curl -fsS http://127.0.0.1:8080/readyz
 ```
 
-### 5. 创建首个管理员
+A ready controller returns `{"ok":true,"database":true}`. Database migrations are applied automatically at startup.
 
-首次创建管理员必须使用配置中的 `admin_token`：
+## Bootstrap the first administrator
 
 ```bash
-curl -fsS -X POST http://127.0.0.1:60039/api/admin/bootstrap \
+curl -fsS -X POST http://127.0.0.1:8080/api/admin/bootstrap \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer <admin_token>' \
   -d '{"username":"admin","password":"<strong-password>"}'
 ```
 
-随后打开 `http://127.0.0.1:60039/login` 登录。首个管理员会被自动引导到“系统设置”页面；完成必填配置前，公开注册入口保持关闭。
+Open <http://127.0.0.1:8080/login>, sign in, and complete the Setup wizard. Public registration stays closed until all required startup checks pass and Setup is saved.
 
-## 首次设置页面
+## Connect a compute node
 
-Setup 页面集中处理运行期配置：
-
-1. 平台名称、允许注册的邮箱域名和统一 SSH 入口。
-2. GPU/CPU 价格与用户准则。
-3. 可选 SMTP 邮件通知。
-4. 可选主备同步，以及启动配置安全检查。
-
-数据库 DSN、监听地址、`agent_token`、`admin_token`、`auth_secret` 和 TLS 私钥属于启动前配置。页面只显示它们是否安全就绪，不会将值返回浏览器。
-
-邮箱域名列表留空时允许任意格式合法且未被一次性邮箱黑名单拦截的邮箱；内部部署可以填写一个或多个组织域名。
-
-## 接入计算节点
-
-在计算节点上构建并运行 Agent：
+Run the prerequisite check on the Linux node first:
 
 ```bash
-cd node-agent
-go build -o gpu-node-agent .
-NODE_ID=node-01 \
-CONTROLLER_URL=https://controller.example.org:60040 \
-AGENT_TOKEN=<agent_token> \
-./gpu-node-agent
+bash scripts/node_prereq_check.sh
 ```
 
-正式安装可使用：
+For a local installation from a checked-out repository:
 
 ```bash
-NODE_ID=node-01 \
-CONTROLLER_URL=https://controller.example.org:60040 \
-AGENT_TOKEN=<agent_token> \
-bash scripts/install_agent_local.sh
+sudo env \
+  NODE_ID=node-01 \
+  CONTROLLER_URL=https://controller.example.org:8081 \
+  AGENT_TOKEN='<node-or-global-agent-token>' \
+  bash scripts/install_agent_local.sh
 ```
 
-生产环境建议启用独立内部监听、TLS 和每节点独立 token。批量部署脚本默认读取本地 `my_ssh_keys/server_ssh_map.csv`，该目录不会进入 Git。
+Production deployments should use the internal TLS listener and a distinct token per node. Review [node-agent deployment](docs/node-agent.md) before enabling SSH guard or host-security changes.
 
-## 高可用与备份
+## Production path
 
-单控制器部署保持 `ha_enabled: false`。主备部署需要显式提供对端主机、SSH 用户、私钥路径和同步脚本路径；仓库内不包含任何真实基础设施参数。
+1. Read [architecture](docs/architecture.md) and [security](docs/security.md).
+2. Prepare PostgreSQL, TLS, DNS, service accounts, and independent backups.
+3. Follow the [installation guide](docs/installation.md) and [configuration reference](docs/configuration.md).
+4. Bootstrap the administrator and complete [first-run Setup](docs/first-run-setup.md).
+5. Enroll nodes using the [node-agent guide](docs/node-agent.md).
+6. Start with `dry_run: true`, validate accounting, then follow the [go-live checklist](docs/go-live-checklist.md).
+7. Use the [operations guide](docs/operations.md) and test [backup/HA](docs/backup-and-ha.md) before relying on failover.
 
-相关脚本：
+## Documentation
 
-- `scripts/deploy_dr_standby.sh`：分发并引导 standby。
-- `scripts/ha_sync_worker.sh`：执行版本、前端和数据库同步。
-- `scripts/install_ha_vip_local.sh`：安装 Keepalived VIP。
-- `scripts/install_backup_local.sh`：安装 restic 加密备份和恢复验证。
+The [documentation index](docs/README.md) includes reading paths for evaluators, operators, users, contributors, and security reviewers.
 
-备份仓库必须位于独立磁盘或异机，不能与控制器数据共用故障域。
+| Guide | Contents |
+| --- | --- |
+| [Getting started](docs/getting-started.md) | Local evaluation from zero |
+| [Installation](docs/installation.md) | Production-oriented controller and node deployment |
+| [Configuration](docs/configuration.md) | Every controller configuration group and secret-handling rule |
+| [First-run Setup](docs/first-run-setup.md) | Administrator bootstrap and Setup workflow |
+| [Architecture](docs/architecture.md) | Components, data flow, ports, and trust boundaries |
+| [Node Agent](docs/node-agent.md) | Environment, installation, tokens, SSH guard, and troubleshooting |
+| [Administrator guide](docs/admin-guide.md) | Roles and Web administration workflows |
+| [User guide](docs/user-guide.md) | Registration, account binding, points, and SSH usage |
+| [Operations](docs/operations.md) | Service lifecycle, upgrades, monitoring, and recovery |
+| [Backup and HA](docs/backup-and-ha.md) | Restic backups, restore drills, synchronization, and failover |
+| [Security](docs/security.md) | Threat model and hardening baseline |
+| [API reference](docs/api-reference.md) | Authentication, important payloads, and endpoint catalog |
+| [Go-live checklist](docs/go-live-checklist.md) | What to verify before enabling enforcement |
+| [Troubleshooting](docs/troubleshooting.md) | Common controller, Web, database, and agent failures |
+| [Development](docs/development.md) | Repository layout, setup, conventions, and validation |
 
-## 开发与验证
+## Development and validation
 
 ```bash
-# Go
-(cd controller && go test ./...)
-(cd node-agent && go test ./...)
-
-# 前端
-(cd web && pnpm install --frozen-lockfile && pnpm build)
-
-# Shell 语法
+go test ./controller/... ./node-agent/...
+go vet ./controller/... ./node-agent/...
+pnpm --dir web install --frozen-lockfile
+pnpm --dir web build
 bash -n scripts/*.sh
+bash scripts/check_docs.sh
 ```
 
-CI 会执行控制器测试、Agent 测试和前端构建。
+See [CONTRIBUTING.md](CONTRIBUTING.md) for workflow and review expectations.
 
-## 安全文档
+## Security
 
-- [上线检查清单](docs/go-live-checklist.md)
-- [管理员指南](docs/admin-guide.md)
-- [用户指南](docs/user-guide.md)
-- [API 参考](docs/api-reference.md)
+Report vulnerabilities privately according to [SECURITY.md](SECURITY.md). Never place tokens, keys, real host inventories, database dumps, or user data in public issues.
 
-提交安全问题时，请避免在公开 Issue 中粘贴 token、私钥、数据库 DSN、真实主机地址或用户数据。
+## License
+
+GPU Ops is licensed under the [Apache License 2.0](LICENSE).

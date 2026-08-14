@@ -1,0 +1,54 @@
+name: Bug 报告
+description: 报告可复现的功能错误；安全漏洞请使用私密安全报告。
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: 请先移除日志、截图和配置中的 token、邮箱、主机地址与用户数据。
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: Git 标签或提交哈希。
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: 组件
+      options:
+        - Controller
+        - Node Agent
+        - Web
+        - 安装或运维脚本
+        - 文档
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境
+      description: 操作系统、Go/Node/PostgreSQL 版本和部署方式。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为与脱敏日志
+    validations:
+      required: true

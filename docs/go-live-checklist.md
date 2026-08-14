@@ -1,65 +1,86 @@
-# 上线检查清单（建议按试点→全量）
+# Go-Live Checklist
 
-本清单用于判断“是否达到可上线（核心闭环）”标准。
+**English** | [简体中文](zh-CN/go-live-checklist.md)
 
-推荐配合：`docs/runbook.md`。
+Work through this before enabling enforcement on a production fleet. Pilot on a few nodes first, then expand.
 
-## 1. 环境与依赖
+## 1. Environment
 
-- PostgreSQL 可用（建议独立实例/主备）
-- 控制器与节点可互通（HTTP），并已设置 `agent_token`
-- 计算节点具备以下之一：
-  - systemd 可用（推荐）
-  - 或 cgroup v2（`/sys/fs/cgroup/.../cpu.max`）
-  - 或 cgroup v1 cpu controller（`cpu.cfs_*` + `tasks`）
-- 节点建议执行：`scripts/node_prereq_check.sh`（不修改系统）
+- [ ] PostgreSQL is available on a dedicated instance, with a plan for backups and, if needed, replication.
+- [ ] The controller reaches PostgreSQL, and nodes reach the controller listener.
+- [ ] Each node satisfies at least one enforcement path: systemd (recommended), cgroup v2 at `/sys/fs/cgroup`, or cgroup v1 with the cpu controller.
+- [ ] `bash scripts/node_prereq_check.sh` has been run on every node. It changes nothing.
+- [ ] Time is synchronised across the controller and all nodes. Accounting windows depend on it.
 
-## 2. 数据库
+## 2. Secrets
 
-- 已执行迁移（控制器启动会自动执行）：
-  - `0001_init.sql`
-  - `0002_seed_prices.sql`（含 `CPU_CORE`）
-  - `0003_metric_reports.sql`（幂等去重）
-- 确认价格表包含集群 GPU 型号关键词与 `CPU_CORE`
+- [ ] `agent_token`, `admin_token`, and `auth_secret` are three different values from `openssl rand -hex 32`.
+- [ ] No placeholder value remains. First-run Setup refuses to save while a required readiness check fails, and a secret containing `replace-with`, `change-me`, or `example`, or shorter than 16 characters, fails that check.
+- [ ] `ha_token` is set and distinct, if HA is enabled.
+- [ ] Secrets live outside the repository, with restricted file permissions, and are recorded in your secret manager.
+- [ ] `config/*.local.yaml` and `.env` are confirmed git-ignored.
 
-## 3. 安全与隔离（最低要求）
+## 3. Network and TLS
 
-- 控制器仅对内网开放，或经网关 ACL 保护
-- `agent_token`、`admin_token`、`auth_secret` 已更换为强随机值，并安全保存
-- 若启用 Turnstile，确认 widget 允许实际访问域名，并验证浏览器和 Controller 均可访问 `challenges.cloudflare.com:443`
-- 管理员接口不要暴露到公网
-- 积分/余额查询接口默认不鉴权（为了 Hook 低侵入），建议仅内网可达或通过网关保护
+- [ ] The Web listener sits behind an HTTPS reverse proxy.
+- [ ] `cookie_secure: true`.
+- [ ] `internal_listen_addr` is configured with a certificate and key, and firewalled to node and controller networks.
+- [ ] Administrator routes are not reachable from the public internet.
+- [ ] A login rate limiter is configured at the proxy.
+- [ ] If Turnstile is enabled, `turnstile_expected_hostnames` matches the hostname users actually type, and both the browser and the controller can reach `challenges.cloudflare.com:443`.
 
-## 4. 功能闭环验证（上线前必做）
+## 4. Database
 
-1) 控制器健康检查
-- `GET /healthz` 返回 `{"ok":true}`
-- `GET /metrics` 有输出（便于上线后观测）
-- `GET /api/admin/nodes` 可看到节点上报（上线后用于判断离线节点）
+- [ ] Migrations applied cleanly at startup — the controller refuses to start otherwise.
+- [ ] `resource_prices` contains every GPU model in the fleet plus the reserved `CPU_CORE` entry.
+- [ ] A retention policy is set for `usage_records`.
 
-1.1) Web 登录
-- 已执行 `POST /api/admin/bootstrap` 初始化管理员账号（只允许一次）
-- 浏览器可访问 `/login` 并登录进入管理页 `/`
+## 5. Functional loop
 
-2) Agent 上报与幂等
-- 观察控制器日志与数据库 `metric_reports` 行数增长
-- 人为重放同一条上报（相同 `report_id`）不应重复扣费/落库
+Verify each of these end to end before enforcement:
 
-3) GPU 计费
-- 运行一个 GPU 进程（`nvidia-smi --query-compute-apps` 可见）
-- 控制器应记录 `usage_records`，并扣减 `users.balance`
+- [ ] `GET /healthz` returns `{"ok":true}`.
+- [ ] `GET /readyz` returns `{"ok":true,"database":true}`.
+- [ ] `GET /metrics` returns counters when called with an operator credential, and `401` without one.
+- [ ] `POST /api/admin/bootstrap` created the first administrator, and the Web login works.
+- [ ] First-run Setup is complete; public registration behaves as intended.
+- [ ] `GET /api/admin/nodes` shows every expected node reporting recently.
+- [ ] Replaying an identical report (same `report_id`) does not charge twice.
+- [ ] A GPU process visible to `nvidia-smi --query-compute-apps` produces a `usage_records` row with a plausible cost.
+- [ ] A CPU-heavy process produces a CPU-only usage row.
+- [ ] Dropping a test user to `limited` blocks new GPU jobs via the shell hook and issues `set_cpu_quota`. Confirm on the node: `systemctl show user-<uid>.slice -p CPUQuota`.
+- [ ] Dropping a test user to `blocked` issues `kill_process` after the grace period and applies the hard CPU limit.
+- [ ] Registration, bind review, and account provisioning complete for one real user.
 
-4) CPU 计费
-- 运行明显占用 CPU 的进程（例如多线程压测）
-- 控制器应记录 CPU-only usage 并扣减余额
+## 6. Security
 
-5) 限制动作
-- 将用户积分/余额调到 `limited`：应阻止新 GPU 任务（Hook 生效）并下发 `set_cpu_quota`
-- 将用户积分/余额调到 `blocked`：超过宽限期应下发 `kill_process`，并强限制 CPU
- - 验证 CPUQuota：systemd 场景可检查 `systemctl show user-<uid>.slice -p CPUQuota`
+- [ ] Two-factor authentication is enabled for every administrator account.
+- [ ] Power-user permission bits grant only what each operator needs.
+- [ ] Per-node agent tokens are populated. Run with `agent_node_token_enforce: false` until every node reports, then set it to `true` and restart.
+- [ ] SSH guard behaviour is deliberate: you have chosen a `SSH_GUARD_FAIL_OPEN` value knowing that `0` turns a controller outage into a fleet-wide lockout.
+- [ ] Out-of-band access to every node exists — console, or an excluded account with a key you hold — before the guard is enabled.
+- [ ] The security model has been read and residual risks accepted. See [Security model](security.md).
 
-## 5. 运营参数建议
+## 7. Backups
 
-- 初期建议 `dry_run=true`（记录但不扣费）跑 1-3 天校验数据后再切 `false`
-- `warning_threshold / limited_threshold / kill_grace_period_seconds` 建议结合用户习惯调整
-- 初期建议对部分用户先试点，确认 CPU/GPU 单价匹配集群实际硬件与预期扣费
+- [ ] `scripts/gpuops_backup.sh` runs on a timer, to a repository on a separate disk or host.
+- [ ] The restic password is stored in a secret manager and is recoverable by more than one person.
+- [ ] `scripts/gpuops_backup_verify.sh` has restored a snapshot successfully at least once.
+- [ ] Admin → Status shows current backup and verify timestamps.
+- [ ] An alert fires when either timestamp goes stale.
+
+## 8. Rollout
+
+- [ ] `dry_run: true` for the first 1–3 days. Usage is recorded and cost is calculated, but nothing is deducted.
+- [ ] Sampled usage records have been compared against what the nodes actually did.
+- [ ] `warning_threshold`, `limited_threshold`, `kill_grace_period_seconds`, and the monthly overdraft ceiling are tuned to your users' working patterns.
+- [ ] A pilot group has run under real conditions and their charges look right.
+- [ ] Users have been told what changes, how to check their balance, and how to request more points.
+- [ ] Only then: set `dry_run: false` and restart.
+
+## 9. After go-live
+
+- [ ] Monitoring alerts on `gpuops_controller_last_report_unix` falling behind.
+- [ ] A named person owns the daily node-health and security-event review.
+- [ ] The rollback path is written down: set `dry_run: true` and restart to stop deductions immediately.
+- [ ] A restore and failover drill is scheduled. See [Backup and HA](backup-and-ha.md).

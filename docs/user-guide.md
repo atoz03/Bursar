@@ -1,92 +1,103 @@
-# 用户使用指南（保持 SSH 习惯）
+# User Guide
 
-目标：用户照常 SSH 登录、照常运行训练脚本；系统在后台完成计费与必要限制。
+**English** | [简体中文](zh-CN/user-guide.md)
 
-## 1. 日常使用
+You keep using SSH the way you always have. GPU Ops handles accounting and enforcement in the background.
+
+## Everyday use
 
 ```bash
 ssh user@node05
 python train.py
 ```
 
-## 2. 余额提示与限制
+Nothing about your workflow changes while your balance is healthy.
 
-- `normal`：正常使用
-- `warning`：余额预警，任务可继续运行
-- `limited`：限制启动新的 GPU 任务（通过 Bash Hook 拦截）；同时可能被限制 CPU 使用
-- `blocked`：欠费状态，GPU 将被禁用，同时强限制 CPU 使用；当欠费超过管理员设置的“每月最大欠费上限”时会强制清理全部进程
+## Account status
 
-提示：
-- 当系统需要通知你时，节点可能会在你的家目录写入提示文件：`~/.gpu_notice`
-- 当系统对你施加 CPU 限制时，节点可能会在你的家目录写入：`~/.cpu_quota`（用于自助确认）
+| Status | What it means |
+| --- | --- |
+| `normal` | Full access |
+| `warning` | Low balance; running jobs continue |
+| `limited` | New GPU jobs are blocked by the shell hook; CPU may be throttled |
+| `blocked` | Overdrawn; GPU access is disabled and CPU is heavily throttled |
 
-## 2.1 积分构成与月度结转
+If you exceed the monthly overdraft ceiling set by your administrator, all of your processes are terminated.
 
-- 通用积分：每月按规则发放（博士/硕士/其他或管理员特殊规则）。
-- 结转积分：上月未用完的通用积分会在月初结转到本月，且受管理员设置的“月结转上限”限制；该上限是结转池累计上限，不是每月新增上限。
-- 节点专属积分：只在对应节点可用，不参与月度结转，也不会按月过期。
-- 每月最大欠费上限：管理员可配置；欠费超过该上限会触发强制清理全部进程。
+The node may write status files into your home directory:
 
-扣费顺序：
-- 节点专属积分 -> 结转积分 -> 当月通用积分。
+| File | Meaning |
+| --- | --- |
+| `~/.gpu_notice` | A message from the platform |
+| `~/.cpu_quota` | A CPU limit is currently applied to you |
+| `~/.gpu_blocked` | You are blocked; the shell hook uses this when the controller is unreachable |
 
-## 3. Bash Hook（GPU 任务启动前检查）
+## Points
 
-管理员会在你的 `~/.bashrc` 中加入：
+- **General points** are granted monthly according to your category (doctoral, master's, other) or an administrator's special rule.
+- **Carryover points** are last month's unused general points, moved forward at the start of the month and capped by the carryover ceiling. That ceiling limits the accumulated pool, not the monthly addition.
+- **Node-exclusive points** apply only to a specific node. They do not carry over and do not expire monthly.
+
+Charges are deducted in this order: **node-exclusive → carryover → general**.
+
+## The shell hook
+
+Your administrator may add this to your `~/.bashrc`:
 
 ```bash
 source /opt/gpu-cluster/check_quota.sh
 ```
 
-Hook 的策略是“尽量不误伤”：
-- 控制器可达：以控制器返回的 `status` 为准
-- 控制器不可达：仅当本地存在 `~/.gpu_blocked` 标记时才阻止启动疑似 GPU 任务
+The hook wraps `python`, `python3`, and `nvidia-smi`. Before a command that looks like it will use a GPU — the script or `-c` snippet mentions `torch`, `tensorflow`, `jax`, or `cuda`, or `CUDA_VISIBLE_DEVICES` is set — it checks your balance.
 
-提示：
-- Hook 主要拦截 `python/python3`（检测脚本/代码片段中是否包含 `torch/tensorflow/jax/cuda` 关键词）。
+It is deliberately reluctant to block you:
 
-## 4. 自助查询余额
+- If the controller answers, its status decides.
+- If the controller is unreachable, you are blocked only when `~/.gpu_blocked` exists locally.
 
-若集群提供 `tools/balance-query`：
+## Checking your balance
+
+In the Web UI: **My balance**, which also shows points increments and usage history.
+
+From a node, if your administrator has deployed the helper:
 
 ```bash
-CONTROLLER_URL=http://controller:8000 balance-query
+CONTROLLER_URL=https://gpu-ops.example.org balance-query
 ```
 
-## 4.1 自助登记（账号绑定 / 开号申请）
+The balance API requires a credential. On a managed node the helper reads it from `/etc/gpu-ops/query-token`. If you get an authentication error, ask your administrator to deploy that file — it is not something you can create yourself.
 
-当集群启用“未登记禁止 SSH 登录”策略时，你需要先完成登记并等待审核通过：
+## Registering and binding accounts
 
-1) 浏览器打开控制器 Web：
-- `http://<controller>:8000/`
+When the cluster blocks SSH for unregistered accounts, register before you can log in:
 
-2) 进入菜单：
-- `用户功能 -> 用户注册`
+1. Open the controller Web UI, for example `https://gpu-ops.example.org/`.
+2. Go to **User → Register**.
+3. Choose one:
+   - **Bind an existing account** — declare which nodes you already have accounts on and the local username on each.
+   - **Request a new account** — ask an administrator to create one on a node where you have none.
+4. Track the outcome under **My requests** (`pending` / `approved` / `rejected`).
 
-3) 选择：
-- **账号绑定登记**：填写你在哪些端口(机器编号)有账号，以及对应的机器用户名
-- **开号申请**：如果某台机器还没有账号，提交申请给管理员处理
+Registration may be restricted to specific email domains and may require email verification.
 
-4) 在「我的申请记录」里查看审核状态（pending/approved/rejected）。
+## Passwords
 
-## 4.2 密码安全规则（强密码）
+Registration, reset, and change all require a strong password:
 
-平台注册、重置密码、修改密码都必须使用强密码，规则如下：
+- 12–64 characters
+- at least one uppercase letter, one lowercase letter, one digit, and one special character (for example `!@#$%^&*_-+=`)
+- no spaces
 
-- 长度 12-64 位
-- 必须同时包含：大写字母、小写字母、数字、特殊字符（如 `!@#$%^&*_-+=`）
-- 不能包含空格
+You can enable TOTP two-factor authentication under your profile. Your administrator may require it.
 
-## 5. 常见问题
+## FAQ
 
-1) 我能登录但跑不了 GPU 任务
-- 可能处于 `limited/blocked` 状态（余额不足/欠费）
-- 可先查询余额，再联系管理员充值
+**I can log in but cannot run GPU jobs.** You are probably `limited` or `blocked`. Check your balance and ask an administrator to top up.
 
-2) 控制器不可达怎么办
-- Hook 会尽量不误伤：只有当本地存在 `~/.gpu_blocked` 标记时才会阻止
-- 若你确认自己应当可用但仍被阻止，请联系管理员排障
+**The controller is unreachable — am I blocked?** Not unless `~/.gpu_blocked` exists on that node. If you are blocked and believe you should not be, contact an administrator.
 
-3) 我无法 SSH 登录
-- 可能集群启用了“未登记禁止 SSH 登录”
-- 请先到 Web 的「用户注册」提交绑定登记/开号申请，并等待管理员审核通过
+**I cannot SSH in at all.** The cluster likely blocks unregistered accounts. Submit a bind or new-account request in the Web UI and wait for approval.
+
+**My job was killed.** You were overdrawn beyond the monthly ceiling, or an administrator terminated it. Your usage history shows the charges that led there.
+
+**A CPU limit appeared out of nowhere.** Check `~/.cpu_quota`. Limits are applied automatically at `limited` and `blocked` status.

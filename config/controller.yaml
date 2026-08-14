@@ -1,5 +1,5 @@
 # 控制器配置示例（开发环境）
-listen_addr: "0.0.0.0:60039"
+listen_addr: "0.0.0.0:8080"
 # 内部接口监听（节点 Agent / SSH Guard / HA 内部状态查询）。
 # 为空表示不启用内部独立端口；生产环境建议绑定内网地址并启用 TLS。
 internal_listen_addr: ""
@@ -86,7 +86,7 @@ web_dir: ""
 ha_enabled: false
 ha_node: "controller-primary"
 ha_role: "primary"
-ha_peer_url: "http://<standby-controller-ip>:60039"
+ha_peer_url: "http://<standby-controller-ip>:8080"
 ha_token: "<replace-with-ha-token>"
 
 # 系统级加密备份任务状态（由 scripts/gpuops_backup.sh 写入）

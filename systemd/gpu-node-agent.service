@@ -6,7 +6,7 @@ After=network.target
 Type=simple
 User=root
 Environment="NODE_ID=node01"
-Environment="CONTROLLER_URL=https://controller.example.org:60040"
+Environment="CONTROLLER_URL=https://controller.example.org:8081"
 Environment="AGENT_TOKEN=replace-me"
 ExecStart=/usr/local/bin/node-agent
 Restart=always

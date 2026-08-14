@@ -101,7 +101,7 @@ func parseListenHost(addr string, fallback string) string {
 
 func defaultHASyncConfig(cfg Config) HASyncConfig {
 	const (
-		defaultPrimaryPort = 60039
+		defaultPrimaryPort = 8080
 	)
 	return HASyncConfig{
 		Enabled:               false,
@@ -149,10 +149,10 @@ func normalizeHASyncConfig(cfg HASyncConfig) HASyncConfig {
 		cfg.DRSSHPort = 22
 	}
 	if cfg.DRControllerPort <= 0 || cfg.DRControllerPort > 65535 {
-		cfg.DRControllerPort = 60039
+		cfg.DRControllerPort = 8080
 	}
 	if cfg.PrimaryControllerPort <= 0 || cfg.PrimaryControllerPort > 65535 {
-		cfg.PrimaryControllerPort = 60039
+		cfg.PrimaryControllerPort = 8080
 	}
 	cfg.DRNodeID = strings.TrimSpace(cfg.DRNodeID)
 	cfg.DRHost = strings.TrimSpace(cfg.DRHost)

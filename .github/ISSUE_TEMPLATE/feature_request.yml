@@ -1,0 +1,32 @@
+name: 功能建议
+description: 提议新的能力或现有流程改进。
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 要解决的问题
+      description: 描述使用场景和现有方案的限制。
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议方案
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 备选方案与兼容性影响
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: 范围确认
+      options:
+        - label: 我已搜索现有 Issue 和 Pull Request
+          required: true
+        - label: 本建议不包含真实凭据、主机或用户数据
+          required: true

@@ -1,20 +1,59 @@
+# Two ways to run this file:
+#
+#   docker compose up -d postgres          # database only, for the source-build path
+#   docker compose --profile full up -d    # database + controller, fully containerised
+#
+# Copy .env.example to .env and fill in every secret first. The node agent is not
+# part of this stack: it must run directly on each compute host (see docs/node-agent.md).
+
 services:
   postgres:
     image: ${POSTGRES_IMAGE:-postgres:18.1}
     container_name: gpuops-postgres
+    restart: unless-stopped
     environment:
-      POSTGRES_DB: gpuops
-      POSTGRES_USER: gpuops
-      POSTGRES_PASSWORD: gpuops
+      POSTGRES_DB: ${POSTGRES_DB:-gpuops}
+      POSTGRES_USER: ${POSTGRES_USER:-gpuops}
+      # No default on purpose: `docker compose up` fails fast when .env is missing.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     ports:
-      - "5432:5432"
+      # Defaults to loopback only; the database does not need to be reachable off-host.
+      - "${POSTGRES_PUBLISH:-127.0.0.1:5432}:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U gpuops -d gpuops"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-gpuops} -d ${POSTGRES_DB:-gpuops}"]
       interval: 5s
       timeout: 3s
       retries: 20
     volumes:
       - pgdata:/var/lib/postgresql
+
+  controller:
+    profiles: ["full"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: gpu-ops/controller:${GPUOPS_IMAGE_TAG:-local}
+    container_name: gpuops-controller
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      GPUOPS_DATABASE_DSN: postgres://${POSTGRES_USER:-gpuops}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-gpuops}?sslmode=disable
+      GPUOPS_AGENT_TOKEN: ${GPUOPS_AGENT_TOKEN:?set GPUOPS_AGENT_TOKEN in .env}
+      GPUOPS_ADMIN_TOKEN: ${GPUOPS_ADMIN_TOKEN:?set GPUOPS_ADMIN_TOKEN in .env}
+      GPUOPS_AUTH_SECRET: ${GPUOPS_AUTH_SECRET:?set GPUOPS_AUTH_SECRET in .env}
+      GPUOPS_COOKIE_SECURE: ${GPUOPS_COOKIE_SECURE:-false}
+      GPUOPS_DRY_RUN: ${GPUOPS_DRY_RUN:-true}
+    ports:
+      - "${CONTROLLER_PUBLISH:-8080}:8080"
+    healthcheck:
+      # The image has no shell or curl, so the binary probes its own /readyz.
+      test: ["CMD", "/app/controller", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
 
 volumes:
   pgdata:

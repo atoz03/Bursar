@@ -10,8 +10,11 @@
 
 set -euo pipefail
 
-CONTROLLER_URL="${CONTROLLER_URL:-http://controller:8000}"
+CONTROLLER_URL="${CONTROLLER_URL:-http://controller:8080}"
 GPUOPS_CURL_TIMEOUT="${GPUOPS_CURL_TIMEOUT:-2}"
+# 余额查询接口需要鉴权。节点上通过只读文件下发一个查询用 Agent token；
+# 该文件对普通用户可读，因此只应放置 token，不要放置 admin_token。
+GPUOPS_QUERY_TOKEN_FILE="${GPUOPS_QUERY_TOKEN_FILE:-/etc/gpu-ops/query-token}"
 
 _gpuops_username() {
   whoami
@@ -22,9 +25,25 @@ _gpuops_block_flag_path() {
   echo "/home/${user}/.gpu_blocked"
 }
 
+_gpuops_query_token() {
+  if [[ -n "${GPUOPS_QUERY_TOKEN:-}" ]]; then
+    echo "${GPUOPS_QUERY_TOKEN}"
+    return 0
+  fi
+  if [[ -r "${GPUOPS_QUERY_TOKEN_FILE}" ]]; then
+    head -n 1 "${GPUOPS_QUERY_TOKEN_FILE}" 2>/dev/null | tr -d '[:space:]'
+    return 0
+  fi
+  return 1
+}
+
 _gpuops_fetch_balance_json() {
   local user="$1"
+  local token=""
+  token="$(_gpuops_query_token)" || return 1
+  [[ -n "${token}" ]] || return 1
   curl -fsS --max-time "${GPUOPS_CURL_TIMEOUT}" \
+    -H "X-Agent-Token: ${token}" \
     "${CONTROLLER_URL}/api/users/${user}/balance" 2>/dev/null || return 1
 }
 

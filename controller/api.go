@@ -1092,7 +1092,9 @@ func (s *Server) RouterWeb() *gin.Engine {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
 	r.GET("/readyz", s.handleReadiness)
-	r.GET("/metrics", func(c *gin.Context) {
+	// /metrics 只暴露聚合计数器（无用户名/主机名），但默认仍要求鉴权：
+	// 采集端使用 `Authorization: Bearer <admin_token>` 或 `X-Agent-Token`。
+	r.GET("/metrics", s.authOperator(), func(c *gin.Context) {
 		c.Header("Content-Type", "text/plain; charset=utf-8")
 		c.String(http.StatusOK, s.metr.render())
 	})
@@ -1119,8 +1121,8 @@ func (s *Server) RouterWeb() *gin.Engine {
 	api.GET("/guideline", s.handleUserGuidelineGet)
 	api.POST("/tools/provision/decrypt", s.authSession(), s.handleToolProvisionDecrypt)
 
-	api.GET("/users/:username/balance", s.handleBalance)
-	api.GET("/users/:username/usage", s.handleUserUsage)
+	api.GET("/users/:username/balance", s.authSelfOrOperator(), s.handleBalance)
+	api.GET("/users/:username/usage", s.authSelfOrOperator(), s.handleUserUsage)
 	api.POST("/users/:username/recharge", s.authAdmin(), s.requirePlatformUsersPermission(), s.handleRecharge)
 
 	user := api.Group("/user")
@@ -1424,7 +1426,7 @@ func (s *Server) authSession() gin.HandlerFunc {
 		if c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead && c.Request.Method != http.MethodOptions {
 			want := p.Nonce
 			got := strings.TrimSpace(c.GetHeader("X-CSRF-Token"))
-			if want == "" || got == "" || want != got {
+			if want == "" || got == "" || !constantTimeTokenEqual(got, want) {
 				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "csrf_required"})
 				return
 			}
@@ -1455,31 +1457,29 @@ func (s *Server) authNodeAgent() gin.HandlerFunc {
 	}
 }
 
+// 说明：所有 token 比较统一走 constantTimeTokenEqual，避免逐字节短路比较泄漏时序信息。
+// 候选集合（legacy / 每节点 token）逐项比较，不因命中位置提前返回。
 func (s *Server) validAgentToken(tok string) bool {
 	if tok == "" {
 		return false
 	}
-	if tok == strings.TrimSpace(s.cfg.AgentToken) {
-		return true
-	}
+	matched := constantTimeTokenEqual(tok, s.cfg.AgentToken)
 	for _, legacy := range s.cfg.AgentLegacyTokens {
-		if tok == strings.TrimSpace(legacy) {
-			return true
+		if constantTimeTokenEqual(tok, legacy) {
+			matched = true
 		}
 	}
-	return false
+	return matched
 }
 
 func (s *Server) validKnownAgentToken(tok string) bool {
-	if s.validAgentToken(tok) {
-		return true
-	}
+	matched := s.validAgentToken(tok)
 	for _, nodeTok := range s.cfg.AgentNodeTokens {
-		if tok == strings.TrimSpace(nodeTok) {
-			return true
+		if constantTimeTokenEqual(tok, nodeTok) {
+			matched = true
 		}
 	}
-	return false
+	return matched
 }
 
 func (s *Server) validAgentTokenForNode(tok string, nodeID string) bool {
@@ -1489,7 +1489,7 @@ func (s *Server) validAgentTokenForNode(tok string, nodeID string) bool {
 		return false
 	}
 	if nodeTok := strings.TrimSpace(s.cfg.AgentNodeTokens[nodeID]); nodeTok != "" {
-		if tok == nodeTok {
+		if constantTimeTokenEqual(tok, nodeTok) {
 			return true
 		}
 		return !s.cfg.AgentNodeTokenEnforce && s.validAgentToken(tok)
@@ -1511,7 +1511,7 @@ func (s *Server) authAdmin() gin.HandlerFunc {
 		// 1) 优先支持脚本类 Bearer admin_token
 		auth := strings.TrimSpace(c.GetHeader("Authorization"))
 		const prefix = "Bearer "
-		if strings.HasPrefix(auth, prefix) && strings.TrimSpace(strings.TrimPrefix(auth, prefix)) == s.cfg.AdminToken {
+		if strings.HasPrefix(auth, prefix) && constantTimeTokenEqual(strings.TrimPrefix(auth, prefix), s.cfg.AdminToken) {
 			c.Set("auth_method", "token")
 			c.Set("auth_role", "admin")
 			c.Set("auth_perms", uint32(permViewBoard|permViewNodes|permManageNodes|permReviewRequests|permManagePoints|permManagePlatformUsers|permPointsUsers|permPointsBatchFiltered|permPointsBatchAll|permPointsRecords|permPointsMonthly|permPointsSpecialRules))
@@ -1554,13 +1554,103 @@ func (s *Server) authAdmin() gin.HandlerFunc {
 		if c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead && c.Request.Method != http.MethodOptions {
 			want := p.Nonce
 			got := strings.TrimSpace(c.GetHeader("X-CSRF-Token"))
-			if want == "" || got == "" || want != got {
+			if want == "" || got == "" || !constantTimeTokenEqual(got, want) {
 				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "csrf_required"})
 				return
 			}
 		}
 		c.Next()
 	}
+}
+
+// hasAdminBearer 判断请求是否携带有效的 admin_token（脚本/运维通道）。
+func (s *Server) hasAdminBearer(c *gin.Context) bool {
+	auth := strings.TrimSpace(c.GetHeader("Authorization"))
+	const prefix = "Bearer "
+	if !strings.HasPrefix(auth, prefix) {
+		return false
+	}
+	return constantTimeTokenEqual(strings.TrimPrefix(auth, prefix), s.cfg.AdminToken)
+}
+
+// hasAgentBearer 判断请求是否携带有效的 Agent token（全局 / legacy / 每节点）。
+func (s *Server) hasAgentToken(c *gin.Context) bool {
+	tok := strings.TrimSpace(c.GetHeader("X-Agent-Token"))
+	if tok == "" {
+		return false
+	}
+	return s.validKnownAgentToken(tok)
+}
+
+// sessionUser 在不触发 CSRF 校验的前提下解析登录会话（仅用于只读接口的身份判定）。
+func (s *Server) sessionUser(c *gin.Context) (username string, role string, ok bool) {
+	if s.cfg.SessionHours == 0 {
+		return "", "", false
+	}
+	cookie, err := c.Cookie(sessionCookieName)
+	if err != nil || strings.TrimSpace(cookie) == "" {
+		return "", "", false
+	}
+	p, err := verifySession(strings.TrimSpace(s.cfg.AuthSecret), cookie, time.Now())
+	if err != nil || strings.TrimSpace(p.Username) == "" {
+		return "", "", false
+	}
+	resolvedRole, _, exists, err := s.store.ResolveSessionRolePerms(c.Request.Context(), p.Username)
+	if err != nil || !exists {
+		return "", "", false
+	}
+	return p.Username, resolvedRole, true
+}
+
+// authOperator 保护「只读但不应公开」的运维接口：admin_token 或 Agent token 均可。
+func (s *Server) authOperator() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if s.hasAdminBearer(c) || s.hasAgentToken(c) {
+			c.Next()
+			return
+		}
+		if _, role, ok := s.sessionUser(c); ok && (role == "admin" || role == "power_user") {
+			c.Next()
+			return
+		}
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+	}
+}
+
+// authSelfOrOperator 保护 /api/users/:username/* 这类按用户名查询的接口：
+// 允许 admin_token、Agent token（节点侧自助脚本）、管理员会话，或用户查询本人数据。
+// 修复：此前这两个接口完全公开，任何人都可以枚举用户名并读取余额/用量。
+func (s *Server) authSelfOrOperator() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if s.hasAdminBearer(c) || s.hasAgentToken(c) {
+			c.Next()
+			return
+		}
+		username, role, ok := s.sessionUser(c)
+		if !ok {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
+		}
+		if selfOrOperatorAllowed(role, username, c.Param("username")) {
+			c.Next()
+			return
+		}
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+	}
+}
+
+// selfOrOperatorAllowed 是 authSelfOrOperator 在解析出会话身份之后的判定逻辑，
+// 抽成纯函数以便在没有数据库的情况下测试。空用户名一律拒绝，避免两端同时为空时误放行。
+func selfOrOperatorAllowed(role string, sessionUsername string, pathUsername string) bool {
+	if role == "admin" || role == "power_user" {
+		return true
+	}
+	sessionUsername = strings.TrimSpace(sessionUsername)
+	pathUsername = strings.TrimSpace(pathUsername)
+	if sessionUsername == "" || pathUsername == "" {
+		return false
+	}
+	return strings.EqualFold(sessionUsername, pathUsername)
 }
 
 func getAuthRole(c *gin.Context) string {
@@ -1820,12 +1910,14 @@ func (s *Server) handleBalance(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	var u User
-	if err := s.store.WithTx(ctx, func(tx *sql.Tx) error {
-		var err error
-		u, err = s.store.EnsureUserTx(ctx, tx, username, s.cfg.DefaultBalance)
-		return err
-	}); err != nil {
+	// 只读查询：不再隐式创建用户。此前使用 EnsureUserTx，配合公开路由会让任意调用方
+	// 通过查询不存在的用户名在 users 表中写入新行。
+	u, err := s.store.GetUser(ctx, username)
+	if errors.Is(err, sql.ErrNoRows) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "用户不存在"})
+		return
+	}
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

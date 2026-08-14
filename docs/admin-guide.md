@@ -1,232 +1,177 @@
-# 📘 管理员查阅手册（功能与安全规则）
+# Administrator Guide
 
-面向对象：管理员 / 高级用户（具备部分后台权限）。
+**English** | [简体中文](zh-CN/admin-guide.md)
 
-目标：让你快速熟悉各模块职责、核心操作、安全机制和触发规则。
+Modules, permissions, and security rules for administrators and delegated operators.
 
----
+## Roles
 
-## 🧭 目录
+### Administrator (`admin`)
 
-- [1. 角色与权限](#1-角色与权限)
-- [2. 后台模块速览](#2-后台模块速览)
-- [3. 各模块功能说明](#3-各模块功能说明)
-- [4. 什么是“疑似恶意用户”](#4-什么是疑似恶意用户)
-- [5. 已上线安全措施与防护范围](#5-已上线安全措施与防护范围)
-- [6. 安全规则阈值速查表](#6-安全规则阈值速查表)
-- [7. 常见处置流程（建议）](#7-常见处置流程建议)
-- [8. 手册维护约定（随代码更新）](#8-手册维护约定随代码更新)
+Full access to every module: node policy, points, registration review, account mapping, security response, mail configuration, and HA.
 
----
+### Power user (`power_user`)
 
-## 1. 角色与权限
+Access only to the capabilities granted by permission bits:
 
-### 👑 管理员（`admin`）
-- 可访问全部后台模块。
-- 负责节点策略、积分、注册审核、账号映射、安全处置、邮件配置、容灾配置等。
+| Permission | Grants |
+| --- | --- |
+| `view_board` | Operations dashboard |
+| `view_nodes` | Node status |
+| `manage_nodes` | Node policy changes and remote actions |
+| `review_requests` | Registration and profile review |
+| `manage_points` | Points administration |
+| `manage_platform_users` | Platform user administration |
 
-### 🧩 高级用户（`power_user`）
-- 只可访问被授权的后台能力：
-  - `canViewBoard`：运营看板
-  - `canViewNodes`：节点状态
-  - `canReviewRequests`：注册审核
+Points administration is subdivided further — user lists, filtered batches, all-user batches, records, monthly configuration, and special rules each have their own bit — so a delegated operator can be given exactly one of them.
 
----
+Requests authenticated with `admin_token` bypass all of these checks. See [Security model](security.md).
 
-## 2. 后台模块速览
+## Module map
 
-### 📊 总览
-- 运营看板：`/admin/board`
-- 集群总览：`/admin/status`
+### Overview
 
-### 🖥️ 资源与计费
-- 节点管理：`/admin/nodes`
-- 进程审计：`/admin/usage`
-- 积分管理：`/admin/points`
+| Page | Path |
+| --- | --- |
+| Operations dashboard | `/admin/board` |
+| Cluster overview | `/admin/status` |
 
-### 👥 账号与访问
-- 平台用户：`/admin/users`
-- 账号映射：`/admin/accounts`
-- 账号开通：`/admin/account-provision`
-- 注册与资料审核：`/admin/requests`
-- 高级用户：`/admin/power-users`
-- SSH 名单（白名单/黑名单/豁免）：`/admin/whitelist`
+### Resources and billing
 
-### ⚙️ 系统与容灾
-- 容灾同步：`/admin/ha`
-- 公告管理：`/admin/announcements`
-- 用户准则：`/admin/guideline`
-- 管理员记事本：`/admin/notebook`
-- 邮件设置：`/admin/mail`
-- 个人资料：右上角账号菜单
-- 修改密码：右上角账号菜单
+| Page | Path |
+| --- | --- |
+| Node management | `/admin/nodes` |
+| Process audit | `/admin/usage` |
+| Points management | `/admin/points` |
 
----
+### Accounts and access
 
-## 3. 各模块功能说明
+| Page | Path |
+| --- | --- |
+| Platform users | `/admin/users` |
+| Account mapping | `/admin/accounts` |
+| Account provisioning | `/admin/account-provision` |
+| Registration and profile review | `/admin/requests` |
+| Power users | `/admin/power-users` |
+| SSH lists (allow / deny / exempt) | `/admin/whitelist` |
 
-### 📊 总览
-- 运营看板：看总体用户、节点、用量、积分变化趋势。
-- 集群总览：集中查看节点 CPU、GPU、内存、磁盘与在线状态。
+### System and continuity
 
-### 🖥️ 资源与计费
-- 进程审计：按平台账号/节点账号筛选进程与强制终止记录；支持区间导出、估算与删除。
-- 节点在线与资源监控：心跳、CPU/GPU 进程数、磁盘与流量。
-- 节点策略开关：
-  - SSH 拦截（未注册拦截）
-  - 积分拦截（是否扣分与限速）
-  - 节点计费参数（GPU 单价 + CPU 单价，均按节点单独设置）
-  - 独享用户
-  - 可见性（限定哪些高级用户可见）
-- 运维动作：
-  - 立即同步
-  - 踢 SSH
-  - 清用户进程
-- 安全视图：
-  - 节点列表风险标识（节点 ID 旁 emoji：`🚨/⚠️`）
-  - 页面顶部风险条幅（汇总近 7 天有风险的机器，可直接点击进入详情）
-  - 疑似恶意用户名单（近 7 天）
-  - 安全审计日志（节点维度）
+| Page | Path |
+| --- | --- |
+| HA synchronisation | `/admin/ha` |
+| Announcements | `/admin/announcements` |
+| User guidelines | `/admin/guideline` |
+| Administrator notebook | `/admin/notebook` |
+| Mail settings | `/admin/mail` |
+| First-run Setup | `/admin/setup` |
 
-### 💰 积分管理
-- 单用户积分调整（支持通用积分/结转积分/专属积分）。
-- 全体加减积分（对象应显示“全部用户”）。
-- 月初重置（博士/硕士/其他规则 + 特殊用户覆盖）。
-- 月度结转（上月未用完通用积分可结转到本月，受“结转上限”约束；该上限是结转池累计上限，不是每月新增上限）。
-- 每月最大欠费上限（可在积分管理中调整；超过后自动强制清理该用户全部进程）。
-- 扣费优先级：节点专属积分 -> 结转积分 -> 通用积分。
-- 节点专属积分不参与月度结转，也不会按月过期。
-- 积分操作记录追溯（时间、操作、对象、变动值、积分类型）。
+## Node management
 
-### 👥 账号与访问
-- 平台用户管理：用户状态、拉黑/解黑、删除/恢复、重复身份排查。
-- 账号映射管理：平台账号与节点账号绑定关系维护。
-- 异常换绑监测：
-  - 自动识别同一节点账号在时间窗口内频繁换绑、或涉及多个平台账号的情况。
-  - 风险账号带红点标记，可直接点击涉及的平台账号查看详情。
-  - 支持在风险区直接对可疑平台账号执行“拉黑”。
-- 节点账号开通：
-  - 支持开通并发送“平台内密文 + 邮件提取码”
-  - 若账号已映射到同一平台用户，可二次确认“重新生成新密钥并重发”
-- 注册审核：待审、冲突、退回、资料变更审核。
-- SSH 名单：白名单、黑名单、豁免名单统一管理。
+Per-node policy switches:
 
-### ⚙️ 系统与容灾
-- 邮件配置与批量通知发送。
-- 容灾状态查看与主备一致性核查。
-- 容灾同步策略配置：可设置“每隔几天同步一次 + 每天几点开始”（默认每天 03:00）。
-- 容灾端口配置：可设置容灾控制器服务端口（无需固定 60039）。
-- 容灾手动操作：支持“主→容灾立即同步”与“容灾→主回切同步”。
-- 容灾日志：可查看上次同步时间、每次同步摘要、步骤级成功/失败明细。
-- 主节点故障接管：由 Keepalived 自动完成；手动接管只允许在 standby 上明确确认后执行。
-- 数据保护状态：展示平台数据库与控制器配置的每日加密备份、最近快照和每周隔离恢复演练；不默认备份用户科研数据。
-- 安全约束：容灾目标不能指向本机；只有 primary 可编排同步，只有 standby 可执行手动接管。
-- 公告/用户准则统一发布。
-- 管理员记事本用于运营留痕。
+- **SSH guard** — block accounts that are not registered on the platform.
+- **Points enforcement** — whether usage is charged and limits are applied on this node.
+- **Pricing** — GPU price and CPU core-minute price, set per node.
+- **Exclusive users** — reserve a node for specific users.
+- **Visibility** — restrict which power users can see the node.
 
----
+Remote actions: sync now, disconnect SSH sessions, and terminate a user's processes. These act on the node immediately. Validate with `dry_run: true` before relying on them.
 
-## 4. 什么是“疑似恶意用户”
+The node list flags risk with an emoji next to the node ID, and a banner summarises nodes with security events in the last 7 days.
 
-### 🚨 定义
-“疑似恶意用户”不是手工标签，而是系统根据安全事件自动聚合得到：
+## Points management
 
-- 数据源：`node_security_events`
-- 统计窗口：近 7 天
-- 统计维度：按 `node_id + username` 聚合
-- 输出字段：
-  - `hit_count`：触发次数
-  - `last_seen_at`：最近触发时间
-  - `reason_hints`：自动理由汇总
-  - `phenomena`：疑似现象（如疑似挖矿/SSH爆破等）
-  - `mining_suspected`：是否命中过疑似挖矿事件
+- Adjust an individual user's general, carryover, or node-exclusive points.
+- Apply a batch change across all users.
+- Configure the monthly reset by degree category, with per-user special rules.
+- Configure the carryover ceiling. This is a cap on the accumulated carryover pool, not a cap on how much may be added each month.
+- Configure the monthly maximum overdraft. Exceeding it triggers termination of all of that user's processes.
 
-### 🧠 重要理解
-- 只有“事件中带相关用户名”的安全事件会进入“疑似恶意用户名单”。
-- 例如端口扫描事件通常没有用户名，只会在“安全审计日志”中出现，不一定出现在“疑似恶意用户名单”。
+Deduction order is **node-exclusive → carryover → general**. Node-exclusive points do not participate in monthly carryover and do not expire monthly.
 
----
+Every points operation is recorded with timestamp, operation, target, delta, and points type.
 
-## 5. 已上线安全措施与防护范围
+## Accounts and access
 
-| 安全措施 | 作用 | 可防范问题 |
-|---|---|---|
-| 🔐 `agent_token` 鉴权（Agent上报） | 保护 `/api/metrics` | 防伪造节点上报、注入假用量 |
-| 🧾 会话 + CSRF 保护（Web 管理接口） | 非 GET 需 CSRF | 防跨站伪造后台操作 |
-| 🚪 SSH 拦截策略 | 未注册账号可被拦截 | 防未登记账号绕过平台管理 |
-| 📃 SSH 白/黑/豁免名单 | 精细化准入控制 | 防违规账号持续登录 |
-| 🧪 可疑行为审计（安全事件） | 自动识别并留痕 | 防挖矿、爆破、扫描、资源滥用漏检 |
-| ⛔ 节点动作处置（踢SSH/清进程） | 管理端即时干预 | 防攻击持续扩散、快速止血 |
-| 💿 磁盘打满风险检测 | 容量异常预警 | 防服务雪崩、节点不可写 |
-| 🧮 积分拦截 + 低余额限制 | 余额不足限制计算行为 | 防无成本滥用资源 |
-| 🔁 安全事件冷却去重 | 同类事件限频写入 | 防日志风暴、告警淹没 |
+**Platform users.** Status, block and unblock, delete and restore, duplicate-identity detection.
 
----
+**Account mapping.** Maintains `(node_id, local_username) → platform user`. The rebinding monitor flags a local account that rebinds frequently within a time window or that has been associated with several platform accounts. Flagged accounts carry a red dot and can be blocked directly from the risk panel.
 
-## 6. 安全规则阈值速查表
+**Account provisioning.** Provisions a node account and delivers credentials as ciphertext in the platform plus an extraction code by email. If the account is already mapped to the same platform user, a second confirmation allows regenerating and resending.
 
-> 以下规则为当前代码实际实现值。
+**SSH lists.** Allow, deny, and exemption lists in one place, with a reason and source recorded per entry.
 
-| 事件类型 | 触发条件 | 严重级别 | 冷却时间 |
-|---|---|---|---|
-| `suspected_mining`（疑似挖矿） | 进程命令行命中挖矿特征关键词（如 `xmrig`、`cpuminer`、`minerd`、`ethminer`、`lolminer`、`nbminer`、`stratum`、`randomx`、`ethash` 等） | `critical` | 2 分钟 |
-| `high_cpu_load`（高CPU负载） | 节点 CPU 总负载 `>= 95%` | `warning` | 5 分钟 |
-| `ssh_failed_login_spike`（失败峰值） | 5 分钟内 SSH 失败登录次数 `> 20` | `critical` | 2 分钟 |
-| `ssh_bruteforce`（SSH爆破） | Agent 安全信号检测到爆破 | `critical` | 2 分钟 |
-| `abnormal_port_scan`（端口扫描） | Agent 安全信号检测到端口扫描 | `critical` | 2 分钟 |
-| `disk_full_risk`（磁盘打满风险） | `/`、`/home`、`/mnt` 任一分区：已用率 `>= 98%` 或剩余空间 `<= 1GB` | `critical` | 10 分钟 |
+## Security events
 
-### 📌 “疑似恶意用户名单”生成规则
-- 统计窗口：7 天
-- 默认上限：200 条（节点详情）/ 500 条（安全事件页）
-- `mining_suspected = true` 条件：该用户在窗口内命中过 `suspected_mining`
+### Suspected malicious users
 
----
+This is not a manual label. The controller aggregates `node_security_events` over a 7-day window, grouped by `node_id + username`:
 
-## 7. 常见处置流程（建议）
+| Field | Meaning |
+| --- | --- |
+| `hit_count` | Number of triggers in the window |
+| `last_seen_at` | Most recent trigger |
+| `reason_hints` | Aggregated reasons |
+| `phenomena` | Suspected behaviour, such as mining or SSH brute force |
+| `mining_suspected` | Whether a `suspected_mining` event was hit in the window |
 
-### 🧯 发现疑似挖矿
-1. 进入节点详情，查看“疑似恶意用户名单”和“安全审计日志”。
-2. 点击“查看详细”核对命令样本与触发理由。
-3. 立即执行：拉黑账号 + 踢 SSH + 清进程。
-4. 检查该账号映射关系和近期积分消耗。
-5. 必要时通知用户并冻结相关账号。
+Only events that carry a username reach this list. Port-scan events usually have no associated user and appear only in the security audit log.
 
-### 🔒 SSH 攻击突增
-1. 查看 `ssh_failed_login_spike` / `ssh_bruteforce` 事件。
-2. 对可疑来源和账号执行黑名单策略。
-3. 确认该节点 SSH 拦截策略是否开启。
-4. 复核白名单/豁免名单，避免误开后门。
+Default limits: 200 rows on node detail, 500 on the security events page.
 
-### 💿 磁盘接近打满
-1. 查看 `disk_full_risk` 事件详情（分区与剩余空间）。
-2. 在节点详情定位高占用用户（`/home` 占用）。
-3. 联系用户清理或管理员代清理，必要时暂时限制账号。
+### Detection rules
 
----
+Values below are the constants in `controller/api.go`. Verify them again if you change detection logic.
 
-## 8. 手册维护约定（随代码更新）
+| Event | Condition | Severity | Cooldown |
+| --- | --- | --- | --- |
+| `suspected_mining` | Process command line matches mining keywords (`xmrig`, `cpuminer`, `minerd`, `ethminer`, `lolminer`, `nbminer`, `stratum`, `randomx`, `ethash`, …) | `critical` | 2 min |
+| `high_cpu_load` | Node CPU load ≥ 95% of total capacity | `warning` | 5 min |
+| `ssh_failed_login_spike` | More than 20 failed SSH logins in 5 minutes | `critical` | 30 min |
+| `ssh_bruteforce` | Agent brute-force signal active | `critical` | 30 min |
+| `abnormal_port_scan` | Agent port-scan signal active | `critical` | 30 min |
+| `disk_full_risk` | `/`, `/home`, or `/mnt` at ≥ 98% used or ≤ 1 GB free | `critical` | 10 min |
 
-### ✅ 维护原则
-- 只要后台模块、权限、安全规则、阈值、处置动作发生变化，必须同步更新本手册。
+Cooldown suppresses repeat writes of the same event type on the same node, so a persistent condition does not flood the log. Agent-signal events additionally hold for 10 minutes before being treated as cleared.
 
-### 🛠️ 触发更新的代码范围
-- `web/src/views/pages/Admin*.vue`（后台页面功能变更）
-- `web/src/router/index.ts`、`web/src/views/Layout.vue`（菜单与权限入口变更）
-- `controller/api.go`、`controller/database.go`（安全规则、阈值、事件逻辑变更）
-- `config/controller.yaml`（策略参数含义变更）
+## Response playbooks
 
-### 📋 每次发布前最少检查
-1. 菜单路径与模块描述是否一致。
-2. 安全阈值表是否与代码一致（时间窗口、次数、百分比、冷却）。
-3. “疑似恶意用户”定义与字段说明是否一致。
-4. 新增/删除后台功能是否补充到本手册目录。
+### Suspected mining
 
----
+1. Open node detail and review the suspected-user list and the security audit log.
+2. Check the command samples and trigger reasons.
+3. Block the account, disconnect SSH, and terminate its processes.
+4. Review the account's mapping history and recent points consumption.
+5. Notify the user and freeze related accounts if warranted.
 
-## 🔗 相关文档
+### SSH attack spike
 
-- `docs/runbook.md`：上线运行手册
-- `docs/api-reference.md`：API 参考
-- `docs/user-guide.md`：用户手册
-- `README.md`：部署与常用命令总览
+1. Review `ssh_failed_login_spike` and `ssh_bruteforce` events.
+2. Add suspect accounts to the deny list.
+3. Confirm the SSH guard is enabled on that node.
+4. Re-check the allow and exemption lists so an exemption is not acting as a back door.
+
+### Disk nearly full
+
+1. Open the `disk_full_risk` event for the affected mount and free space.
+2. Identify heavy `/home` consumers on node detail.
+3. Ask the user to clean up, or clean up on their behalf; restrict the account temporarily if needed.
+
+## Keeping this document accurate
+
+Update this guide whenever modules, permissions, security rules, thresholds, or response actions change. The code paths that trigger an update:
+
+- `web/src/views/pages/Admin*.vue` — module behaviour
+- `web/src/router/index.ts`, `web/src/views/Layout.vue` — menu and permission entry points
+- `controller/api.go`, `controller/database.go` — security rules, thresholds, event logic
+- `config/controller.yaml` — meaning of policy parameters
+
+Before each release, confirm menu paths match, the threshold table matches the code, the suspected-user definition matches the query, and any new module is listed here — in both languages.
+
+## Related
+
+- [User guide](user-guide.md)
+- [API reference](api-reference.md)
+- [Operations](operations.md)
+- [Security model](security.md)

@@ -11,11 +11,18 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/gin-gonic/gin"
 )
 
 func main() {
 	setDefaultTimezone()
 	initControllerBuildInfo()
+	// 默认以 release 模式运行：避免 debug 模式打印路由表与警告。
+	// 需要调试时显式设置 GIN_MODE=debug。
+	if strings.TrimSpace(os.Getenv("GIN_MODE")) == "" {
+		gin.SetMode(gin.ReleaseMode)
+	}
 
 	args := parseArgs()
 	if args.showVer {
@@ -35,6 +42,10 @@ func main() {
 	cfg, err := loadConfig(cfgPath)
 	if err != nil {
 		log.Fatalf("读取配置失败：%v", err)
+	}
+	if args.healthCheck {
+		// 容器镜像不含 shell/curl，因此健康检查由二进制自身完成。
+		os.Exit(runHealthCheck(healthCheckURL(cfg.ListenAddr)))
 	}
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("配置校验失败：%v", err)
@@ -128,4 +139,20 @@ func main() {
 	if err := internalSrv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("Internal 服务关闭异常：%v", err)
 	}
+}
+
+// runHealthCheck 探测本机 /readyz，返回进程退出码（0 就绪 / 1 未就绪）。
+func runHealthCheck(url string) int {
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "healthcheck 请求失败：%v\n", err)
+		return 1
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "healthcheck 状态异常：%s\n", resp.Status)
+		return 1
+	}
+	return 0
 }

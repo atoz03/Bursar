@@ -57,3 +57,40 @@ jobs:
 
       - name: 构建 Web
         run: pnpm build
+
+  docs:
+    name: Documentation checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Check documentation links and translation parity
+        run: bash scripts/check_docs.sh
+
+  docker:
+    name: Container image build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build controller image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: gpu-ops/controller:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Validate compose file
+        env:
+          POSTGRES_PASSWORD: ci-placeholder
+          GPUOPS_AGENT_TOKEN: ci-placeholder
+          GPUOPS_ADMIN_TOKEN: ci-placeholder
+          GPUOPS_AUTH_SECRET: ci-placeholder
+        run: docker compose --profile full config >/dev/null

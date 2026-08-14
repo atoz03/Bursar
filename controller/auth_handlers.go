@@ -349,12 +349,15 @@ func (s *Server) handleAuthLogin(c *gin.Context) {
 		return
 	}
 
+	// SameSite=Lax：与 X-CSRF-Token 校验形成双重防护，避免跨站携带会话 cookie。
+	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie(sessionCookieName, token, int(time.Duration(s.cfg.SessionHours)*time.Hour/time.Second), "/", "", s.cfg.CookieSecure, true)
 	c.JSON(http.StatusOK, gin.H{"ok": true, "role": role})
 }
 
 func (s *Server) handleAuthLogout(c *gin.Context) {
 	// MaxAge=-1 让浏览器删除 cookie
+	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie(sessionCookieName, "", -1, "/", "", s.cfg.CookieSecure, true)
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
@@ -793,7 +796,7 @@ func (s *Server) handleAdminBootstrap(c *gin.Context) {
 	// 强制要求 Bearer token（禁止用 session 自举，避免逻辑漏洞）
 	auth := strings.TrimSpace(c.GetHeader("Authorization"))
 	const prefix = "Bearer "
-	if !strings.HasPrefix(auth, prefix) || strings.TrimSpace(strings.TrimPrefix(auth, prefix)) != s.cfg.AdminToken {
+	if !strings.HasPrefix(auth, prefix) || !constantTimeTokenEqual(strings.TrimSpace(strings.TrimPrefix(auth, prefix)), s.cfg.AdminToken) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}

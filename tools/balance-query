@@ -1,13 +1,30 @@
 #!/bin/bash
 # 查询用户余额（用于排障/自助）
+#
+# 余额接口需要鉴权，凭据按以下顺序解析：
+#   1. GPUOPS_ADMIN_TOKEN 环境变量（admin_token，管理员排障用）
+#   2. GPUOPS_QUERY_TOKEN 环境变量（Agent token）
+#   3. GPUOPS_QUERY_TOKEN_FILE 指向的文件（默认 /etc/gpu-ops/query-token）
 
 set -euo pipefail
 
-CONTROLLER_URL="${CONTROLLER_URL:-http://controller:8000}"
+CONTROLLER_URL="${CONTROLLER_URL:-http://controller:8080}"
+GPUOPS_QUERY_TOKEN_FILE="${GPUOPS_QUERY_TOKEN_FILE:-/etc/gpu-ops/query-token}"
 USER="${1:-$(whoami)}"
 
-curl -fsS "${CONTROLLER_URL}/api/users/${USER}/balance" || {
-  echo "请求失败：请检查 CONTROLLER_URL=${CONTROLLER_URL}" >&2
+auth_header=""
+if [[ -n "${GPUOPS_ADMIN_TOKEN:-}" ]]; then
+  auth_header="Authorization: Bearer ${GPUOPS_ADMIN_TOKEN}"
+elif [[ -n "${GPUOPS_QUERY_TOKEN:-}" ]]; then
+  auth_header="X-Agent-Token: ${GPUOPS_QUERY_TOKEN}"
+elif [[ -r "${GPUOPS_QUERY_TOKEN_FILE}" ]]; then
+  auth_header="X-Agent-Token: $(head -n 1 "${GPUOPS_QUERY_TOKEN_FILE}" | tr -d '[:space:]')"
+else
+  echo "缺少查询凭据：请设置 GPUOPS_QUERY_TOKEN 或准备 ${GPUOPS_QUERY_TOKEN_FILE}" >&2
+  exit 2
+fi
+
+curl -fsS -H "${auth_header}" "${CONTROLLER_URL}/api/users/${USER}/balance" || {
+  echo "请求失败：请检查 CONTROLLER_URL=${CONTROLLER_URL} 与查询凭据" >&2
   exit 1
 }
-

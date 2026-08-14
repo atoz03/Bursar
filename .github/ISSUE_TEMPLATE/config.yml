@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 私密安全报告
+    url: https://github.com/atoz03/gpu-ops/security/advisories/new
+    about: 漏洞和敏感安全问题请通过此渠道报告。

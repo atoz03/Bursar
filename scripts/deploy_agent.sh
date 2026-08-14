@@ -10,7 +10,7 @@
 set -euo pipefail
 
 AGENT_BIN="${AGENT_BIN:-./node-agent/node-agent}"
-CONTROLLER_URL="${CONTROLLER_URL:-http://controller:60039}"
+CONTROLLER_URL="${CONTROLLER_URL:-http://controller:8080}"
 AGENT_TOKEN="${AGENT_TOKEN:-}"
 NODES="${NODES:-}"
 ACTION_POLL_INTERVAL_SECONDS="${ACTION_POLL_INTERVAL_SECONDS:-2}"

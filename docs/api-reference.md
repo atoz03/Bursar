@@ -1,79 +1,76 @@
-# API 参考
+# API Reference
 
-本文面向开发/运维，描述控制器对外 API（用于 Agent、Hook、管理员脚本）。
+**English** | [简体中文](zh-CN/api-reference.md)
 
-## 鉴权约定
+The HTTP contract for agents, node-side helpers, and operator scripts. This is a catalogue of the important endpoints, not an exhaustive list of every route.
 
-- Agent 上报：`X-Agent-Token: <token>`
-- 管理员接口：`Authorization: Bearer <adminToken>`
-- Web 登录：`POST /api/auth/login` 后由控制器下发 HttpOnly cookie（同站点请求自动携带）
-- 用户积分/余额查询：默认不鉴权（用于 Bash Hook）；部署到生产前建议放到内网并增加网关/ACL
+## Authentication
 
-CSRF 说明（Web 登录场景）：
-- 通过 cookie 会话访问管理员接口时，非 GET 请求需要携带 `X-CSRF-Token`（从 `GET /api/auth/me` 返回的 `csrf_token` 获取）
+| Caller | Mechanism |
+| --- | --- |
+| Node agent | `X-Agent-Token: <token>` |
+| Operator script | `Authorization: Bearer <admin_token>` |
+| Browser | HttpOnly session cookie issued by `POST /api/auth/login` |
+| HA peer | `X-HA-Token: <token>` |
 
-## Web 登录与初始化
+**CSRF.** When authenticating with a session cookie, every non-GET request must carry `X-CSRF-Token`, taken from the `csrf_token` field of `GET /api/auth/me`. Requests without it return `403 csrf_required`.
 
-### `POST /api/admin/bootstrap`（管理员，仅首次）
+**Listener placement.** When `internal_listen_addr` is configured, agent, registry, and HA routes are served only on the internal listener (default `8081`). When it is empty, they are also mounted on the Web listener (default `8080`).
 
-用途：首次上线初始化管理员账号（用于 Web 登录）。
+## Health and metrics
 
-限制：
-- 只允许执行一次（当 `admin_accounts` 表为空时才允许）
-- 必须使用 `Authorization: Bearer <adminToken>` 调用（禁止用 session 自举）
+### `GET /healthz`
 
-请求：
+No authentication. Returns `{"ok":true}` while the process is serving HTTP. It does not check the database.
+
+### `GET /readyz`
+
+No authentication. Returns `{"ok":true,"database":true}`, or `503` with `{"ok":false,"database":false}` when PostgreSQL is unreachable. Use this for load balancer and container health checks.
+
+### `GET /metrics`
+
+Requires `admin_token`, an agent token, or an administrator session. Returns aggregate counters in Prometheus text format. See [Operations](operations.md) for the metric list and a scrape configuration.
+
+## Sessions
+
+### `POST /api/admin/bootstrap`
+
+Creates the first administrator. Allowed only while the administrator table is empty, and only with `Authorization: Bearer <admin_token>` — a session cannot bootstrap itself.
+
 ```json
-{"username":"admin","password":"ChangeMe_123456"}
-```
-
-### `GET /api/auth/me`
-
-用途：查询当前 cookie 会话是否已登录；并获取 CSRF token。
-
-返回（已登录示例）：
-```json
-{"authenticated":true,"username":"admin","role":"admin","expires_at":"2026-02-05T16:00:00Z","csrf_token":"..."}
+{"username":"admin","password":"<strong-password>"}
 ```
 
 ### `POST /api/auth/login`
 
-请求：
 ```json
 {"username":"admin","password":"..."}
 ```
 
-返回：`{"ok":true}`（并在响应头下发 HttpOnly cookie）。
+Returns `{"ok":true,"role":"admin"}` and sets an HttpOnly, `SameSite=Lax` session cookie.
+
+### `GET /api/auth/me`
+
+Returns the current session and the CSRF token:
+
+```json
+{"authenticated":true,"username":"admin","role":"admin","expires_at":"2026-08-14T16:00:00Z","csrf_token":"..."}
+```
 
 ### `POST /api/auth/logout`
 
-返回：`{"ok":true}`（并清除 cookie）。
+Returns `{"ok":true}` and clears the cookie.
 
-## 健康检查
-
-### `GET /healthz`
-
-返回 `{"ok":true}`。
-
-## 监控指标
-
-### `GET /metrics`
-
-返回控制器内置的最小监控指标（Prometheus 文本格式子集），用于快速接入 Prometheus 抓取与上线自检。
-
-## Agent 上报
+## Agent reporting
 
 ### `POST /api/metrics`
 
-幂等说明：
-- `report_id` 必填且全局唯一；控制器用其做去重，避免 Agent 重试导致重复扣费
-
-请求体（示例）：
+Requires `X-Agent-Token`. `report_id` is mandatory and must be globally unique — the controller deduplicates on it so that an agent retry cannot charge twice.
 
 ```json
 {
-  "node_id": "60000",
-  "timestamp": "2026-02-05T16:00:00Z",
+  "node_id": "node-01",
+  "timestamp": "2026-08-14T16:00:00Z",
   "report_id": "2f6c7b3b3c3b4a8b8f1c5c3c1b2a9d10",
   "interval_seconds": 60,
   "users": [
@@ -83,74 +80,184 @@ CSRF 说明（Web 登录场景）：
       "cpu_percent": 120.5,
       "memory_mb": 2048,
       "gpu_usage": [
-        {"gpu_id": 0, "gpu_model": "NVIDIA A100-SXM4-80GB", "gpu_bus_id":"00000000:3B:00.0", "memory_mb": 4096}
+        {"gpu_id": 0, "gpu_model": "NVIDIA A100-SXM4-80GB", "gpu_bus_id": "00000000:3B:00.0", "memory_mb": 4096}
       ]
     }
   ]
 }
 ```
 
-响应体：
+Response:
 
 ```json
 {
   "actions": [
-    {"type":"notify","username":"alice","message":"余额预警：当前余额 80.00 元，请及时充值"},
-    {"type":"set_cpu_quota","username":"alice","cpu_quota_percent":50,"reason":"余额不足，限制 CPU 使用"}
+    {"type": "notify", "username": "alice", "message": "..."},
+    {"type": "set_cpu_quota", "username": "alice", "cpu_quota_percent": 50, "reason": "..."}
   ]
 }
 ```
 
-说明：
-- `node_id` 约定为**机器编号**（推荐直接使用 SSH 端口号，例如 `60000`），用于把“节点本地账号”映射到“计费账号”进行扣费与限制。
-- 当存在节点账号绑定（见下文）时：控制器会把 `(node_id, local_username)` 映射到 `billing_username` 进行扣费；但下发动作（block/kill/cpu_quota）仍会针对本地用户名，保证 Agent 能生效。
+`node_id` is a stable operator-chosen identifier. When a `(node_id, local_username)` mapping exists, the controller charges the mapped platform account, but actions are still addressed to the local username so the agent can apply them.
 
-## 用户接口
+`interval_seconds` from the report takes precedence over the controller's `sample_interval_seconds` when converting samples to cost.
+
+### `GET /api/node/actions`
+
+Requires `X-Agent-Token`. Returns pending actions for the calling node.
+
+## User endpoints
 
 ### `GET /api/users/:username/balance`
 
-返回：
+Requires `admin_token`, an agent token, an administrator session, or the named user's own session. Returns `404` when the user does not exist — this endpoint does not create users.
 
 ```json
-{"username":"alice","balance":80.00,"status":"warning"}
+{
+  "username": "alice",
+  "balance": 80.0,
+  "general_balance": 80.0,
+  "carryover_balance": 20.0,
+  "exclusive_balance": 0.0,
+  "total_balance": 100.0,
+  "status": "warning",
+  "warning_threshold_points": 100,
+  "limited_threshold_points": 3,
+  "monthly_max_overdraft_limit": 0,
+  "current_overdraft_points": 0,
+  "overdraft_exceeded": false,
+  "manual_blocked": false
+}
 ```
 
 ### `GET /api/users/:username/usage`
 
-参数：
-- `limit`：返回条数（默认 200，最大 5000）
-
-返回：
+Same authentication. `limit` defaults to 200, maximum 5000.
 
 ```json
-{"records":[{"node_id":"60000","username":"alice","timestamp":"2026-02-05T16:00:00Z","cpu_percent":120.5,"memory_mb":2048,"gpu_usage":"[]","cost":0.6}]}
+{"records":[{"node_id":"node-01","username":"alice","timestamp":"2026-08-14T16:00:00Z","cpu_percent":120.5,"memory_mb":2048,"gpu_usage":"[]","cost":0.6}]}
 ```
 
-### `POST /api/users/:username/recharge`（管理员）
+### `POST /api/users/:username/recharge`
 
-请求：
+Requires `admin_token`, an administrator session, or a power-user session holding the `manage_platform_users` permission bit.
 
 ```json
-{"amount": 100, "method":"admin"}
+{"amount": 100, "method": "admin"}
 ```
 
-## 管理员接口
+### Session-scoped user routes
 
-### `GET /api/admin/users`
+All require a session cookie: `GET /api/user/me`, `/me/balance`, `/me/usage`, `/me/points-increments`, `/me/profile`, `/me/profile-change-requests`, `/accounts`, `/requests`.
 
-### 容灾同步接口（管理员）
+## Registration and account binding
 
-#### `GET /api/admin/ha/status`
-- 返回主备状态摘要（本机/对端可达性、摘要 digest、一致性、版本哈希比对）。
+These three routes require a session cookie. The requesting account is taken from the session, never from the body — a `billing_username` field in the request is ignored and overwritten.
 
-#### `GET /api/admin/ha/sync/config`
-- 返回容灾同步配置、最近同步日志、任务运行状态、下次计划时间。
+### `POST /api/user/requests/bind`
 
-#### `POST /api/admin/ha/sync/config`
-- 设置容灾同步配置。
-- 关键字段：`interval_days`、`start_hour`、`dr_controller_port`、`sync_web_dist`、`sync_database`。
+Declares existing node accounts for review. At most 200 items per request.
 
-请求示例：
+```json
+{
+  "items": [
+    {"node_id": "node-01", "local_username": "alice"},
+    {"node_id": "node-05", "local_username": "alice2"}
+  ],
+  "message": "optional note"
+}
+```
+
+### `POST /api/user/requests/open`
+
+Requests a new account on a node. An empty `node_id` or `local_username` becomes `待分配` ("to be assigned"), so a user who does not yet know which node they need can still file the request. `message` is validated as the justification.
+
+```json
+{"node_id":"node-01","local_username":"alice","message":"reason for the request"}
+```
+
+### `GET /api/user/requests`
+
+Returns the caller's own requests. `limit` defaults to 200, maximum 5000.
+
+### `POST /api/admin/requests/:id/approve` and `/reject`
+
+Requires the review permission. Approving a `bind` request writes `user_node_accounts`, which drives both billing attribution and SSH login validation. `/reopen` and `/batch-review` are also available, and `POST /api/admin/registration-requests/:id/approve` and `/reject` handle new-account registrations.
+
+## Node registry
+
+These routes require `X-Agent-Token` and should be reached over the internal listener.
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/registry/nodes/:node_id/users.txt` | Registered local usernames for the node, one per line |
+| `GET /api/registry/nodes/:node_id/blocked.txt` | Denied local usernames |
+| `GET /api/registry/nodes/:node_id/exempt.txt` | Exempt local usernames |
+| `GET /api/registry/nodes/:node_id/guard-state` | Current SSH guard state |
+| `GET /api/registry/resolve?node_id=&local_username=` | Resolve a local account to its platform account |
+
+### `POST /api/registry/bind-claim`
+
+Authenticated by a one-time bind challenge token in the body, not by an agent token, because the caller is a user process on a node.
+
+```json
+{"token":"<challenge-token>","node_id":"node-01","local_username":"alice"}
+```
+
+## Administrator endpoints
+
+### Pricing
+
+```http
+POST /api/admin/prices
+```
+
+```json
+{"gpu_model":"RTX 3090","price_per_minute":0.2}
+```
+
+CPU billing uses the reserved model name `CPU_CORE`, priced per core-minute (100% CPU ≈ 1 core). Applying `set_cpu_quota` requires systemd `CPUQuota` or a writable cgroup on the node, with the agent running as root.
+
+### Usage audit
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/admin/usage` | Usage and kill records. Filters: `billing_username`, `local_username`, `unregistered_only=1`, `limit` (default 200, max 5000) |
+| `GET /api/admin/usage/export.csv` | CSV export. Adds `from`, `to`, `limit` (default 20000, max 200000) |
+| `GET /api/admin/usage/days` | Dates that have records, with row counts and estimated CSV size |
+| `GET /api/admin/usage/range-estimate` | Row count and size for a date range, before exporting or deleting |
+| `POST /api/admin/usage/delete-range` | Irreversibly deletes `usage_records` in a range |
+| `GET`/`POST /api/admin/usage/retention` | Read or set the retention policy |
+
+Delete request and response:
+
+```json
+{"from":"2026-08-01","to":"2026-08-03","billing_username":"alice","unregistered_only":false,"confirm":true}
+```
+
+```json
+{"ok":true,"records_before":1200,"deleted_records":1200}
+```
+
+### Nodes
+
+`GET /api/admin/nodes` returns reporting state — last seen, GPU and CPU process counts, cost from the latest report. `limit` defaults to 200, maximum 2000.
+
+Per-node routes cover detail, price, CPU limits, memory limits, GPU visibility, disk quota, SSH exclusivity, view access, points interception, and security events.
+
+### HA and backup
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/admin/ha/status` | Primary/standby reachability, digest comparison, consistency |
+| `GET`/`POST /api/admin/ha/sync/config` | Synchronisation configuration |
+| `GET /api/admin/ha/sync/runs` | Synchronisation history with per-step results |
+| `POST /api/admin/ha/sync/now` | Trigger a sync; `direction` is `primary_to_standby` or `standby_to_primary` |
+| `POST /api/admin/ha/failover/activate` | Standby only; primary returns `409`. Body must be `{"confirm":"ACTIVATE_STANDBY"}` |
+| `GET /api/admin/backup/status` | Latest snapshot and restore-drill state |
+
+Sync configuration:
+
 ```json
 {
   "enabled": true,
@@ -160,9 +267,9 @@ CSRF 说明（Web 登录场景）：
   "dr_ssh_user": "gpuops",
   "dr_ssh_port": 22,
   "dr_key_file": "/etc/gpu-ops/standby_ed25519",
-  "dr_controller_port": 60039,
+  "dr_controller_port": 8080,
   "primary_host": "192.0.2.10",
-  "primary_controller_port": 60039,
+  "primary_controller_port": 8080,
   "script_path": "/opt/gpu-ops/scripts/ha_sync_worker.sh",
   "sync_web_dist": true,
   "sync_database": true,
@@ -170,210 +277,16 @@ CSRF 说明（Web 登录场景）：
 }
 ```
 
-#### `GET /api/admin/ha/sync/runs`
-- 返回容灾同步日志（支持查看每个步骤成功/失败）。
+`GET /api/admin/backup/status` reports `ready=true` only when a successful backup exists within 36 hours and a successful isolated restore drill within 8 days.
 
-#### `POST /api/admin/ha/sync/now`
-- 立即触发同步任务（异步）。
-- `direction`：`primary_to_standby` 或 `standby_to_primary`。
+## Error responses
 
-请求示例：
-```json
-{"direction":"standby_to_primary","trigger_mode":"recovery"}
-```
-
-#### `POST /api/admin/ha/failover/activate`
-- 仅允许在 `standby` 控制器上启动 Keepalived；primary 调用返回 `409`。
-- 请求体必须为 `{"confirm":"ACTIVATE_STANDBY"}`。
-
-#### `GET /api/admin/backup/status`
-- 返回最近加密备份、快照 ID、隔离恢复演练和新鲜度检查结果。
-- `ready=true` 需要最近 36 小时有成功备份，且最近 8 天有成功恢复演练。
-
-### `POST /api/admin/prices`
-
-请求：
-
-```json
-{"gpu_model":"RTX 3090","price_per_minute":0.2}
-```
-
-说明：
-- CPU 计费使用特殊模型名 `CPU_CORE`（按核分钟：100% CPU ≈ 1 核）。
-- `set_cpu_quota` 需要节点支持 systemd CPUQuota 或 cgroup（v2 或 v1 的 cpu controller），且 Agent 以 root 运行。
-
-### `GET /api/admin/usage`（管理员）
-
-参数：
-- `billing_username` / `username`：可选，按平台账号过滤
-- `local_username`：可选，按节点账号过滤
-- `unregistered_only=1`：可选，仅查看未注册账号
-- `limit`：返回条数（默认 200，最大 5000）
-
-返回：
-
-```json
-{
-  "records": [
-    {
-      "node_id": "60000",
-      "billing_username": "alice",
-      "local_username": "alice",
-      "timestamp": "2026-02-05T16:00:00Z"
-    }
-  ],
-  "kill_records": [
-    {
-      "record_id": 1,
-      "node_id": "60000",
-      "billing_username": "alice",
-      "local_username": "alice",
-      "action_type": "kill_all_processes",
-      "reason": "余额超过欠费上限，执行一次性清理全部进程",
-      "pids": [],
-      "timestamp": "2026-02-05T16:01:00Z"
-    }
-  ]
-}
-```
-
-### `GET /api/admin/usage/export.csv`（管理员）
-
-参数：
-- `billing_username` / `username`：可选
-- `local_username`：可选
-- `unregistered_only=1`：可选
-- `from`：可选（RFC3339 或 YYYY-MM-DD）
-- `to`：可选（RFC3339 或 YYYY-MM-DD）
-- `limit`：可选（默认 20000，最大 200000）
-
-返回：CSV 文件（列：timestamp,node_id,username,cpu_percent,memory_mb,cost,gpu_usage_json）。
-
-### `GET /api/admin/usage/days`（管理员）
-
-用途：返回“有使用记录的日期列表”，前端可据此将无数据日期置灰不可选。
-
-参数：
-- `billing_username` / `username`：可选
-- `local_username`：可选
-- `unregistered_only=1`：可选
-- `from` / `to`：可选（RFC3339 或 YYYY-MM-DD）
-
-返回：
-```json
-{
-  "days":[
-    {"date":"2026-03-01","record_count":312,"estimated_csv_bytes":84512}
-  ]
-}
-```
-
-### `GET /api/admin/usage/range-estimate`（管理员）
-
-用途：估算某个日期区间内记录条数与体积（用于导出/删除前确认）。
-
-参数：
-- `from` / `to`：必填（RFC3339 或 YYYY-MM-DD）
-- `billing_username` / `username`：可选
-- `local_username`：可选
-- `unregistered_only=1`：可选
-
-### `POST /api/admin/usage/delete-range`（管理员）
-
-用途：删除指定日期区间内的 `usage_records`（仅使用记录，不影响账号/节点/计费配置等其它数据）。
-
-请求：
-```json
-{
-  "from":"2026-03-01",
-  "to":"2026-03-03",
-  "billing_username":"alice",
-  "local_username":"",
-  "unregistered_only":false,
-  "confirm":true
-}
-```
-
-返回：
-```json
-{"ok":true,"records_before":1200,"deleted_records":1200}
-```
-
-### `GET /api/admin/nodes`（管理员）
-
-参数：
-- `limit`：可选（默认 200，最大 2000）
-
-返回：节点上报状态（last_seen、gpu/cpu 进程数、当次上报成本等）。
-
-## 用户注册 / 账号绑定 / 开号申请
-
-### `POST /api/requests/bind`（用户自助：绑定登记，需审核）
-
-用途：用户登记“我在某台机器(node_id)上的本地用户名(local_username)”，并关联到“计费账号(billing_username)”。
-
-请求：
-```json
-{
-  "billing_username":"alice",
-  "items":[
-    {"node_id":"60000","local_username":"alice"},
-    {"node_id":"60005","local_username":"alice2"}
-  ],
-  "message":"可选备注"
-}
-```
-
-返回：
-```json
-{"ok":true,"request_ids":[1,2]}
-```
-
-### `POST /api/requests/open`（用户自助：开号申请，需审核）
-
-请求：
-```json
-{"billing_username":"alice","node_id":"60000","local_username":"alice","message":"可选备注"}
-```
-
-返回：
-```json
-{"ok":true,"request_id":3}
-```
-
-### `GET /api/requests?billing_username=...`（用户自助：查看申请记录）
-
-参数：
-- `billing_username`：必填
-- `limit`：可选（默认 200，最大 5000）
-
-返回：
-```json
-{"requests":[{"request_id":1,"request_type":"bind","billing_username":"alice","node_id":"60000","local_username":"alice","status":"pending"}]}
-```
-
-### `GET /api/admin/requests`（管理员：查看申请）
-
-参数：
-- `status`：可选（`pending/approved/rejected`）；为空表示全部
-- `limit`：可选（默认 200，最大 5000）
-
-### `POST /api/admin/requests/:id/approve`（管理员：通过）
-
-说明：当申请类型为 `bind` 时，通过会自动写入 `user_node_accounts`，用于扣费映射与 SSH 登录校验。
-
-### `POST /api/admin/requests/:id/reject`（管理员：拒绝）
-
-## SSH 登录校验（节点侧拉取 allowlist）
-
-说明：
-- 以下 registry 接口仅建议通过内部 HTTPS 端口访问（如 `https://<controller-internal-ip>:60040`）。
-- 必须携带 `X-Agent-Token: <token>`，否则返回 `401 unauthorized`。
-
-### `GET /api/registry/nodes/:node_id/users.txt`
-
-用途：返回该节点(node_id)已登记通过的本地用户名列表（每行一个），供节点侧 PAM/SSH 校验缓存定期同步。
-
-### `GET /api/registry/resolve?node_id=...&local_username=...`
-
-用途：查询某个本地用户名在指定节点上是否已绑定，并返回对应计费账号。
+| Status | Body | Meaning |
+| --- | --- | --- |
+| `400` | `{"error":"..."}` | Malformed request or invalid parameter |
+| `401` | `{"error":"unauthorized"}` | Missing or invalid credential |
+| `403` | `{"error":"forbidden"}` | Authenticated but lacking the required permission |
+| `403` | `{"error":"csrf_required"}` | Session request without a matching `X-CSRF-Token` |
+| `404` | `{"error":"..."}` | Resource does not exist |
+| `409` | `{"error":"..."}` | Conflicting state, such as failover on a primary |
+| `503` | `{"ok":false,"database":false}` | Readiness failure |

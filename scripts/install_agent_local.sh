@@ -442,7 +442,7 @@ usage() {
 用法：
   # 手动指定 NODE_ID
   NODE_ID=node-01 \\
-  CONTROLLER_URL=https://controller.example.org:60040 \\
+  CONTROLLER_URL=https://controller.example.org:8081 \\
   AGENT_TOKEN=<agent_token> \\
   bash scripts/install_agent_local.sh
 
@@ -451,7 +451,7 @@ usage() {
     ENABLE_SYSTEM_MEMORY_RESERVE=1 SYSTEM_MEMORY_RESERVE_GB=70
 
   # 自动识别 NODE_ID（按本机 IP 匹配 my_ssh_keys/server_ssh_map.csv）
-  CONTROLLER_URL=https://controller.example.org:60040 \\
+  CONTROLLER_URL=https://controller.example.org:8081 \\
   AGENT_TOKEN=<agent_token> \\
   bash scripts/install_agent_local.sh
 

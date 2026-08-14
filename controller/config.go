@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -217,16 +218,36 @@ func (c *Config) Validate() error {
 }
 
 type cliArgs struct {
-	configPath string
-	showVer    bool
+	configPath  string
+	showVer     bool
+	healthCheck bool
 }
 
 func parseArgs() cliArgs {
 	var a cliArgs
 	flag.StringVar(&a.configPath, "config", "", "配置文件路径（yaml）")
 	flag.BoolVar(&a.showVer, "version", false, "打印版本信息并退出")
+	flag.BoolVar(&a.healthCheck, "healthcheck", false, "探测本机 /readyz 并按结果退出（供容器 HEALTHCHECK 使用）")
 	flag.Parse()
 	return a
+}
+
+// healthCheckURL 由 listen_addr 推导出本机可访问的 /readyz 地址。
+// 监听 0.0.0.0/:: 时改用回环地址，避免容器内解析失败。
+func healthCheckURL(listenAddr string) string {
+	addr := strings.TrimSpace(listenAddr)
+	if addr == "" {
+		addr = "127.0.0.1:8080"
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "http://127.0.0.1:8080/readyz"
+	}
+	switch strings.Trim(strings.TrimSpace(host), "[]") {
+	case "", "0.0.0.0", "::", "*":
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, port) + "/readyz"
 }
 
 func defaultConfigPath() (string, error) {
@@ -258,7 +279,53 @@ func loadConfig(path string) (Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return Config{}, err
 	}
+	if err := cfg.applyEnvOverrides(os.LookupEnv); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
+}
+
+// applyEnvOverrides 允许用环境变量覆盖少量关键配置项。
+// 目的：容器部署时无需把密钥写进 YAML 文件（YAML 仍是完整配置的来源）。
+// 只覆盖显式设置且非空的变量；空字符串视为“未设置”，避免误清空 YAML 中的值。
+func (c *Config) applyEnvOverrides(lookup func(string) (string, bool)) error {
+	str := func(name string, dst *string) {
+		if v, ok := lookup(name); ok && strings.TrimSpace(v) != "" {
+			*dst = strings.TrimSpace(v)
+		}
+	}
+	boolean := func(name string, dst *bool) error {
+		v, ok := lookup(name)
+		if !ok || strings.TrimSpace(v) == "" {
+			return nil
+		}
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "1", "true", "yes", "on":
+			*dst = true
+		case "0", "false", "no", "off":
+			*dst = false
+		default:
+			return fmt.Errorf("%s 必须是布尔值（true/false）：%s", name, v)
+		}
+		return nil
+	}
+
+	str("GPUOPS_LISTEN_ADDR", &c.ListenAddr)
+	str("GPUOPS_INTERNAL_LISTEN_ADDR", &c.InternalListenAddr)
+	str("GPUOPS_INTERNAL_TLS_CERT_FILE", &c.InternalTLSCertFile)
+	str("GPUOPS_INTERNAL_TLS_KEY_FILE", &c.InternalTLSKeyFile)
+	str("GPUOPS_DATABASE_DSN", &c.DatabaseDSN)
+	str("GPUOPS_AGENT_TOKEN", &c.AgentToken)
+	str("GPUOPS_ADMIN_TOKEN", &c.AdminToken)
+	str("GPUOPS_AUTH_SECRET", &c.AuthSecret)
+	str("GPUOPS_MIGRATION_DIR", &c.MigrationDir)
+	str("GPUOPS_WEB_DIR", &c.WebDir)
+	str("GPUOPS_HA_TOKEN", &c.HAToken)
+
+	if err := boolean("GPUOPS_COOKIE_SECURE", &c.CookieSecure); err != nil {
+		return err
+	}
+	return boolean("GPUOPS_DRY_RUN", &c.DryRun)
 }
 
 func fileExists(path string) bool {
