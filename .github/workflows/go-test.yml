@@ -28,6 +28,8 @@ jobs:
             controller/go.sum
             node-agent/go.sum
 
+      - name: 运行静态检查（多模块）
+        run: go vet ./controller/... ./node-agent/...
+
       - name: 运行测试（多模块）
         run: go test ./controller/... ./node-agent/...
-
