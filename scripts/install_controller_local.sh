@@ -47,7 +47,9 @@ TMP_BIN="$(mktemp /tmp/gpu-controller.XXXXXX)"
 trap 'rm -f "${TMP_BIN}"' EXIT
 (
   cd "${CONTROLLER_DIR}"
-  go build -o "${TMP_BIN}" .
+  # 共享工作区可能由其他账号持有；禁用 Go 的隐式 VCS 探测，避免
+  # safe.directory 校验阻断本地发布。版本信息由应用自身维护。
+  go build -buildvcs=false -o "${TMP_BIN}" .
 )
 
 if [[ "${BUILD_WEB}" == "1" ]]; then
