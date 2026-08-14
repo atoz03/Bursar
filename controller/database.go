@@ -1277,7 +1277,7 @@ RETURNING username, node_id, balance, updated_by, created_at, updated_at`,
 	return out, nil
 }
 
-func (s *Store) InsertUsageRecordTx(ctx context.Context, tx *sql.Tx, nodeID string, localUsername string, ts time.Time, proc UserProcess, cost float64) error {
+func (s *Store) InsertUsageRecordTx(ctx context.Context, tx *sql.Tx, nodeID string, localUsername string, ts time.Time, intervalSeconds int, proc UserProcess, cost float64) error {
 	gpuUsage := proc.GPUUsage
 	if gpuUsage == nil {
 		// 保持 JSONB 非空且语义一致：CPU-only 记录也用空数组而非 null
@@ -1295,6 +1295,43 @@ func (s *Store) InsertUsageRecordTx(ctx context.Context, tx *sql.Tx, nodeID stri
 INSERT INTO usage_records(node_id, local_username, username, timestamp, pid, cpu_percent, memory_mb, gpu_count, command, gpu_usage, cost)
 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
 		nodeID, localUsername, proc.Username, ts, proc.PID, proc.CPUPercent, proc.MemoryMB, len(proc.GPUUsage), strings.TrimSpace(proc.Command), string(gpuJSON), cost)
+	if err != nil {
+		return err
+	}
+	intervalSeconds = max(intervalSeconds, 1)
+	gpuProcess := 0
+	if len(proc.GPUUsage) > 0 {
+		gpuProcess = 1
+	}
+	cpuActiveSeconds := 0
+	if proc.CPUPercent > 0 {
+		cpuActiveSeconds = intervalSeconds
+	}
+	gpuActiveSeconds := 0
+	if gpuProcess > 0 {
+		gpuActiveSeconds = intervalSeconds
+	}
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO usage_daily_summaries(
+  usage_date, node_id, username,
+  usage_records, gpu_process_records, cpu_process_records,
+  cpu_active_seconds, gpu_active_seconds,
+  total_cpu_percent, total_memory_mb, cpu_cost, gpu_cost, total_cost, last_usage_at
+)
+VALUES($1::timestamp::date,$2,$3,1,$4,$5,$6,$7,$8,$9,$10,$11,$12,$1)
+ON CONFLICT (usage_date, node_id, username) DO UPDATE
+SET usage_records=usage_daily_summaries.usage_records + 1,
+    gpu_process_records=usage_daily_summaries.gpu_process_records + EXCLUDED.gpu_process_records,
+    cpu_process_records=usage_daily_summaries.cpu_process_records + EXCLUDED.cpu_process_records,
+    cpu_active_seconds=usage_daily_summaries.cpu_active_seconds + EXCLUDED.cpu_active_seconds,
+    gpu_active_seconds=usage_daily_summaries.gpu_active_seconds + EXCLUDED.gpu_active_seconds,
+    total_cpu_percent=usage_daily_summaries.total_cpu_percent + EXCLUDED.total_cpu_percent,
+    total_memory_mb=usage_daily_summaries.total_memory_mb + EXCLUDED.total_memory_mb,
+    cpu_cost=usage_daily_summaries.cpu_cost + EXCLUDED.cpu_cost,
+    gpu_cost=usage_daily_summaries.gpu_cost + EXCLUDED.gpu_cost,
+    total_cost=usage_daily_summaries.total_cost + EXCLUDED.total_cost,
+    last_usage_at=GREATEST(usage_daily_summaries.last_usage_at, EXCLUDED.last_usage_at)`,
+		ts, nodeID, proc.Username, gpuProcess, 1-gpuProcess, cpuActiveSeconds, gpuActiveSeconds, proc.CPUPercent, proc.MemoryMB, cost*float64(1-gpuProcess), cost*float64(gpuProcess), cost)
 	return err
 }
 
@@ -11661,6 +11698,9 @@ RETURNING deleted_id, username, email, student_id, real_name, advisor, expected_
 	if _, err := tx.ExecContext(ctx, `DELETE FROM usage_records WHERE username=$1`, username); err != nil {
 		return DeletedUserAccount{}, err
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM usage_daily_summaries WHERE username=$1`, username); err != nil {
+		return DeletedUserAccount{}, err
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM recharge_records WHERE username=$1`, username); err != nil {
 		return DeletedUserAccount{}, err
 	}
@@ -12844,27 +12884,24 @@ func (s *Store) ListUsageSummaryByUser(ctx context.Context, from time.Time, to t
 		limit = 1000
 	}
 	query := `
-SELECT COALESCE(una.billing_username, ur.username) AS username,
-       COUNT(1) AS usage_records,
-       SUM(CASE WHEN ur.gpu_count > 0 THEN 1 ELSE 0 END) AS gpu_process_records,
-       SUM(CASE WHEN ur.gpu_count = 0 THEN 1 ELSE 0 END) AS cpu_process_records,
-       COALESCE(SUM(ur.cpu_percent), 0) AS total_cpu_percent,
-       COALESCE(SUM(ur.memory_mb), 0) AS total_memory_mb,
-       COALESCE(SUM(ur.cost), 0) AS total_cost
-FROM usage_records ur
-LEFT JOIN user_node_accounts una
-  ON una.node_id = ur.node_id
- AND una.local_username = ur.username
-WHERE ur.timestamp >= $1 AND ur.timestamp <= $2`
+SELECT uds.username,
+       SUM(uds.usage_records) AS usage_records,
+       SUM(uds.gpu_process_records) AS gpu_process_records,
+       SUM(uds.cpu_process_records) AS cpu_process_records,
+       COALESCE(SUM(uds.total_cpu_percent), 0) AS total_cpu_percent,
+       COALESCE(SUM(uds.total_memory_mb), 0) AS total_memory_mb,
+       COALESCE(SUM(uds.total_cost), 0) AS total_cost
+FROM usage_daily_summaries uds
+WHERE uds.usage_date >= $1::timestamp::date AND uds.usage_date <= $2::timestamp::date`
 	args := []any{from, to, limit}
 	cleaned := uniqTrim(visibleNodeIDs)
 	if len(cleaned) > 0 {
 		query += `
-  AND ur.node_id = ANY($4)`
+  AND uds.node_id = ANY($4)`
 		args = append(args, pq.Array(cleaned))
 	}
 	query += `
-GROUP BY COALESCE(una.billing_username, ur.username)
+GROUP BY uds.username
 ORDER BY total_cost DESC
 LIMIT $3`
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -12897,43 +12934,28 @@ WITH platform_users AS (
   SELECT username FROM admin_accounts
   UNION
   SELECT username FROM power_users
-),
-resolved AS (
-  SELECT
-    to_char(date_trunc('month', ur.timestamp), 'YYYY-MM') AS month,
-    COALESCE(pu_ur.username, pu_map.username) AS username,
-    ur.gpu_count,
-    ur.cpu_percent,
-    ur.memory_mb,
-    ur.cost
-  FROM usage_records ur
-  LEFT JOIN user_node_accounts una
-    ON una.node_id = ur.node_id
-   AND una.local_username = COALESCE(NULLIF(ur.local_username, ''), ur.username)
-  LEFT JOIN platform_users pu_ur ON pu_ur.username = ur.username
-  LEFT JOIN platform_users pu_map ON pu_map.username = una.billing_username
-  WHERE ur.timestamp >= $1
-    AND ur.timestamp <= $2`
+)
+SELECT to_char(date_trunc('month', uds.usage_date), 'YYYY-MM') AS month,
+       uds.username,
+       SUM(uds.usage_records) AS usage_records,
+       SUM(uds.gpu_process_records) AS gpu_process_records,
+       SUM(uds.cpu_process_records) AS cpu_process_records,
+       COALESCE(SUM(uds.total_cpu_percent), 0) AS total_cpu_percent,
+       COALESCE(SUM(uds.total_memory_mb), 0) AS total_memory_mb,
+       COALESCE(SUM(uds.total_cost), 0) AS total_cost
+FROM usage_daily_summaries uds
+JOIN platform_users pu ON pu.username = uds.username
+WHERE uds.usage_date >= $1::timestamp::date
+  AND uds.usage_date <= $2::timestamp::date`
 	args := []any{from, to, limit + 1, offset}
 	cleaned := uniqTrim(visibleNodeIDs)
 	if len(cleaned) > 0 {
 		query += `
-    AND ur.node_id = ANY($5)`
+  AND uds.node_id = ANY($5)`
 		args = append(args, pq.Array(cleaned))
 	}
 	query += `
-    AND COALESCE(pu_ur.username, pu_map.username) IS NOT NULL
-)
-SELECT month,
-       username,
-       COUNT(1) AS usage_records,
-       SUM(CASE WHEN gpu_count > 0 THEN 1 ELSE 0 END) AS gpu_process_records,
-       SUM(CASE WHEN gpu_count = 0 THEN 1 ELSE 0 END) AS cpu_process_records,
-       COALESCE(SUM(cpu_percent), 0) AS total_cpu_percent,
-       COALESCE(SUM(memory_mb), 0) AS total_memory_mb,
-       COALESCE(SUM(cost), 0) AS total_cost
-FROM resolved
-GROUP BY month, username
+GROUP BY date_trunc('month', uds.usage_date), uds.username
 ORDER BY month DESC, total_cost DESC
 LIMIT $3
 OFFSET $4`
@@ -14339,6 +14361,9 @@ WHERE username=$1`, r.OldUsername, r.NewUsername, strings.ToLower(r.NewEmail), r
 			if _, err := tx.ExecContext(ctx, `UPDATE usage_records SET username=$2 WHERE username=$1`, r.OldUsername, r.NewUsername); err != nil {
 				return ProfileChangeRequest{}, err
 			}
+			if err := rebuildUsageDailySummariesForUsernameTx(ctx, tx, r.OldUsername, r.NewUsername); err != nil {
+				return ProfileChangeRequest{}, err
+			}
 			if _, err := tx.ExecContext(ctx, `UPDATE recharge_records SET username=$2 WHERE username=$1`, r.OldUsername, r.NewUsername); err != nil {
 				return ProfileChangeRequest{}, err
 			}
@@ -14386,43 +14411,27 @@ WITH platform_users AS (
   UNION
   SELECT username FROM power_users
 ),
-resolved AS (
-  SELECT
-    COALESCE(pu_ur.username, pu_map.username) AS platform_username,
-    GREATEST(COALESCE(n.interval_seconds, 1), 1) AS interval_seconds,
-    ur.gpu_usage,
-    ur.cpu_percent,
-    ur.cost
-  FROM usage_records ur
-  LEFT JOIN nodes n
-    ON n.node_id = ur.node_id
-  LEFT JOIN user_node_accounts una
-    ON una.node_id = ur.node_id
-   AND una.local_username = COALESCE(NULLIF(ur.local_username, ''), ur.username)
-  LEFT JOIN platform_users pu_ur ON pu_ur.username = ur.username
-  LEFT JOIN platform_users pu_map ON pu_map.username = una.billing_username
-  WHERE ur.timestamp >= $1
-    AND ur.timestamp <= $2`
+agg AS (
+SELECT uds.username AS platform_username,
+       SUM(uds.usage_records) AS usage_records,
+       SUM(uds.cpu_active_seconds) AS cpu_usage_seconds,
+       SUM(uds.gpu_active_seconds) AS gpu_usage_seconds,
+       COALESCE(SUM(uds.total_cpu_percent) / NULLIF(SUM(uds.usage_records), 0), 0) AS cpu_util_percent,
+       COALESCE(SUM(uds.gpu_process_records) * 100.0 / NULLIF(SUM(uds.usage_records), 0), 0) AS gpu_util_percent,
+       COALESCE(SUM(uds.total_cost), 0) AS total_cost
+FROM usage_daily_summaries uds
+JOIN platform_users pu ON pu.username = uds.username
+WHERE uds.usage_date >= $1::timestamp::date
+  AND uds.usage_date <= $2::timestamp::date`
 	args := []any{from, to, limit}
 	cleaned := uniqTrim(visibleNodeIDs)
 	if len(cleaned) > 0 {
 		query += `
-    AND ur.node_id = ANY($4)`
+  AND uds.node_id = ANY($4)`
 		args = append(args, pq.Array(cleaned))
 	}
 	query += `
-    AND COALESCE(pu_ur.username, pu_map.username) IS NOT NULL
-),
-agg AS (
-SELECT platform_username,
-       COUNT(1) AS usage_records,
-       COALESCE(SUM(CASE WHEN cpu_percent > 0 THEN interval_seconds ELSE 0 END), 0) AS cpu_usage_seconds,
-       COALESCE(SUM(CASE WHEN jsonb_array_length(gpu_usage) > 0 THEN interval_seconds ELSE 0 END), 0) AS gpu_usage_seconds,
-       COALESCE(AVG(cpu_percent), 0) AS cpu_util_percent,
-       COALESCE(AVG(CASE WHEN jsonb_array_length(gpu_usage) > 0 THEN 100.0 ELSE 0.0 END), 0) AS gpu_util_percent,
-       COALESCE(SUM(cost), 0) AS total_cost
-FROM resolved
-GROUP BY platform_username
+GROUP BY uds.username
 )
 SELECT pu.username AS platform_username,
        COALESCE(a.usage_records, 0) AS usage_records,
@@ -14467,57 +14476,32 @@ func (s *Store) ListPlatformUsageNodeDetails(ctx context.Context, platformUserna
 		limit = 2000
 	}
 	query := `
-WITH platform_users AS (
-  SELECT username FROM user_accounts
-  UNION
-  SELECT username FROM admin_accounts
-  UNION
-  SELECT username FROM power_users
-),
-resolved AS (
-  SELECT
-    ur.node_id,
-    ur.timestamp,
-    ur.cpu_percent,
-    ur.memory_mb,
-    ur.gpu_count,
-    ur.cost,
-    COALESCE(pu_ur.username, pu_map.username) AS platform_username
-  FROM usage_records ur
-  LEFT JOIN user_node_accounts una
-    ON una.node_id = ur.node_id
-   AND una.local_username = COALESCE(NULLIF(ur.local_username, ''), ur.username)
-  LEFT JOIN platform_users pu_ur ON pu_ur.username = ur.username
-  LEFT JOIN platform_users pu_map ON pu_map.username = una.billing_username
-  WHERE ur.timestamp >= $2
-    AND ur.timestamp <= $3`
-	args := []any{platformUsername, from, to, limit}
-	cleaned := uniqTrim(visibleNodeIDs)
-	if len(cleaned) > 0 {
-		query += `
-    AND ur.node_id = ANY($5)`
-		args = append(args, pq.Array(cleaned))
-	}
-	query += `
-    AND COALESCE(pu_ur.username, pu_map.username) IS NOT NULL
-)
 SELECT r.node_id,
        COALESCE(n.cpu_model, '') AS cpu_model,
        COALESCE(n.cpu_count, 0) AS cpu_count,
        COALESCE(n.gpu_model, '') AS gpu_model,
        COALESCE(n.gpu_count, 0) AS gpu_count,
        COALESCE(n.last_seen_at, to_timestamp(0)) AS last_seen_at,
-       COUNT(1) AS usage_records,
-       COALESCE(SUM(r.cpu_percent), 0) AS total_cpu_percent,
-       COALESCE(SUM(r.memory_mb), 0) AS total_memory_mb,
-       COALESCE(SUM(CASE WHEN COALESCE(r.gpu_count, 0) > 0 THEN 0 ELSE r.cost END), 0) AS cpu_cost,
-       COALESCE(SUM(CASE WHEN COALESCE(r.gpu_count, 0) > 0 THEN r.cost ELSE 0 END), 0) AS gpu_cost,
-       COALESCE(SUM(r.cost), 0) AS total_cost,
-       MAX(r.timestamp) AS last_usage_at
-FROM resolved r
-LEFT JOIN nodes n
-  ON n.node_id = r.node_id
-WHERE r.platform_username = $1
+       SUM(r.usage_records) AS usage_records,
+       COALESCE(SUM(r.total_cpu_percent), 0) AS total_cpu_percent,
+       COALESCE(SUM(r.total_memory_mb), 0) AS total_memory_mb,
+       COALESCE(SUM(r.cpu_cost), 0) AS cpu_cost,
+       COALESCE(SUM(r.gpu_cost), 0) AS gpu_cost,
+       COALESCE(SUM(r.total_cost), 0) AS total_cost,
+       MAX(r.last_usage_at) AS last_usage_at
+FROM usage_daily_summaries r
+LEFT JOIN nodes n ON n.node_id = r.node_id
+WHERE r.username = $1
+  AND r.usage_date >= $2::timestamp::date
+  AND r.usage_date <= $3::timestamp::date`
+	args := []any{platformUsername, from, to, limit}
+	cleaned := uniqTrim(visibleNodeIDs)
+	if len(cleaned) > 0 {
+		query += `
+  AND r.node_id = ANY($5)`
+		args = append(args, pq.Array(cleaned))
+	}
+	query += `
 GROUP BY r.node_id, n.cpu_model, n.cpu_count, n.gpu_model, n.gpu_count, n.last_seen_at
 ORDER BY total_cost DESC, r.node_id ASC
 LIMIT $4`
@@ -14556,32 +14540,19 @@ WITH platform_users AS (
   SELECT username FROM admin_accounts
   UNION
   SELECT username FROM power_users
-),
-resolved AS (
-  SELECT
-    ur.node_id,
-    ur.timestamp,
-    ur.cost,
-    COALESCE(pu_ur.username, pu_map.username) AS platform_username
-  FROM usage_records ur
-  LEFT JOIN user_node_accounts una
-    ON una.node_id = ur.node_id
-   AND una.local_username = COALESCE(NULLIF(ur.local_username, ''), ur.username)
-  LEFT JOIN platform_users pu_ur ON pu_ur.username = ur.username
-  LEFT JOIN platform_users pu_map ON pu_map.username = una.billing_username
-  WHERE ur.node_id = $1
-    AND ur.timestamp >= $2
-    AND ur.timestamp <= $3
-    AND COALESCE(pu_ur.username, pu_map.username) IS NOT NULL
 )
-SELECT node_id,
-       platform_username,
-       COUNT(1) AS usage_records,
-       COALESCE(SUM(cost), 0) AS total_cost,
-       MAX(timestamp) AS last_usage_at
-FROM resolved
-GROUP BY node_id, platform_username
-ORDER BY total_cost DESC, platform_username ASC
+SELECT uds.node_id,
+       uds.username AS platform_username,
+       SUM(uds.usage_records) AS usage_records,
+       COALESCE(SUM(uds.total_cost), 0) AS total_cost,
+       MAX(uds.last_usage_at) AS last_usage_at
+FROM usage_daily_summaries uds
+JOIN platform_users pu ON pu.username = uds.username
+WHERE uds.node_id = $1
+  AND uds.usage_date >= $2::timestamp::date
+  AND uds.usage_date <= $3::timestamp::date
+GROUP BY uds.node_id, uds.username
+ORDER BY total_cost DESC, uds.username ASC
 LIMIT $4`, nodeID, from, to, limit)
 	if err != nil {
 		return nil, err
@@ -14663,38 +14634,12 @@ func (s *Store) GetUserUsageCostSummary(ctx context.Context, username string, no
 	localNow := now.In(time.Local)
 	monthStart := time.Date(localNow.Year(), localNow.Month(), 1, 0, 0, 0, 0, time.Local)
 	monthEnd := monthStart.AddDate(0, 1, 0)
-
 	if err := s.db.QueryRowContext(ctx, `
-WITH platform_accounts AS (
-  SELECT username, created_at FROM user_accounts
-  UNION ALL
-  SELECT username, created_at FROM admin_accounts
-  UNION ALL
-  SELECT username, created_at FROM power_users
-),
-target_account AS (
-  SELECT created_at
-  FROM platform_accounts
-  WHERE username = $1
-  ORDER BY created_at ASC
-  LIMIT 1
-),
-resolved AS (
-  SELECT ur.timestamp, ur.cost, COALESCE(pu_ur.username, pu_map.username) AS platform_username
-  FROM usage_records ur
-  LEFT JOIN user_node_accounts una
-    ON una.node_id = ur.node_id
-   AND una.local_username = COALESCE(NULLIF(ur.local_username, ''), ur.username)
-  LEFT JOIN platform_accounts pu_ur ON pu_ur.username = ur.username
-  LEFT JOIN platform_accounts pu_map ON pu_map.username = una.billing_username
-  WHERE (ur.username = $1 OR una.billing_username = $1)
-    AND ur.timestamp >= COALESCE((SELECT created_at FROM target_account), NOW())
-)
 SELECT
-  COALESCE(SUM(CASE WHEN resolved.timestamp >= $2 AND resolved.timestamp < $3 THEN resolved.cost ELSE 0 END), 0) AS month_used,
-  COALESCE(SUM(resolved.cost), 0) AS total_used
-FROM resolved
-WHERE resolved.platform_username = $1`, username, monthStart, monthEnd).Scan(&monthUsed, &totalUsed); err != nil {
+  COALESCE(SUM(CASE WHEN usage_date >= $2::timestamp::date AND usage_date < $3::timestamp::date THEN total_cost ELSE 0 END), 0) AS month_used,
+  COALESCE(SUM(total_cost), 0) AS total_used
+FROM usage_daily_summaries
+WHERE username = $1`, username, monthStart, monthEnd).Scan(&monthUsed, &totalUsed); err != nil {
 		return 0, 0, err
 	}
 	return monthUsed, totalUsed, nil
@@ -14889,6 +14834,45 @@ func (s *Store) ListUsageDateStats(
 	if limit <= 0 || limit > 4000 {
 		limit = 4000
 	}
+	if strings.TrimSpace(billingUsername) == "" && strings.TrimSpace(localUsername) == "" && !unregisteredOnly {
+		args := make([]any, 0, 3)
+		conds := make([]string, 0, 2)
+		if hasFrom {
+			args = append(args, from)
+			conds = append(conds, fmt.Sprintf("usage_date >= $%d::timestamp::date", len(args)))
+		}
+		if hasTo {
+			args = append(args, to)
+			conds = append(conds, fmt.Sprintf("usage_date <= $%d::timestamp::date", len(args)))
+		}
+		where := ""
+		if len(conds) > 0 {
+			where = "WHERE " + strings.Join(conds, " AND ")
+		}
+		args = append(args, limit)
+		rows, err := s.db.QueryContext(ctx, `
+SELECT TO_CHAR(usage_date, 'YYYY-MM-DD') AS day_key,
+       SUM(usage_records) AS record_count,
+       SUM(usage_records) * 256 AS estimated_csv_bytes
+FROM usage_daily_summaries
+`+where+`
+GROUP BY usage_date
+ORDER BY usage_date DESC
+LIMIT $`+strconv.Itoa(len(args)), args...)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		out := make([]usageDateStat, 0)
+		for rows.Next() {
+			var x usageDateStat
+			if err := rows.Scan(&x.Date, &x.RecordCount, &x.EstimatedCSVBytes); err != nil {
+				return nil, err
+			}
+			out = append(out, x)
+		}
+		return out, rows.Err()
+	}
 	args := make([]any, 0, 8)
 	addArg := func(v any) string {
 		args = append(args, v)
@@ -15004,8 +14988,82 @@ WITH deleted AS (
 )
 SELECT COUNT(1) FROM deleted`
 	var deleted int64
-	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&deleted); err != nil {
+	err := s.WithTx(ctx, func(tx *sql.Tx) error {
+		if err := tx.QueryRowContext(ctx, query, args...).Scan(&deleted); err != nil {
+			return err
+		}
+		return rebuildUsageDailySummariesRangeTx(ctx, tx, hasFrom, from, hasTo, to)
+	})
+	if err != nil {
 		return 0, err
 	}
 	return deleted, nil
+}
+
+func usageDailySummaryInsertSQL(whereClause string) string {
+	return `
+INSERT INTO usage_daily_summaries (
+  usage_date, node_id, username,
+  usage_records, gpu_process_records, cpu_process_records,
+  cpu_active_seconds, gpu_active_seconds,
+  total_cpu_percent, total_memory_mb, cpu_cost, gpu_cost, total_cost, last_usage_at
+)
+SELECT
+  ur.timestamp::date,
+  ur.node_id,
+  ur.username,
+  COUNT(1),
+  SUM(CASE WHEN ur.gpu_count > 0 THEN 1 ELSE 0 END),
+  SUM(CASE WHEN ur.gpu_count = 0 THEN 1 ELSE 0 END),
+  SUM(CASE WHEN ur.cpu_percent > 0 THEN GREATEST(COALESCE(n.interval_seconds, 1), 1) ELSE 0 END),
+  SUM(CASE WHEN ur.gpu_count > 0 THEN GREATEST(COALESCE(n.interval_seconds, 1), 1) ELSE 0 END),
+  COALESCE(SUM(ur.cpu_percent), 0),
+  COALESCE(SUM(ur.memory_mb), 0),
+  COALESCE(SUM(CASE WHEN ur.gpu_count = 0 THEN ur.cost ELSE 0 END), 0),
+  COALESCE(SUM(CASE WHEN ur.gpu_count > 0 THEN ur.cost ELSE 0 END), 0),
+  COALESCE(SUM(ur.cost), 0),
+  MAX(ur.timestamp)
+FROM usage_records ur
+LEFT JOIN nodes n ON n.node_id = ur.node_id
+` + whereClause + `
+GROUP BY ur.timestamp::date, ur.node_id, ur.username`
+}
+
+func rebuildUsageDailySummariesForUsernameTx(ctx context.Context, tx *sql.Tx, oldUsername string, newUsername string) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM usage_daily_summaries WHERE username=$1 OR username=$2`, oldUsername, newUsername); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, usageDailySummaryInsertSQL(`WHERE ur.username=$1`), newUsername)
+	return err
+}
+
+func rebuildUsageDailySummariesRangeTx(ctx context.Context, tx *sql.Tx, hasFrom bool, from time.Time, hasTo bool, to time.Time) error {
+	deleteConds := make([]string, 0, 2)
+	insertConds := make([]string, 0, 2)
+	args := make([]any, 0, 2)
+	if hasFrom {
+		args = append(args, from)
+		pos := fmt.Sprintf("$%d", len(args))
+		deleteConds = append(deleteConds, "usage_date >= "+pos+"::timestamp::date")
+		insertConds = append(insertConds, "ur.timestamp >= "+pos)
+	}
+	if hasTo {
+		args = append(args, to)
+		pos := fmt.Sprintf("$%d", len(args))
+		deleteConds = append(deleteConds, "usage_date <= "+pos+"::timestamp::date")
+		insertConds = append(insertConds, "ur.timestamp <= "+pos)
+	}
+	deleteSQL := `DELETE FROM usage_daily_summaries`
+	if len(deleteConds) > 0 {
+		deleteSQL += ` WHERE ` + strings.Join(deleteConds, " AND ")
+	}
+	if _, err := tx.ExecContext(ctx, deleteSQL, args...); err != nil {
+		return err
+	}
+	whereSQL := ""
+	if len(insertConds) > 0 {
+		whereSQL = `WHERE ` + strings.Join(insertConds, " AND ")
+	}
+	_, err := tx.ExecContext(ctx, usageDailySummaryInsertSQL(whereSQL), args...)
+	return err
 }

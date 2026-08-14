@@ -10016,7 +10016,7 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 			// usage_records 归集到计费账号，便于按“中心账号”对账/查询
 			procForStore := proc
 			procForStore.Username = billingUsername
-			if err := s.store.InsertUsageRecordTx(ctx, tx, data.NodeID, localUsername, reportTS, procForStore, cost); err != nil {
+			if err := s.store.InsertUsageRecordTx(ctx, tx, data.NodeID, localUsername, reportTS, intervalSeconds, procForStore, cost); err != nil {
 				return err
 			}
 			billedLocalUsers[localUsername] = struct{}{}

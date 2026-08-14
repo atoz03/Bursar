@@ -27,6 +27,24 @@ CREATE TABLE IF NOT EXISTS usage_records (
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS usage_daily_summaries (
+    usage_date DATE NOT NULL,
+    node_id VARCHAR(50) NOT NULL,
+    username VARCHAR(50) NOT NULL,
+    usage_records BIGINT NOT NULL DEFAULT 0,
+    gpu_process_records BIGINT NOT NULL DEFAULT 0,
+    cpu_process_records BIGINT NOT NULL DEFAULT 0,
+    cpu_active_seconds BIGINT NOT NULL DEFAULT 0,
+    gpu_active_seconds BIGINT NOT NULL DEFAULT 0,
+    total_cpu_percent DOUBLE PRECISION NOT NULL DEFAULT 0,
+    total_memory_mb DOUBLE PRECISION NOT NULL DEFAULT 0,
+    cpu_cost NUMERIC(18,4) NOT NULL DEFAULT 0,
+    gpu_cost NUMERIC(18,4) NOT NULL DEFAULT 0,
+    total_cost NUMERIC(18,4) NOT NULL DEFAULT 0,
+    last_usage_at TIMESTAMP NOT NULL,
+    PRIMARY KEY (usage_date, node_id, username)
+);
+
 CREATE TABLE IF NOT EXISTS process_kill_records (
     record_id BIGSERIAL PRIMARY KEY,
     node_id VARCHAR(50) NOT NULL,
@@ -482,6 +500,8 @@ CREATE INDEX IF NOT EXISTS idx_usage_local_username ON usage_records(local_usern
 CREATE INDEX IF NOT EXISTS idx_usage_timestamp ON usage_records(timestamp);
 CREATE INDEX IF NOT EXISTS idx_usage_node ON usage_records(node_id);
 CREATE INDEX IF NOT EXISTS idx_usage_timestamp_username ON usage_records(timestamp, username);
+CREATE INDEX IF NOT EXISTS idx_usage_daily_summaries_username_date
+    ON usage_daily_summaries(username, usage_date);
 CREATE INDEX IF NOT EXISTS idx_process_kill_records_created_at ON process_kill_records(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_process_kill_records_billing_created ON process_kill_records(billing_username, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_process_kill_records_node_local_created ON process_kill_records(node_id, local_username, created_at DESC);
