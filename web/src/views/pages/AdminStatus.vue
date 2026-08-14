@@ -105,11 +105,22 @@
         <div class="gpu-section">
           <div class="section-label">
             <span>GPU <em>{{ compactModel(node.gpu_model || "") }}</em></span>
-            <small><b>{{ gpuBusyOnNode(node) }}</b>/{{ node.gpu_count || displayGPUs(node).length }} 活跃</small>
+            <div class="gpu-section-actions">
+              <small><b>{{ gpuBusyOnNode(node) }}</b>/{{ node.gpu_count || displayGPUs(node).length }} 活跃</small>
+              <button
+                v-if="displayGPUs(node).length > COLLAPSED_GPU_COUNT"
+                type="button"
+                :aria-expanded="isGPUExpanded(node.node_id)"
+                @click="toggleGPUExpanded(node.node_id)"
+              >
+                {{ isGPUExpanded(node.node_id) ? "收起" : `展开 ${displayGPUs(node).length - COLLAPSED_GPU_COUNT} 张` }}
+                <el-icon :class="{ expanded: isGPUExpanded(node.node_id) }"><ArrowDown /></el-icon>
+              </button>
+            </div>
           </div>
           <div v-if="displayGPUs(node).length" class="gpu-grid">
             <div
-              v-for="gpu in displayGPUs(node)"
+              v-for="gpu in visibleGPUs(node)"
               :key="`${node.node_id}-${gpu.index}`"
               class="gpu-tile"
               :class="gpuState(gpu)"
@@ -150,7 +161,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { Refresh, Search } from "@element-plus/icons-vue";
+import { ArrowDown, Refresh, Search } from "@element-plus/icons-vue";
 import { ApiClient, type GPUDeviceStatus, type NodeMonitorStatus } from "../../lib/api";
 import { authState } from "../../lib/authStore";
 import { settingsState } from "../../lib/settingsStore";
@@ -159,12 +170,14 @@ type FilterValue = "all" | "online" | "busy" | "warning" | "offline";
 type DisplayGPU = GPUDeviceStatus & { pending?: boolean };
 
 const AUTO_REFRESH_SECONDS = 15;
+const COLLAPSED_GPU_COUNT = 4;
 const nodes = ref<NodeMonitorStatus[]>([]);
 const loading = ref(false);
 const error = ref("");
 const keyword = ref("");
 const activeFilter = ref<FilterValue>("all");
 const lastRefreshAt = ref(0);
+const expandedGPUNodeIDs = ref<Set<string>>(new Set());
 let refreshTimer: ReturnType<typeof setInterval> | null = null;
 
 function heartbeatTimeoutMs(node: NodeMonitorStatus): number {
@@ -270,6 +283,22 @@ function displayGPUs(node: NodeMonitorStatus): DisplayGPU[] {
     compute_processes: 0,
     pending: true,
   }));
+}
+
+function isGPUExpanded(nodeID: string): boolean {
+  return expandedGPUNodeIDs.value.has(nodeID);
+}
+
+function toggleGPUExpanded(nodeID: string): void {
+  const next = new Set(expandedGPUNodeIDs.value);
+  if (next.has(nodeID)) next.delete(nodeID);
+  else next.add(nodeID);
+  expandedGPUNodeIDs.value = next;
+}
+
+function visibleGPUs(node: NodeMonitorStatus): DisplayGPU[] {
+  const items = displayGPUs(node);
+  return isGPUExpanded(node.node_id) ? items : items.slice(0, COLLAPSED_GPU_COUNT);
 }
 
 function gpuBusyOnNode(node: NodeMonitorStatus): number {
@@ -580,9 +609,14 @@ onBeforeUnmount(() => {
 .node-search :deep(.el-input__wrapper) { border-radius: 10px; box-shadow: 0 0 0 1px #dde4ea inset; background: #fff; }
 
 .node-grid, .skeleton-grid { grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 14px; }
+.node-grid { align-items: stretch; grid-auto-rows: 445px; }
 .node-skeleton { min-height: 390px; padding: 20px; border: 1px solid #e3e8ed; border-radius: 16px; box-shadow: none; }
 .node-card {
   --state: #10b981;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  box-sizing: border-box;
   padding: 17px;
   border: 1px solid #e0e6eb;
   border-top: 1px solid #e0e6eb;
@@ -596,7 +630,7 @@ onBeforeUnmount(() => {
 .node-card.state-offline { --state: #a8b2bf; filter: none; background: #fafbfc; }
 .node-card.state-pending { --state: #3b82f6; }
 
-.node-head { align-items: flex-start; }
+.node-head { flex: 0 0 auto; align-items: flex-start; }
 .node-identity { gap: 10px; }
 .status-dot { width: 8px; height: 8px; margin-top: 6px; box-shadow: 0 0 0 4px color-mix(in srgb, var(--state) 11%, transparent); }
 .node-identity h2 { font-size: 17px; }
@@ -605,20 +639,25 @@ onBeforeUnmount(() => {
 .state-chip { padding: 4px 8px; font-size: 10px; }
 .heartbeat-chip { color: #929dab; font-size: 10px; white-space: nowrap; }
 
-.primary-metrics { gap: 18px; margin: 16px 0; padding: 0; border-radius: 0; background: transparent; }
+.primary-metrics { flex: 0 0 auto; gap: 18px; margin: 16px 0; padding: 0; border-radius: 0; background: transparent; }
 .metric-panel { padding: 12px; border: 1px solid #e8edf1; border-radius: 12px; background: #fafcfd; }
 .metric-title { color: #667587; font-size: 11px; }
 .metric-title strong { color: #17283a; font-size: 17px; }
 .progress-track { height: 5px; margin: 7px 0; background: #e7ecf0; }
 .metric-foot { color: #8995a3; font-size: 9px; }
 
-.gpu-section { padding-top: 1px; }
+.gpu-section { display: flex; flex: 1 1 auto; min-height: 0; padding-top: 1px; flex-direction: column; }
 .section-label { margin-bottom: 8px; }
 .section-label > span { min-width: 0; gap: 7px; color: #314255; font-size: 12px; }
 .section-label > span em { overflow: hidden; color: #94a0ad; font-size: 10px; font-style: normal; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .section-label small { flex: 0 0 auto; color: #8c98a6; font-size: 10px; }
 .section-label small b { color: #5c6e82; font-weight: 750; }
-.gpu-grid { gap: 7px; max-height: 288px; padding-right: 2px; }
+.gpu-section-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 7px; }
+.gpu-section-actions button { display: inline-flex; align-items: center; gap: 2px; padding: 2px 5px; border: 0; border-radius: 6px; color: #64748b; background: #eef2f5; cursor: pointer; font: inherit; font-size: 9px; white-space: nowrap; }
+.gpu-section-actions button:hover { color: #087854; background: #e8f6f0; }
+.gpu-section-actions .el-icon { transition: transform .18s ease; }
+.gpu-section-actions .el-icon.expanded { transform: rotate(180deg); }
+.gpu-grid { flex: 1 1 auto; align-content: start; min-height: 0; max-height: none; gap: 7px; padding-right: 3px; overflow-y: auto; }
 .gpu-tile { padding: 10px; border-color: #e5eaf0; border-radius: 11px; background: #fafcfd; }
 .gpu-tile.gpu-busy { border-color: #ddd4fa; background: #fbf9ff; }
 .gpu-tile.gpu-hot { border-color: #fecaca; background: #fff8f8; }
@@ -632,9 +671,9 @@ onBeforeUnmount(() => {
 .gpu-bars { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .mini-track { height: 3px; margin: 4px 0 5px; background: #e6ebef; }
 .gpu-meta { margin-top: 3px; color: #8b97a4; font-size: 8px; }
-.no-gpu { min-height: 64px; border-color: #dce3e9; border-radius: 11px; color: #9aa5b1; font-size: 11px; background: #fafbfc; }
+.no-gpu { flex: 1 1 auto; min-height: 64px; border-color: #dce3e9; border-radius: 11px; color: #9aa5b1; font-size: 11px; background: #fafbfc; }
 
-.node-footer { grid-template-columns: repeat(4, 1fr); gap: 7px; margin-top: 13px; padding-top: 11px; color: #536579; font-size: 9px; }
+.node-footer { flex: 0 0 auto; grid-template-columns: repeat(4, 1fr); gap: 7px; margin-top: 13px; padding-top: 11px; color: #536579; font-size: 9px; }
 .node-footer span { display: grid; gap: 2px; white-space: nowrap; }
 .node-footer i { color: #9ba6b2; }
 .node-footer .heartbeat { justify-self: stretch; }
@@ -650,6 +689,7 @@ onBeforeUnmount(() => {
   .page-head { gap: 13px; }
   .head-actions { justify-content: space-between; }
   .node-grid, .skeleton-grid { grid-template-columns: minmax(0, 1fr); }
+  .node-grid { grid-auto-rows: 485px; }
   .node-search { width: 100%; }
 }
 
@@ -659,7 +699,8 @@ onBeforeUnmount(() => {
   .summary-item strong { font-size: 22px; }
   .summary-mark { top: 18px; right: 15px; }
   .primary-metrics, .gpu-grid { grid-template-columns: 1fr; }
-  .gpu-grid { max-height: 360px; }
+  .node-grid { grid-auto-rows: 535px; }
+  .gpu-grid { max-height: none; }
   .node-card { padding: 15px; }
   .head-actions > span { font-size: 10px; }
 }
