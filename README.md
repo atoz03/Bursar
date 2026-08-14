@@ -611,6 +611,7 @@ sudo systemctl start gpuops-backup-verify.service
 - 管理员可在 `/admin/ha` 查看最近快照和恢复演练状态。
 - Restic 密码文件必须另行离线保管；密码与仓库同时丢失时无法恢复。
 - 如确实需要附带其他小型目录，可在安装时显式设置 `BACKUP_DATA_PATHS='/path/one /path/two'`；不要用它备份大规模科研数据。
+- 备份脚本默认按宿主机发布端口 `5432` 自动识别 PostgreSQL 容器；存在多个候选时必须显式设置 `POSTGRES_CONTAINER=<容器名>`。
 
 ---
 
