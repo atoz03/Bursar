@@ -81,23 +81,81 @@
           </template>
 
           <template v-else-if="activePage.kind === 'register'">
-            <div class="mock-page-head compact-head">
-              <div><span>ACCOUNT APPLICATION</span><h2>注册申请</h2><p>填写身份资料，提交后等待管理员审核。</p></div>
-              <el-tag type="success" effect="plain">邮箱验证</el-tag>
-            </div>
-            <el-card class="mock-form-card" shadow="never">
-              <div class="section-caption">基本资料</div>
-              <el-form :model="mockForm" label-position="top">
-                <el-row :gutter="16">
-                  <el-col :span="12"><el-form-item label="真实姓名"><el-input v-model="mockForm.realName" /></el-form-item></el-col>
-                  <el-col :span="12"><el-form-item label="学号"><el-input v-model="mockForm.studentId" /></el-form-item></el-col>
-                  <el-col :span="12"><el-form-item label="邮箱"><el-input v-model="mockForm.email" /></el-form-item></el-col>
-                  <el-col :span="12"><el-form-item label="导师"><el-input v-model="mockForm.advisor" /></el-form-item></el-col>
-                </el-row>
-                <el-alert title="这是演示表单，不会发送验证码或创建申请。" type="info" :closable="false" show-icon />
-                <div class="form-actions"><el-button type="primary" @click="mockAction">提交注册申请</el-button></div>
+            <div class="register-preview">
+              <div class="register-preview-head">
+                <div>
+                  <span>PLATFORM REGISTRATION</span>
+                  <h2>平台账号注册申请</h2>
+                  <p>完成邮箱验证后进入管理员审核，通过结果将发送至校园邮箱。</p>
+                </div>
+                <el-tag type="warning" effect="plain">审核制</el-tag>
+              </div>
+
+              <el-alert title="所有字段均为必填；用户名、学号和邮箱必须保持全平台唯一。" type="warning" :closable="false" show-icon />
+              <div class="register-rule-chips">
+                <span>用户名：姓名缩写 + 邮箱前缀</span>
+                <span>邮箱：仅限 HIT 校园邮箱</span>
+                <span>资料：请填写真实信息</span>
+              </div>
+
+              <el-form :model="mockForm" label-position="top" class="register-mock-form">
+                <div class="register-section-grid">
+                  <section class="register-section account-section">
+                    <header><i /><div><h3>账号信息</h3><p>用于登录平台并接收验证邮件</p></div></header>
+                    <el-form-item label="校园邮箱" required>
+                      <el-input v-model="mockForm.email" placeholder="26B123456@example.org" />
+                      <small>仅允许 @example.org 或 @students.example.org</small>
+                    </el-form-item>
+                    <el-form-item label="用户名" required>
+                      <el-input v-model="mockForm.usernamePrefix" placeholder="姓名拼音首字母">
+                        <template #append>+ 26B123456</template>
+                      </el-input>
+                      <small>示例：张三填写 zs，最终用户名为 zs26B123456</small>
+                    </el-form-item>
+                    <div class="register-two-cols">
+                      <el-form-item label="密码" required><el-input v-model="mockForm.password" type="password" show-password /></el-form-item>
+                      <el-form-item label="确认密码" required><el-input v-model="mockForm.confirmPassword" type="password" show-password /></el-form-item>
+                    </div>
+                    <div class="password-hint"><i /><span>密码需同时包含大小写字母、数字和特殊字符</span></div>
+                  </section>
+
+                  <section class="register-section profile-section">
+                    <header><i /><div><h3>身份信息</h3><p>用于管理员核验申请人身份</p></div></header>
+                    <div class="register-two-cols">
+                      <el-form-item label="真实姓名" required><el-input v-model="mockForm.realName" /></el-form-item>
+                      <el-form-item label="学号" required><el-input v-model="mockForm.studentId" /></el-form-item>
+                    </div>
+                    <div class="register-two-cols">
+                      <el-form-item label="导师" required><el-input v-model="mockForm.advisor" /></el-form-item>
+                      <el-form-item label="联系电话" required><el-input v-model="mockForm.phone" /></el-form-item>
+                    </div>
+                    <el-form-item label="预计毕业年月" required>
+                      <el-date-picker v-model="mockForm.graduation" type="month" value-format="YYYY-MM" style="width:100%" />
+                    </el-form-item>
+                    <div class="identity-tip">资料仅用于账号审核和毕业到期提醒，不会展示给其他用户。</div>
+                  </section>
+                </div>
+
+                <section class="register-security">
+                  <div class="captcha-block">
+                    <div><b>安全验证</b><small>请选择算式 8 + 7 的结果</small></div>
+                    <el-radio-group v-model="mockForm.captchaOption">
+                      <el-radio-button label="12">12</el-radio-button>
+                      <el-radio-button label="15">15</el-radio-button>
+                      <el-radio-button label="17">17</el-radio-button>
+                    </el-radio-group>
+                  </div>
+                  <el-checkbox v-model="mockForm.acceptedGuideline">
+                    我已阅读并同意《用户准则》，并承诺遵守平台资源使用规范
+                  </el-checkbox>
+                  <el-alert title="演示模式不会发送验证邮件，也不会创建真实注册申请。" type="info" :closable="false" show-icon />
+                  <div class="register-submit-row">
+                    <span>提交后：邮箱验证 → 管理员审核 → 邮件通知</span>
+                    <el-button type="primary" @click="mockAction">提交注册申请</el-button>
+                  </div>
+                </section>
               </el-form>
-            </el-card>
+            </div>
           </template>
 
           <template v-else>
@@ -268,6 +326,12 @@ const mockForm = reactive({
   studentId: "20260001",
   email: "demo@example.org",
   advisor: "示例导师",
+  usernamePrefix: "zs",
+  confirmPassword: "preview-only",
+  phone: "13800000000",
+  graduation: "2028-06",
+  captchaOption: "15",
+  acceptedGuideline: true,
   enabled: true,
   title: "HIT AIOT 演示配置",
   note: "此处内容仅用于预览页面排版。",
@@ -335,13 +399,19 @@ function mockAction() {
 .preview-sidebar { padding:14px 10px; overflow-y:auto; color:#dbeafe; background: linear-gradient(165deg,#111c31,#101827 58%,#0a1424); }
 .preview-brand { display:flex; align-items:center; gap:9px; margin:0 4px 14px; padding:7px; }.preview-brand>span{width:30px;height:30px;display:grid;place-items:center;border-radius:9px;color:#fff;background:linear-gradient(135deg,#2563eb,#06b6d4)}.preview-brand div{display:grid}.preview-brand b{font-size:12px}.preview-brand small{color:#7890ad;font-size:8px;letter-spacing:.18em}
 .preview-sidebar button { position:relative; width:100%; display:flex; align-items:center; gap:9px; margin:2px 0; padding:8px 10px; border:0; border-radius:9px; color:#9fb0c7; background:transparent; font:inherit; font-size:11px; text-align:left; cursor:pointer; }.preview-sidebar button i{width:5px;height:5px;border-radius:50%;background:#53657c}.preview-sidebar button:hover{color:#fff;background:rgba(255,255,255,.06)}.preview-sidebar button.active{color:#fff;background:linear-gradient(90deg,rgba(37,99,235,.82),rgba(59,130,246,.42));box-shadow:inset 0 1px 0 rgba(255,255,255,.15)}.preview-sidebar button.active i{background:#67e8f9;box-shadow:0 0 0 4px rgba(34,211,238,.12)}
-.preview-canvas { min-width:0; padding:22px; overflow:hidden; background: radial-gradient(650px 330px at 95% 0%,rgba(129,140,248,.15),transparent 67%),linear-gradient(145deg,#eef6ff,#f8faff 52%,#eff9f8); }
-.mock-page-head { display:flex; align-items:center; justify-content:space-between; gap:18px; margin-bottom:16px; padding:18px 20px; border:1px solid rgba(255,255,255,.9); border-radius:16px; background:linear-gradient(145deg,rgba(255,255,255,.9),rgba(245,249,255,.7)); box-shadow:0 12px 28px rgba(40,62,98,.08),inset 0 1px 0 #fff; }.mock-page-head span{color:#2563eb;font-size:9px;font-weight:850;letter-spacing:.14em}.mock-page-head h2{margin:3px 0 2px;color:#152033;font-size:25px;letter-spacing:-.03em}.mock-page-head p{margin:0;color:#718096;font-size:11px}.mock-head-actions{display:flex;align-items:center;gap:8px}.compact-head{margin-bottom:14px}
+.preview-canvas { min-width:0; padding:22px; overflow:auto; background: radial-gradient(650px 330px at 95% 0%,rgba(129,140,248,.15),transparent 67%),linear-gradient(145deg,#eef6ff,#f8faff 52%,#eff9f8); }
+.mock-page-head { display:flex; align-items:center; justify-content:space-between; gap:18px; margin-bottom:16px; padding:18px 20px; border:1px solid rgba(255,255,255,.9); border-radius:16px; background:linear-gradient(145deg,rgba(255,255,255,.9),rgba(245,249,255,.7)); box-shadow:0 12px 28px rgba(40,62,98,.08),inset 0 1px 0 #fff; }.mock-page-head span{color:#2563eb;font-size:9px;font-weight:850;letter-spacing:.14em}.mock-page-head h2{margin:3px 0 2px;color:#152033;font-size:25px;letter-spacing:-.03em}.mock-page-head p{margin:0;color:#718096;font-size:11px}.mock-head-actions{display:flex;align-items:center;gap:8px}
 .mock-metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin-bottom:14px; }.mock-metrics article{padding:14px;border:1px solid rgba(255,255,255,.9);border-top:3px solid currentColor;border-radius:13px;background:linear-gradient(145deg,rgba(255,255,255,.88),rgba(255,255,255,.58));box-shadow:0 8px 20px rgba(39,60,92,.07)}.mock-metrics span,.mock-metrics small{display:block;color:#7a899d;font-size:9px}.mock-metrics strong{display:block;margin:8px 0 5px;color:#182235;font-size:20px}.mock-metrics .blue{color:#3b82f6}.mock-metrics .green{color:#10b981}.mock-metrics .violet{color:#8b5cf6}.mock-metrics .amber{color:#f59e0b}
 .mock-table-card,.mock-form-card,.mock-document{border-radius:16px!important}.table-toolbar{display:flex;gap:8px;margin-bottom:12px}.table-toolbar .el-input{max-width:280px}.section-caption{margin-bottom:14px;color:#26364b;font-size:14px;font-weight:800}.form-actions{display:flex;justify-content:flex-end;margin-top:14px}
 .mock-node-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.mock-node-card{padding:15px;border:1px solid rgba(255,255,255,.92);border-radius:15px;background:linear-gradient(145deg,rgba(255,255,255,.9),rgba(255,255,255,.58));box-shadow:0 10px 24px rgba(35,55,86,.08)}.mock-node-card header{display:flex;align-items:center;justify-content:space-between}.mock-node-card header>div{display:flex;align-items:center;gap:8px}.mock-node-card header i{width:8px;height:8px;border-radius:50%;background:#10b981}.mock-node-card header i.warn{background:#f59e0b}.mock-node-card header i.muted{background:#94a3b8}.node-spec{margin:7px 0 14px;color:#8491a2;font-size:9px}.node-meter span{display:flex;justify-content:space-between;color:#53647a;font-size:10px}.node-meter em,.gpu-demo-grid em{height:4px;display:block;margin-top:5px;overflow:hidden;border-radius:999px;background:#e5ebf2}.node-meter em i,.gpu-demo-grid em i{height:100%;display:block;border-radius:inherit;background:linear-gradient(90deg,#10b981,#34d399)}.gpu-demo-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:12px}.gpu-demo-grid>div{padding:8px;border-radius:8px;background:rgba(248,250,252,.76);color:#66768b;font-size:8px}.gpu-demo-grid span{display:inline-block}.gpu-demo-grid b{float:right;color:#31445a}
 .mock-document{min-height:280px}.mock-document h3{margin:18px 0 8px;font-size:22px}.mock-document p{max-width:720px;color:#64748b;line-height:1.75}.document-meta{display:flex;align-items:center;gap:10px;color:#94a3b8;font-size:10px}
 .auth-preview{min-height:590px;display:grid;grid-template-columns:1.05fr .95fr;align-items:stretch;overflow:hidden;border-radius:20px;background:linear-gradient(130deg,#073b4c,#0f766e 48%,#d9f99d);box-shadow:0 20px 50px rgba(2,6,23,.16)}.auth-intro{display:flex;justify-content:center;flex-direction:column;padding:42px;color:#fff}.auth-intro .el-tag{align-self:flex-start}.auth-intro h2{margin:18px 0 8px;font-size:38px;line-height:1.14}.auth-intro p{font-size:15px;opacity:.88}.auth-panel{align-self:center;margin:28px;padding:28px;border:1px solid rgba(255,255,255,.9);border-radius:20px;background:linear-gradient(145deg,#fff,#eff8f7);box-shadow:0 18px 45px rgba(2,6,23,.18)}.auth-panel h2{margin:0;font-size:25px}.auth-panel>p{margin:5px 0 20px;color:#7a8798;font-size:11px}.full-button{width:100%}
-@media(max-width:1000px){.preview-workspace{grid-template-columns:150px minmax(0,1fr)}.mock-metrics{grid-template-columns:repeat(2,1fr)}.mock-node-grid{grid-template-columns:1fr 1fr}}
-@media(max-width:720px){.control-row{align-items:stretch;flex-direction:column}.page-control{width:100%}.preview-window-head{grid-template-columns:70px 1fr}.preview-window-head>.el-tag{display:none}.preview-workspace{grid-template-columns:1fr}.preview-sidebar{display:flex;gap:4px;overflow-x:auto}.preview-brand{display:none}.preview-sidebar button{width:auto;flex:0 0 auto}.preview-canvas{padding:12px}.mock-page-head{align-items:flex-start;flex-direction:column}.mock-metrics,.mock-node-grid{grid-template-columns:1fr}.auth-preview{grid-template-columns:1fr}.auth-intro{display:none}.auth-panel{margin:16px}.demo-controls :deep(.el-radio-group){display:grid;grid-template-columns:1fr 1fr}.demo-controls :deep(.el-radio-button__inner){width:100%}}
+.register-preview { padding: 22px; border: 1px solid rgba(255,255,255,.92); border-radius: 19px; background: linear-gradient(145deg,rgba(255,255,255,.94),rgba(244,249,255,.78)); box-shadow: 0 18px 42px rgba(36,56,90,.11), inset 0 1px 0 #fff; }
+.register-preview-head { display:flex; align-items:flex-start; justify-content:space-between; gap:18px; margin-bottom:14px; }.register-preview-head span{color:#2563eb;font-size:9px;font-weight:850;letter-spacing:.15em}.register-preview-head h2{margin:4px 0 3px;color:#152033;font-size:25px;letter-spacing:-.035em}.register-preview-head p{margin:0;color:#718096;font-size:11px}
+.register-rule-chips { display:flex; flex-wrap:wrap; gap:7px; margin:11px 0 15px; }.register-rule-chips span{padding:5px 9px;border:1px solid #dbeafe;border-radius:999px;color:#35608d;background:#eff6ff;font-size:9px;font-weight:700}.register-rule-chips span:nth-child(2){color:#0f766e;border-color:#ccfbf1;background:#f0fdfa}.register-rule-chips span:nth-child(3){color:#9a3412;border-color:#fed7aa;background:#fff7ed}
+.register-section-grid { display:grid; grid-template-columns:1fr 1fr; gap:13px; }.register-section{padding:16px;border:1px solid #e5ebf3;border-radius:14px;background:rgba(255,255,255,.72)}.register-section header{display:flex;align-items:center;gap:9px;margin-bottom:14px}.register-section header>i{width:9px;height:9px;border-radius:50%;background:#3b82f6;box-shadow:0 0 0 5px rgba(59,130,246,.1)}.register-section.profile-section header>i{background:#10b981;box-shadow:0 0 0 5px rgba(16,185,129,.1)}.register-section h3{margin:0;color:#223249;font-size:14px}.register-section header p{margin:2px 0 0;color:#8a97a8;font-size:9px}.register-section :deep(.el-form-item){margin-bottom:12px}.register-section :deep(.el-form-item__label){height:auto;margin-bottom:4px;color:#526278;font-size:10px;line-height:1.25}.register-section :deep(.el-input__wrapper),.register-section :deep(.el-date-editor){min-height:34px}.register-section small{display:block;margin-top:4px;color:#94a3b8;font-size:8px;line-height:1.45}
+.register-two-cols{display:grid;grid-template-columns:1fr 1fr;gap:10px}.password-hint,.identity-tip{display:flex;align-items:center;gap:6px;margin-top:-2px;padding:7px 9px;border-radius:8px;color:#66778b;background:#f5f8fc;font-size:8px}.password-hint i{width:5px;height:5px;border-radius:50%;background:#10b981}
+.register-security{display:grid;gap:11px;margin-top:13px;padding:14px 16px;border:1px solid #e5ebf3;border-radius:14px;background:rgba(248,250,252,.76)}.captcha-block{display:flex;align-items:center;justify-content:space-between;gap:14px}.captcha-block>div{display:grid}.captcha-block b{color:#27374c;font-size:11px}.captcha-block small{margin-top:2px;color:#8694a6;font-size:9px}.register-security :deep(.el-checkbox__label){color:#526278;font-size:10px;white-space:normal}.register-submit-row{display:flex;align-items:center;justify-content:space-between;gap:14px}.register-submit-row>span{color:#8491a3;font-size:9px}
+@media(max-width:1000px){.preview-workspace{grid-template-columns:150px minmax(0,1fr)}.mock-metrics{grid-template-columns:repeat(2,1fr)}.mock-node-grid{grid-template-columns:1fr 1fr}.register-section-grid{grid-template-columns:1fr}}
+@media(max-width:720px){.control-row{align-items:stretch;flex-direction:column}.page-control{width:100%}.preview-window-head{grid-template-columns:70px 1fr}.preview-window-head>.el-tag{display:none}.preview-workspace{grid-template-columns:1fr}.preview-sidebar{display:flex;gap:4px;overflow-x:auto}.preview-brand{display:none}.preview-sidebar button{width:auto;flex:0 0 auto}.preview-canvas{padding:12px}.mock-page-head,.register-preview-head{align-items:flex-start;flex-direction:column}.mock-metrics,.mock-node-grid,.register-two-cols{grid-template-columns:1fr}.auth-preview{grid-template-columns:1fr}.auth-intro{display:none}.auth-panel{margin:16px}.register-preview{padding:14px}.captcha-block,.register-submit-row{align-items:flex-start;flex-direction:column}.demo-controls :deep(.el-radio-group){display:grid;grid-template-columns:1fr 1fr}.demo-controls :deep(.el-radio-button__inner){width:100%}}
 </style>
