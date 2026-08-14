@@ -8,12 +8,18 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 2
 fi
 
-for command_name in docker nsenter pgrep snap systemctl; do
+for command_name in docker flock nsenter pgrep snap systemctl; do
   command -v "${command_name}" >/dev/null 2>&1 || {
     echo "缺少命令：${command_name}" >&2
     exit 2
   }
 done
+
+exec 9>/run/lock/gpu-ops-remove-snap-docker.lock
+if ! flock --nonblock 9; then
+  echo "已有一份 Snap Docker 清理任务正在运行，请等待其完成" >&2
+  exit 3
+fi
 
 if ! snap list docker >/dev/null 2>&1; then
   echo "Snap Docker 未安装，无需移除" >&2
@@ -49,15 +55,36 @@ else
 fi
 
 backup_dir="/var/lib/gpu-controller/emergency"
-backup_file="${backup_dir}/gpuops-before-snap-removal-$(date +%Y%m%d-%H%M%S).dump"
 install -d -m 0700 "${backup_dir}"
-echo "正在生成重启前数据库保险备份：${backup_file}"
-nsenter --target "${postgres_pid}" --mount --uts --ipc --net --pid \
-  pg_dump --username=gpuops --dbname=gpuops --format=custom --compress=6 \
-    --no-owner --no-privileges >"${backup_file}"
-nsenter --target "${postgres_pid}" --mount --uts --ipc --net --pid \
-  pg_restore --list <"${backup_file}" >/dev/null
-echo "保险备份已校验：$(du -h "${backup_file}" | awk '{print $1}')"
+backup_file=""
+mapfile -t existing_backups < <(find "${backup_dir}" -maxdepth 1 -type f \
+  -name 'gpuops-before-snap-removal-*.dump' -printf '%T@ %p\n' | sort --reverse --numeric-sort)
+if (( ${#existing_backups[@]} > 0 )); then
+  latest_backup="${existing_backups[0]#* }"
+  if nsenter --target "${postgres_pid}" --mount --uts --ipc --net --pid \
+    pg_restore --list <"${latest_backup}" >/dev/null 2>&1; then
+    backup_file="${latest_backup}"
+    echo "复用已校验的数据库保险备份：${backup_file}（$(du -h "${backup_file}" | awk '{print $1}')）"
+  fi
+fi
+
+if [[ -z "${backup_file}" ]]; then
+  backup_file="${backup_dir}/gpuops-before-snap-removal-$(date +%Y%m%d-%H%M%S).dump"
+  partial_backup="${backup_file}.partial"
+  cleanup_partial() {
+    [[ -z "${partial_backup:-}" ]] || rm -f "${partial_backup}"
+  }
+  trap cleanup_partial EXIT
+  echo "正在生成重启前数据库保险备份：${backup_file}"
+  nsenter --target "${postgres_pid}" --mount --uts --ipc --net --pid \
+    pg_dump --username=gpuops --dbname=gpuops --format=custom --compress=6 \
+      --no-owner --no-privileges >"${partial_backup}"
+  nsenter --target "${postgres_pid}" --mount --uts --ipc --net --pid \
+    pg_restore --list <"${partial_backup}" >/dev/null
+  mv "${partial_backup}" "${backup_file}"
+  partial_backup=""
+  echo "保险备份已校验：$(du -h "${backup_file}" | awk '{print $1}')"
+fi
 
 echo "停止并移除 Snap Docker（不会移除 snapd）"
 snap stop --disable docker
