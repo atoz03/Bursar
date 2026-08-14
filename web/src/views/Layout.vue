@@ -142,6 +142,28 @@
             </div>
           </template>
         </div>
+        <div class="header-search">
+          <el-autocomplete
+            ref="featureSearchRef"
+            v-model="featureSearchText"
+            :fetch-suggestions="queryFeatureSearch"
+            :trigger-on-focus="true"
+            clearable
+            fit-input-width
+            popper-class="feature-search-popper"
+            :placeholder="t('搜索功能 / 设置', 'Search features / settings')"
+            @select="openSearchEntry"
+          >
+            <template #prefix><el-icon><Search /></el-icon></template>
+            <template #suffix><kbd>{{ shortcutLabel }}</kbd></template>
+            <template #default="{ item }">
+              <div class="feature-search-option">
+                <div><strong>{{ item.title }}</strong><span>{{ item.group }}</span></div>
+                <small>{{ item.description }}</small>
+              </div>
+            </template>
+          </el-autocomplete>
+        </div>
         <div class="header-right">
           <el-button text @click="toggleUiLanguage">{{ uiLocaleState.language === "en" ? "中" : "EN" }}</el-button>
           <el-dropdown trigger="click" @command="onUserCommand">
@@ -197,6 +219,7 @@ import {
   Link,
   Menu,
   Monitor,
+  Search,
   SwitchButton,
   Setting,
   User,
@@ -242,9 +265,183 @@ const accountRoleLabel = computed(() => authState.role === "admin"
     ? t("高级用户", "Power User")
     : t("用户", "User"));
 const userInitial = computed(() => String(authState.username || "U").trim().slice(0, 1).toUpperCase());
+type FeatureSearchEntry = {
+  value: string;
+  title: string;
+  group: string;
+  description: string;
+  path: string;
+  keywords: string;
+};
+
+const featureSearchRef = ref<any>(null);
+const featureSearchText = ref("");
+const shortcutLabel = computed(() => /Mac|iPhone|iPad/i.test(navigator.platform) ? "⌘K" : "Ctrl K");
+
+function searchEntry(title: string, group: string, path: string, description: string, keywords = ""): FeatureSearchEntry {
+  return { value: `${title} · ${group}`, title, group, path, description, keywords };
+}
+
+const userSearchEntries: FeatureSearchEntry[] = [
+  searchEntry("我的积分", "我的中心", "/user/balance", "查看通用、结转、专属积分和变动记录", "积分余额 充值 结转 专属 jf points balance"),
+  searchEntry("我的用量", "我的中心", "/user/usage", "查询个人 CPU、GPU 使用与积分消耗", "使用记录 进程 cpu gpu yl usage"),
+  searchEntry("节点账号", "我的中心", "/user/accounts", "查看节点账号、申请开通和解密密钥", "ssh 开通 密钥 解密 账号 jd key"),
+  searchEntry("公告与用户准则", "我的中心", "/user/notices", "查看平台公告、维护信息和使用规范", "通知 公告 准则 notice guideline"),
+  searchEntry("个人资料", "账号安全", "/user/profile", "查看和修改个人身份资料", "姓名 邮箱 学号 导师 profile grzl"),
+  searchEntry("修改密码", "账号安全", "/user/change-password", "修改当前登录密码", "密码 安全 password mm"),
+];
+
+const adminSearchEntries: FeatureSearchEntry[] = [
+  searchEntry("运营看板", "总览", "/admin/board", "查看资源使用、积分消耗和用户概览", "dashboard 看板 统计 yy kb"),
+  searchEntry("数据留存与删除", "运营看板 · 数据工具", "/admin/board", "配置自动清理天数或按日期删除用量记录", "保留天数 自动删除 清理 retention delete sjlc"),
+  searchEntry("用量数据导出", "运营看板", "/admin/board", "按统计区间导出 CSV", "csv export 导出 运营"),
+  searchEntry("集群状态", "总览", "/admin/status", "查看节点 CPU 与每张 GPU 的实时状态", "监控 显卡 温度 显存 在线 gpu cpu jc jq"),
+  searchEntry("节点管理", "资源与计费", "/admin/nodes", "管理节点策略、版本和运行状态", "节点 同步 agent jd node"),
+  searchEntry("节点限速策略", "节点管理", "/admin/nodes", "配置低积分和欠费 CPU 限速", "cpu quota throttle 限制 xscl"),
+  searchEntry("节点磁盘配额", "节点管理", "/admin/nodes", "配置用户磁盘软硬配额", "disk quota home mnt 硬盘 pe"),
+  searchEntry("节点计费参数", "节点管理", "/admin/nodes", "配置 GPU 与 CPU 单价", "价格 单价 billing price jf cs"),
+  searchEntry("GPU 可见与独享", "节点管理", "/admin/nodes", "配置用户可见 GPU 和节点独享规则", "显卡 可见 独占 exclusive visibility gpu"),
+  searchEntry("节点安全事件", "节点管理", "/admin/nodes", "查看端口扫描、挖矿和可疑进程", "安全 恶意 扫描 挖矿 security aq"),
+  searchEntry("进程审计", "资源与计费", "/admin/usage", "查询用户与节点进程使用记录", "进程 记录 usage audit csv jc"),
+  searchEntry("积分管理", "资源与计费", "/admin/points", "查看余额并调整用户积分", "加分 扣分 余额 points jf"),
+  searchEntry("积分月度规则", "积分管理", "/admin/points", "配置每月积分、结转和欠费上限", "博士 硕士 月初 结转 monthly rule"),
+  searchEntry("积分特殊规则", "积分管理", "/admin/points", "配置单个用户的特殊积分规则", "special rule 特殊 用户 jf"),
+  searchEntry("平台用户", "账号与访问", "/admin/users", "管理平台账号、状态和资料", "用户 删除 恢复 黑名单 csv yh"),
+  searchEntry("账号映射", "账号与访问", "/admin/accounts", "维护平台账号与节点账号绑定", "绑定 解绑 mapping bind zh"),
+  searchEntry("绑定安全策略", "账号映射", "/admin/accounts", "配置绑定挑战、冷却和试用资源限制", "challenge cooldown trial 风险 安全"),
+  searchEntry("账号开通", "账号与访问", "/admin/account-provision", "开通节点账号并下发 SSH 密钥", "ssh 密钥 邮件 provision kt"),
+  searchEntry("开通历史", "账号开通", "/admin/account-provision", "查看节点账号开通与邮件发送记录", "history 日志 记录 ktls"),
+  searchEntry("注册与资料审核", "账号与访问", "/admin/requests", "审核注册、资料修改、开通和解绑申请", "注册 审核 申请 review zc sh"),
+  searchEntry("高级用户权限", "账号与访问", "/admin/power-users", "管理高级用户的功能授权", "授权 权限 power user gjyh"),
+  searchEntry("SSH 名单", "账号与访问", "/admin/whitelist", "管理黑名单、白名单、豁免和临时账号", "blacklist whitelist exemption temporary ssh hbm"),
+  searchEntry("容灾同步", "系统与容灾", "/admin/ha", "配置主备控制器与同步周期", "ha dr backup 灾备 同步 rz"),
+  searchEntry("公告管理", "系统与容灾", "/admin/announcements", "发布和维护平台公告", "通知 announcement gg"),
+  searchEntry("用户准则", "系统与容灾", "/admin/guideline", "编辑注册和资源使用规范", "规则 guideline zhunze yz"),
+  searchEntry("管理员记事本", "系统与容灾", "/admin/notebook", "记录内部运维事项", "note notebook 记录 jsb"),
+  searchEntry("邮件设置", "系统与容灾", "/admin/mail", "配置 SMTP 与通知邮件", "smtp mail 邮箱 发信 yj"),
+  searchEntry("界面演示", "系统与容灾", "/admin/demo", "使用 Mock 数据预览不同身份页面", "demo mock 预览 身份 ys"),
+  searchEntry("管理员资料", "账号安全", "/admin/profile", "查看管理员资料和安全状态", "profile 2fa grzl"),
+];
+
+const searchableEntries = computed(() => {
+  if (authState.role === "admin") return [...adminSearchEntries, ...userSearchEntries.filter((item) => item.path.endsWith("change-password"))];
+  if (authState.role !== "power_user") return userSearchEntries;
+  const authorized: FeatureSearchEntry[] = [];
+  if (authState.canViewBoard) authorized.push(...adminSearchEntries.filter((item) => item.path === "/admin/board"));
+  if (authState.canViewNodes) authorized.push(...adminSearchEntries.filter((item) => item.path === "/admin/nodes"));
+  if (authState.canManagePoints || authState.canPointsUsers || authState.canPointsBatchFiltered || authState.canPointsBatchAll || authState.canPointsRecords || authState.canPointsMonthly || authState.canPointsSpecialRules) authorized.push(...adminSearchEntries.filter((item) => item.path === "/admin/points"));
+  if (authState.canManagePlatformUsers) authorized.push(...adminSearchEntries.filter((item) => item.path === "/admin/users"));
+  if (authState.canReviewRequests) authorized.push(...adminSearchEntries.filter((item) => item.path === "/admin/requests"));
+  return [...authorized, ...userSearchEntries];
+});
 
 function t(zh: string, en: string): string {
   return pickText(zh, en);
+}
+
+function normalizeSearchText(value: string): string {
+  return String(value || "")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[\s·/_:：()（）\-]+/g, "")
+    .replace(/[^\p{L}\p{N}]/gu, "");
+}
+
+function editDistance(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  let previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i += 1) {
+    const current = [i];
+    for (let j = 1; j <= b.length; j += 1) {
+      current[j] = Math.min(
+        current[j - 1] + 1,
+        previous[j] + 1,
+        previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
+    }
+    previous = current;
+  }
+  return previous[b.length];
+}
+
+function subsequenceRatio(needle: string, haystack: string): number {
+  if (!needle || !haystack) return 0;
+  let matched = 0;
+  for (const char of haystack) {
+    if (char === needle[matched]) matched += 1;
+    if (matched === needle.length) return matched / haystack.length;
+  }
+  return 0;
+}
+
+function fuzzyTermScore(term: string, candidates: string[]): number {
+  let best = -1;
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    if (candidate === term) best = Math.max(best, 120);
+    else if (candidate.startsWith(term)) best = Math.max(best, 104 - Math.min(18, candidate.length - term.length));
+    else {
+      const index = candidate.indexOf(term);
+      if (index >= 0) best = Math.max(best, 88 - Math.min(24, index));
+    }
+    if (term.length >= 2 && Math.abs(candidate.length - term.length) <= 3) {
+      const distance = editDistance(term, candidate);
+      const allowed = Math.max(1, Math.floor(Math.max(term.length, candidate.length) * .34));
+      if (distance <= allowed) best = Math.max(best, 72 - distance * 12);
+    }
+    const sequence = subsequenceRatio(term, candidate);
+    if (sequence > 0) best = Math.max(best, 42 + Math.round(sequence * 22));
+  }
+  return best;
+}
+
+function featureSearchScore(query: string, item: FeatureSearchEntry): number {
+  const rawTerms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const terms = rawTerms.map(normalizeSearchText).filter(Boolean);
+  if (!terms.length) return 1;
+  const title = normalizeSearchText(item.title);
+  const group = normalizeSearchText(item.group);
+  const description = normalizeSearchText(item.description);
+  const keywordParts = item.keywords.split(/\s+/).map(normalizeSearchText).filter(Boolean);
+  const whole = normalizeSearchText(`${item.title}${item.group}${item.description}${item.keywords}`);
+  let score = 0;
+  for (const term of terms) {
+    const partScore = fuzzyTermScore(term, [title, group, description, whole, ...keywordParts]);
+    if (partScore < 0) return -1;
+    score += partScore;
+    if (title.includes(term)) score += 28;
+    if (group.includes(term)) score += 10;
+  }
+  return score;
+}
+
+function queryFeatureSearch(query: string, callback: (items: FeatureSearchEntry[]) => void) {
+  const value = query.trim();
+  if (!value) {
+    callback(searchableEntries.value.slice(0, 10));
+    return;
+  }
+  const results = searchableEntries.value
+    .map((item, index) => ({ item, index, score: featureSearchScore(value, item) }))
+    .filter((row) => row.score >= 0)
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .slice(0, 12)
+    .map((row) => row.item);
+  callback(results);
+}
+
+async function openSearchEntry(item: FeatureSearchEntry) {
+  featureSearchText.value = "";
+  if (route.path !== item.path) await router.push(item.path);
+  if (isMobile.value) mobileMenuOpen.value = false;
+}
+
+function onFeatureSearchShortcut(event: KeyboardEvent) {
+  if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "k") return;
+  event.preventDefault();
+  featureSearchRef.value?.focus?.();
 }
 
 function persist() {
@@ -571,6 +768,7 @@ onMounted(() => {
   window.addEventListener("gpuops-announcement-seen", loadUserNoticeState);
   window.addEventListener("gpuops-points-seen", loadUserPointsState);
   document.addEventListener("visibilitychange", onVisibilityChange);
+  window.addEventListener("keydown", onFeatureSearchShortcut);
 });
 
 onBeforeUnmount(() => {
@@ -582,6 +780,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("gpuops-announcement-seen", loadUserNoticeState);
   window.removeEventListener("gpuops-points-seen", loadUserPointsState);
   document.removeEventListener("visibilitychange", onVisibilityChange);
+  window.removeEventListener("keydown", onFeatureSearchShortcut);
 });
 </script>
 
@@ -803,6 +1002,8 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+  flex: 1 1 260px;
 }
 .controller-toggle {
   color: #475569;
@@ -817,10 +1018,100 @@ onBeforeUnmount(() => {
 .muted {
   color: #475569;
 }
+.header-search {
+  width: min(430px, 34vw);
+  min-width: 250px;
+  flex: 0 1 430px;
+}
+.header-search :deep(.el-autocomplete) {
+  width: 100%;
+}
+.header-search :deep(.el-input__wrapper) {
+  min-height: 38px;
+  padding-left: 12px;
+  border: 1px solid rgba(203, 213, 225, .62);
+  border-radius: 12px !important;
+  background:
+    radial-gradient(150px 40px at 8% 0%, rgba(59, 130, 246, .08), transparent 72%),
+    rgba(248, 250, 252, .88) !important;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, .035) !important;
+}
+.header-search :deep(.el-input__wrapper:hover) {
+  border-color: rgba(96, 165, 250, .58);
+  box-shadow: 0 5px 16px rgba(37, 99, 235, .08) !important;
+}
+.header-search :deep(.el-input__wrapper.is-focus) {
+  border-color: rgba(59, 130, 246, .72);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, .1), 0 7px 18px rgba(37, 99, 235, .08) !important;
+}
+.header-search kbd {
+  padding: 2px 6px;
+  border: 1px solid #d8e0eb;
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  color: #8290a3;
+  background: rgba(255, 255, 255, .8);
+  font-family: inherit;
+  font-size: 9px;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+:global(.feature-search-popper) {
+  border: 1px solid rgba(203, 213, 225, .78) !important;
+  border-radius: 14px !important;
+  background: linear-gradient(145deg, rgba(255,255,255,.99), rgba(245,248,253,.98)) !important;
+  box-shadow: 0 18px 48px rgba(15, 23, 42, .15) !important;
+}
+:global(.feature-search-popper .el-autocomplete-suggestion__wrap) {
+  max-height: min(62vh, 460px);
+  padding: 7px;
+}
+:global(.feature-search-popper .el-autocomplete-suggestion li) {
+  height: auto;
+  min-height: 52px;
+  margin: 2px 0;
+  padding: 8px 10px;
+  border-radius: 9px;
+  line-height: 1.35;
+}
+:global(.feature-search-popper .el-autocomplete-suggestion li.highlighted),
+:global(.feature-search-popper .el-autocomplete-suggestion li:hover) {
+  background: linear-gradient(90deg, rgba(219, 234, 254, .76), rgba(238, 242, 255, .58));
+}
+.feature-search-option {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+.feature-search-option > div {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.feature-search-option strong {
+  color: #1e293b;
+  font-size: 13px;
+}
+.feature-search-option span {
+  overflow: hidden;
+  color: #3b82f6;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.feature-search-option small {
+  overflow: hidden;
+  color: #8491a4;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .header-right {
   display: flex;
   gap: 8px;
   align-items: center;
+  flex: 0 0 auto;
 }
 .user-menu-trigger {
   min-width: 148px;
@@ -918,13 +1209,20 @@ onBeforeUnmount(() => {
   .header {
     flex-wrap: wrap;
   }
-  .header-left,
-  .header-right {
-    width: 100%;
+  .header-left {
+    width: auto;
+    flex: 1 1 auto;
   }
   .header-right {
-    justify-content: space-between;
+    width: auto;
+    justify-content: flex-end;
     overflow-x: auto;
+  }
+  .header-search {
+    order: 3;
+    width: 100%;
+    min-width: 0;
+    flex: 1 0 100%;
   }
   .user-menu-trigger {
     min-width: 0;
