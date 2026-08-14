@@ -1,0 +1,524 @@
+<template>
+  <div class="monitor-page">
+    <section class="monitor-hero">
+      <div class="hero-copy">
+        <div class="eyebrow"><span class="live-pulse" /> CLUSTER LIVE</div>
+        <h1>集群状态总览</h1>
+        <p>以 CPU 和逐卡 GPU 状态为核心，快速识别离线、过载与温度异常节点。</p>
+      </div>
+      <div class="hero-actions">
+        <div class="refresh-meta">
+          <span>数据每 {{ AUTO_REFRESH_SECONDS }} 秒刷新</span>
+          <strong>{{ lastRefreshText }}</strong>
+        </div>
+        <el-button type="primary" round size="large" :loading="loading" @click="loadMonitor">
+          <el-icon><Refresh /></el-icon>
+          立即刷新
+        </el-button>
+      </div>
+    </section>
+
+    <el-alert v-if="error" class="monitor-error" type="error" show-icon :closable="false" :title="error" />
+
+    <section class="summary-grid">
+      <article class="summary-card tone-green">
+        <span class="summary-icon"><el-icon><Monitor /></el-icon></span>
+        <div><strong>{{ onlineCount }}<small>/ {{ nodes.length }}</small></strong><span>在线节点</span></div>
+      </article>
+      <article class="summary-card tone-violet">
+        <span class="summary-icon"><el-icon><Cpu /></el-icon></span>
+        <div><strong>{{ busyGPUCount }}<small>/ {{ totalGPUCount }}</small></strong><span>活跃 GPU</span></div>
+      </article>
+      <article class="summary-card tone-blue">
+        <span class="summary-icon"><el-icon><DataLine /></el-icon></span>
+        <div><strong>{{ averageCPUText }}</strong><span>在线节点平均 CPU</span></div>
+      </article>
+      <article class="summary-card" :class="warningCount ? 'tone-amber' : 'tone-cyan'">
+        <span class="summary-icon"><el-icon><WarningFilled v-if="warningCount" /><CircleCheck v-else /></el-icon></span>
+        <div><strong>{{ warningCount }}</strong><span>需关注节点</span></div>
+      </article>
+    </section>
+
+    <section class="monitor-toolbar">
+      <div class="filter-tabs" role="tablist" aria-label="节点状态筛选">
+        <button
+          v-for="item in filterOptions"
+          :key="item.value"
+          type="button"
+          :class="{ active: activeFilter === item.value }"
+          @click="activeFilter = item.value"
+        >
+          {{ item.label }} <span>{{ item.count }}</span>
+        </button>
+      </div>
+      <el-input v-model="keyword" class="node-search" clearable placeholder="搜索节点、CPU 或 GPU 型号">
+        <template #prefix><el-icon><Search /></el-icon></template>
+      </el-input>
+    </section>
+
+    <div v-if="loading && nodes.length === 0" class="skeleton-grid">
+      <el-skeleton v-for="i in 6" :key="i" animated class="node-skeleton" :rows="8" />
+    </div>
+
+    <section v-else-if="filteredNodes.length" class="node-grid">
+      <article
+        v-for="node in filteredNodes"
+        :key="node.node_id"
+        class="node-card"
+        :class="`state-${nodeState(node)}`"
+      >
+        <header class="node-head">
+          <div class="node-identity">
+            <span class="status-dot" />
+            <div>
+              <h2>{{ node.node_id }}</h2>
+              <span>{{ compactModel(node.gpu_model || node.cpu_model || "硬件信息待上报") }}</span>
+            </div>
+          </div>
+          <div class="node-head-tags">
+            <span class="state-chip">{{ nodeStateText(node) }}</span>
+            <span class="uptime-chip">{{ uptimeText(node.host_uptime_seconds) }}</span>
+          </div>
+        </header>
+
+        <div class="primary-metrics">
+          <div class="metric-panel cpu-panel">
+            <div class="metric-title"><span>CPU</span><strong>{{ metricPercent(node.host_cpu_percent, node.monitor_metrics_available) }}</strong></div>
+            <div class="progress-track"><span :class="barTone(node.host_cpu_percent)" :style="barWidth(node.host_cpu_percent)" /></div>
+            <div class="metric-foot">
+              <span>{{ node.cpu_count || "-" }} 核</span>
+              <span>负载 {{ loadText(node) }}</span>
+            </div>
+          </div>
+          <div class="metric-panel memory-panel">
+            <div class="metric-title"><span>内存</span><strong>{{ metricPercent(memoryPercent(node), node.monitor_metrics_available) }}</strong></div>
+            <div class="progress-track"><span :class="barTone(memoryPercent(node))" :style="barWidth(memoryPercent(node))" /></div>
+            <div class="metric-foot">
+              <span>{{ memoryUsageText(node) }}</span>
+              <span>Agent {{ formatMemory(node.agent_memory_mb) }}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="gpu-section">
+          <div class="section-label">
+            <span><el-icon><Cpu /></el-icon> GPU 状态</span>
+            <small>{{ gpuBusyOnNode(node) }}/{{ node.gpu_count || displayGPUs(node).length }} 活跃</small>
+          </div>
+          <div v-if="displayGPUs(node).length" class="gpu-grid">
+            <div
+              v-for="gpu in displayGPUs(node)"
+              :key="`${node.node_id}-${gpu.index}`"
+              class="gpu-tile"
+              :class="gpuState(gpu)"
+            >
+              <div class="gpu-head">
+                <strong>GPU {{ gpu.index }}</strong>
+                <span>{{ gpu.pending ? "待上报" : gpuStateText(gpu) }}</span>
+              </div>
+              <div class="gpu-model" :title="gpu.name || node.gpu_model">{{ compactModel(gpu.name || node.gpu_model || "GPU") }}</div>
+              <div class="gpu-row">
+                <span>核心</span><b>{{ gpu.pending ? "--" : `${round(gpu.utilization_percent)}%` }}</b>
+                <div class="mini-track"><i :class="barTone(gpu.utilization_percent)" :style="barWidth(gpu.utilization_percent)" /></div>
+              </div>
+              <div class="gpu-row">
+                <span>显存</span><b>{{ gpu.pending ? "--" : `${round(gpuMemoryPercent(gpu))}%` }}</b>
+                <div class="mini-track"><i :class="barTone(gpuMemoryPercent(gpu))" :style="barWidth(gpuMemoryPercent(gpu))" /></div>
+              </div>
+              <div class="gpu-meta">
+                <span>{{ gpu.pending ? "等待新 Agent" : `${formatMemory(gpu.memory_used_mb)} / ${formatMemory(gpu.memory_total_mb)}` }}</span>
+                <span v-if="!gpu.pending">{{ temperatureText(gpu) }} · {{ gpu.compute_processes || 0 }} 进程</span>
+              </div>
+            </div>
+          </div>
+          <div v-else class="no-gpu">该节点未配置 GPU</div>
+        </div>
+
+        <footer class="node-footer">
+          <span><i>硬盘</i>{{ diskText(node) }}</span>
+          <span><i>SSH</i>{{ node.ssh_active_count || 0 }}</span>
+          <span><i>进程</i>{{ (node.cpu_process_count || 0) + (node.gpu_process_count || 0) }}</span>
+          <span class="heartbeat"><i>心跳</i>{{ heartbeatText(node) }}</span>
+        </footer>
+      </article>
+    </section>
+
+    <el-empty v-else description="没有符合筛选条件的节点" />
+  </div>
+</template>
+
+<script setup lang="ts">
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { CircleCheck, Cpu, DataLine, Monitor, Refresh, Search, WarningFilled } from "@element-plus/icons-vue";
+import { ApiClient, type GPUDeviceStatus, type NodeMonitorStatus } from "../../lib/api";
+import { authState } from "../../lib/authStore";
+import { settingsState } from "../../lib/settingsStore";
+
+type FilterValue = "all" | "online" | "busy" | "warning" | "offline";
+type DisplayGPU = GPUDeviceStatus & { pending?: boolean };
+
+const AUTO_REFRESH_SECONDS = 15;
+const nodes = ref<NodeMonitorStatus[]>([]);
+const loading = ref(false);
+const error = ref("");
+const keyword = ref("");
+const activeFilter = ref<FilterValue>("all");
+const lastRefreshAt = ref(0);
+let refreshTimer: ReturnType<typeof setInterval> | null = null;
+
+function heartbeatTimeoutMs(node: NodeMonitorStatus): number {
+  return Math.max(5 * 60_000, Number(node.interval_seconds || 0) * 3_000);
+}
+
+function isOnline(node: NodeMonitorStatus): boolean {
+  const ts = Date.parse(String(node.last_seen_at || node.last_report_ts || ""));
+  return Number.isFinite(ts) && Date.now() - ts <= heartbeatTimeoutMs(node);
+}
+
+function memoryPercent(node: NodeMonitorStatus): number {
+  const total = Number(node.host_memory_total_mb || 0);
+  return total > 0 ? Number(node.host_memory_used_mb || 0) / total * 100 : 0;
+}
+
+function diskPercent(node: NodeMonitorStatus): number {
+  const total = Number(node.disk_total_gb || 0);
+  return total > 0 ? Number(node.disk_used_gb || 0) / total * 100 : 0;
+}
+
+function gpuMemoryPercent(gpu: DisplayGPU): number {
+  const total = Number(gpu.memory_total_mb || 0);
+  return total > 0 ? Number(gpu.memory_used_mb || 0) / total * 100 : 0;
+}
+
+function isGPUActive(gpu: DisplayGPU): boolean {
+  return !gpu.pending && (Number(gpu.utilization_percent || 0) >= 5 || Number(gpu.compute_processes || 0) > 0);
+}
+
+function hasWarning(node: NodeMonitorStatus): boolean {
+  if (!isOnline(node)) return false;
+  const unhealthyService = (node.system_services || []).some((item) => item.deployed && !item.healthy);
+  const hotGPU = (node.gpu_devices || []).some((gpu) => Number(gpu.temperature_c || 0) >= 85);
+  return unhealthyService || Number(node.host_cpu_percent || 0) >= 90 || memoryPercent(node) >= 90 || diskPercent(node) >= 90 || hotGPU;
+}
+
+function nodeState(node: NodeMonitorStatus): "online" | "warning" | "offline" | "pending" {
+  if (!isOnline(node)) return "offline";
+  if (hasWarning(node)) return "warning";
+  if (!node.monitor_metrics_available) return "pending";
+  return "online";
+}
+
+function nodeStateText(node: NodeMonitorStatus): string {
+  const state = nodeState(node);
+  if (state === "offline") return "离线";
+  if (state === "warning") return "需关注";
+  if (state === "pending") return "等待指标";
+  return "运行正常";
+}
+
+const onlineCount = computed(() => nodes.value.filter(isOnline).length);
+const warningCount = computed(() => nodes.value.filter(hasWarning).length);
+const totalGPUCount = computed(() => nodes.value.reduce((sum, node) => sum + Number(node.gpu_count || node.gpu_devices?.length || 0), 0));
+const busyGPUCount = computed(() => nodes.value.reduce((sum, node) => sum + (node.gpu_devices || []).filter(isGPUActive).length, 0));
+const averageCPUText = computed(() => {
+  const ready = nodes.value.filter((node) => isOnline(node) && node.monitor_metrics_available);
+  if (!ready.length) return "--";
+  const avg = ready.reduce((sum, node) => sum + Number(node.host_cpu_percent || 0), 0) / ready.length;
+  return `${avg.toFixed(1)}%`;
+});
+
+const filterOptions = computed(() => [
+  { value: "all" as FilterValue, label: "全部节点", count: nodes.value.length },
+  { value: "online" as FilterValue, label: "在线", count: onlineCount.value },
+  { value: "busy" as FilterValue, label: "GPU 活跃", count: nodes.value.filter((node) => (node.gpu_devices || []).some(isGPUActive)).length },
+  { value: "warning" as FilterValue, label: "需关注", count: warningCount.value },
+  { value: "offline" as FilterValue, label: "离线", count: nodes.value.length - onlineCount.value },
+]);
+
+const filteredNodes = computed(() => {
+  const q = keyword.value.trim().toLowerCase();
+  return [...nodes.value]
+    .filter((node) => {
+      if (activeFilter.value === "online" && !isOnline(node)) return false;
+      if (activeFilter.value === "offline" && isOnline(node)) return false;
+      if (activeFilter.value === "warning" && !hasWarning(node)) return false;
+      if (activeFilter.value === "busy" && !(node.gpu_devices || []).some(isGPUActive)) return false;
+      if (!q) return true;
+      const haystack = [node.node_id, node.cpu_model, node.gpu_model, node.node_ip, ...(node.gpu_devices || []).map((gpu) => gpu.name)].join(" ").toLowerCase();
+      return haystack.includes(q);
+    })
+    .sort((a, b) => {
+      const rank = (node: NodeMonitorStatus) => nodeState(node) === "warning" ? 0 : nodeState(node) === "online" ? 1 : nodeState(node) === "pending" ? 2 : 3;
+      return rank(a) - rank(b) || String(a.node_id).localeCompare(String(b.node_id), undefined, { numeric: true });
+    });
+});
+
+const lastRefreshText = computed(() => {
+  if (!lastRefreshAt.value) return "尚未刷新";
+  return new Date(lastRefreshAt.value).toLocaleTimeString("zh-CN", { hour12: false });
+});
+
+function displayGPUs(node: NodeMonitorStatus): DisplayGPU[] {
+  if (node.gpu_devices?.length) return node.gpu_devices;
+  return Array.from({ length: Number(node.gpu_count || 0) }, (_, index) => ({
+    index,
+    name: node.gpu_model,
+    utilization_percent: 0,
+    memory_used_mb: 0,
+    memory_total_mb: 0,
+    compute_processes: 0,
+    pending: true,
+  }));
+}
+
+function gpuBusyOnNode(node: NodeMonitorStatus): number {
+  return (node.gpu_devices || []).filter(isGPUActive).length;
+}
+
+function gpuState(gpu: DisplayGPU): string {
+  if (gpu.pending) return "gpu-pending";
+  if (Number(gpu.temperature_c || 0) >= 85) return "gpu-hot";
+  if (isGPUActive(gpu)) return "gpu-busy";
+  return "gpu-idle";
+}
+
+function gpuStateText(gpu: DisplayGPU): string {
+  if (Number(gpu.temperature_c || 0) >= 85) return "温度偏高";
+  return isGPUActive(gpu) ? "运行中" : "空闲";
+}
+
+function barTone(value: number): string {
+  if (Number(value || 0) >= 90) return "bar-danger";
+  if (Number(value || 0) >= 70) return "bar-warning";
+  return "bar-normal";
+}
+
+function barWidth(value: number): Record<string, string> {
+  return { width: `${Math.max(0, Math.min(100, Number(value || 0)))}%` };
+}
+
+function round(value: number): number {
+  return Math.round(Number(value || 0));
+}
+
+function metricPercent(value: number, available: boolean): string {
+  return available ? `${Number(value || 0).toFixed(1)}%` : "--";
+}
+
+function formatMemory(mb: number): string {
+  const value = Number(mb || 0);
+  if (!value) return "--";
+  if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} TiB`;
+  if (value >= 1024) return `${(value / 1024).toFixed(1)} GiB`;
+  return `${value.toFixed(value >= 100 ? 0 : 1)} MiB`;
+}
+
+function memoryUsageText(node: NodeMonitorStatus): string {
+  if (!node.monitor_metrics_available || !node.host_memory_total_mb) return "等待上报";
+  return `${formatMemory(node.host_memory_used_mb)} / ${formatMemory(node.host_memory_total_mb)}`;
+}
+
+function loadText(node: NodeMonitorStatus): string {
+  if (!node.monitor_metrics_available) return "--";
+  return `${Number(node.host_load_1 || 0).toFixed(2)} · ${Number(node.host_load_5 || 0).toFixed(2)} · ${Number(node.host_load_15 || 0).toFixed(2)}`;
+}
+
+function diskText(node: NodeMonitorStatus): string {
+  return node.disk_total_gb ? `${round(diskPercent(node))}%` : "--";
+}
+
+function uptimeText(seconds: number): string {
+  const value = Number(seconds || 0);
+  if (!value) return "运行时间 --";
+  const days = Math.floor(value / 86400);
+  if (days > 0) return `运行 ${days} 天`;
+  return `运行 ${Math.max(1, Math.floor(value / 3600))} 小时`;
+}
+
+function heartbeatText(node: NodeMonitorStatus): string {
+  const ts = Date.parse(String(node.last_seen_at || ""));
+  if (!Number.isFinite(ts)) return "--";
+  const seconds = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (seconds < 60) return `${seconds} 秒前`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分前`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小时前`;
+  return `${Math.floor(seconds / 86400)} 天前`;
+}
+
+function temperatureText(gpu: DisplayGPU): string {
+  const temp = Number(gpu.temperature_c || 0);
+  return temp > 0 ? `${round(temp)}℃` : "温度 --";
+}
+
+function compactModel(value: string): string {
+  const text = String(value || "").trim();
+  return text.length > 30 ? `${text.slice(0, 28)}…` : text;
+}
+
+async function loadMonitor(): Promise<void> {
+  if (loading.value) return;
+  loading.value = true;
+  error.value = "";
+  try {
+    const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
+    const result = await client.adminNodeMonitor(200);
+    nodes.value = result.nodes || [];
+    lastRefreshAt.value = Date.now();
+  } catch (e: any) {
+    error.value = e?.message ?? String(e);
+  } finally {
+    loading.value = false;
+  }
+}
+
+function startRefresh(): void {
+  refreshTimer = setInterval(() => {
+    if (!document.hidden) void loadMonitor();
+  }, AUTO_REFRESH_SECONDS * 1000);
+}
+
+onMounted(() => {
+  void loadMonitor();
+  startRefresh();
+});
+
+onBeforeUnmount(() => {
+  if (refreshTimer) clearInterval(refreshTimer);
+});
+</script>
+
+<style scoped>
+.monitor-page {
+  min-height: calc(100vh - 96px);
+  padding: 2px;
+  color: #102033;
+}
+
+.monitor-hero {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  overflow: hidden;
+  padding: 30px 34px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at 78% 20%, rgba(16, 185, 129, 0.17), transparent 28%),
+    radial-gradient(circle at 94% 100%, rgba(14, 165, 233, 0.18), transparent 34%),
+    linear-gradient(135deg, rgba(248, 252, 255, 0.97), rgba(231, 242, 249, 0.92));
+  box-shadow: 0 18px 46px rgba(30, 64, 92, 0.1);
+}
+
+.monitor-hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.35;
+  background-image:
+    linear-gradient(rgba(76, 112, 138, 0.1) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(76, 112, 138, 0.1) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: linear-gradient(90deg, transparent, #000 42%, #000);
+}
+
+.hero-copy, .hero-actions { position: relative; z-index: 1; }
+.eyebrow { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; color: #059669; font-size: 12px; font-weight: 800; letter-spacing: 0.16em; }
+.live-pulse { width: 9px; height: 9px; border-radius: 50%; background: #10b981; box-shadow: 0 0 0 6px rgba(16, 185, 129, 0.12); animation: breathe 1.8s ease-in-out infinite; }
+.hero-copy h1 { margin: 0; font-size: clamp(28px, 3vw, 40px); letter-spacing: -0.04em; }
+.hero-copy p { margin: 10px 0 0; color: #607086; font-size: 15px; }
+.hero-actions { display: flex; align-items: center; gap: 18px; }
+.refresh-meta { display: grid; gap: 4px; text-align: right; color: #7a899a; font-size: 12px; }
+.refresh-meta strong { color: #203248; font-size: 14px; }
+
+.monitor-error { margin-top: 16px; }
+.summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin: 18px 0; }
+.summary-card { display: flex; align-items: center; gap: 15px; min-height: 104px; padding: 18px 20px; border: 1px solid rgba(148, 163, 184, 0.25); border-radius: 18px; background: rgba(255,255,255,0.82); box-shadow: 0 12px 30px rgba(35, 57, 82, 0.07); backdrop-filter: blur(16px); }
+.summary-icon { display: grid; place-items: center; width: 48px; height: 48px; flex: 0 0 48px; border-radius: 15px; color: var(--tone); background: color-mix(in srgb, var(--tone) 12%, white); font-size: 23px; }
+.summary-card div { display: grid; gap: 3px; }
+.summary-card strong { color: #15263a; font-size: 27px; line-height: 1; }
+.summary-card strong small { margin-left: 4px; color: #8794a5; font-size: 14px; font-weight: 600; }
+.summary-card div span { color: #718096; font-size: 13px; }
+.tone-green { --tone: #10b981; } .tone-violet { --tone: #7c3aed; } .tone-blue { --tone: #0284c7; } .tone-amber { --tone: #f59e0b; } .tone-cyan { --tone: #0891b2; }
+
+.monitor-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 18px 0; padding: 10px; border: 1px solid rgba(148,163,184,.25); border-radius: 16px; background: rgba(255,255,255,.7); }
+.filter-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.filter-tabs button { appearance: none; padding: 9px 13px; border: 0; border-radius: 11px; color: #526277; background: transparent; cursor: pointer; font: inherit; font-size: 13px; font-weight: 650; transition: .2s ease; }
+.filter-tabs button span { display: inline-grid; place-items: center; min-width: 21px; height: 21px; margin-left: 4px; padding: 0 6px; border-radius: 999px; background: rgba(100,116,139,.1); font-size: 11px; }
+.filter-tabs button:hover { background: rgba(14,165,233,.08); color: #0369a1; }
+.filter-tabs button.active { color: #047857; background: rgba(16,185,129,.12); }
+.node-search { width: min(330px, 100%); }
+
+.node-grid, .skeleton-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(390px, 1fr)); align-items: start; gap: 18px; }
+.node-skeleton { min-height: 460px; padding: 24px; border-radius: 20px; background: #fff; }
+.node-card { --state: #10b981; position: relative; overflow: hidden; padding: 20px; border: 1px solid rgba(148,163,184,.28); border-top: 3px solid var(--state); border-radius: 21px; background: linear-gradient(155deg, rgba(255,255,255,.96), rgba(244,248,252,.92)); box-shadow: 0 15px 35px rgba(40,61,84,.09); transition: transform .2s ease, box-shadow .2s ease; }
+.node-card:hover { transform: translateY(-3px); box-shadow: 0 20px 42px rgba(35,58,82,.14); }
+.node-card.state-warning { --state: #f59e0b; } .node-card.state-offline { --state: #94a3b8; filter: saturate(.72); } .node-card.state-pending { --state: #3b82f6; }
+.node-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.node-identity { display: flex; align-items: flex-start; gap: 11px; min-width: 0; }
+.status-dot { width: 11px; height: 11px; margin-top: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--state); box-shadow: 0 0 0 5px color-mix(in srgb, var(--state) 13%, transparent); }
+.node-identity h2 { margin: 0; font-size: 19px; letter-spacing: -.02em; }
+.node-identity div > span { display: block; max-width: 250px; margin-top: 4px; overflow: hidden; color: #7a8899; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.node-head-tags { display: flex; align-items: flex-end; gap: 5px; flex-direction: column; }
+.state-chip, .uptime-chip { padding: 5px 9px; border-radius: 999px; color: color-mix(in srgb, var(--state) 80%, #1e293b); background: color-mix(in srgb, var(--state) 10%, white); font-size: 11px; font-weight: 700; white-space: nowrap; }
+.uptime-chip { color: #64748b; background: #eef2f6; font-weight: 500; }
+
+.primary-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 19px 0 17px; padding: 16px; border-radius: 16px; background: rgba(232,239,245,.7); }
+.metric-panel { min-width: 0; }
+.metric-title { display: flex; align-items: center; justify-content: space-between; color: #46566a; font-size: 13px; }
+.metric-title strong { color: #17283c; font-size: 18px; }
+.progress-track, .mini-track { overflow: hidden; height: 6px; margin: 8px 0; border-radius: 999px; background: rgba(148,163,184,.2); }
+.progress-track span, .mini-track i { display: block; height: 100%; border-radius: inherit; transition: width .45s ease; }
+.bar-normal { background: linear-gradient(90deg, #10b981, #34d399); } .bar-warning { background: linear-gradient(90deg, #f59e0b, #fbbf24); } .bar-danger { background: linear-gradient(90deg, #ef4444, #fb7185); }
+.metric-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #718095; font-size: 10px; white-space: nowrap; }
+
+.gpu-section { padding-top: 2px; }
+.section-label { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.section-label > span { display: flex; align-items: center; gap: 7px; color: #33465c; font-size: 13px; font-weight: 800; }
+.section-label small { color: #7d8b9d; }
+.gpu-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; max-height: 335px; padding-right: 3px; overflow-y: auto; scrollbar-width: thin; }
+.gpu-tile { --gpu-tone: #10b981; min-width: 0; padding: 12px; border: 1px solid color-mix(in srgb, var(--gpu-tone) 20%, #dbe4ec); border-radius: 14px; background: color-mix(in srgb, var(--gpu-tone) 4%, white); }
+.gpu-tile.gpu-busy { --gpu-tone: #8b5cf6; } .gpu-tile.gpu-hot { --gpu-tone: #ef4444; } .gpu-tile.gpu-pending { --gpu-tone: #94a3b8; }
+.gpu-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.gpu-head strong { color: #25384e; font-size: 13px; }
+.gpu-head span { color: var(--gpu-tone); font-size: 10px; font-weight: 750; }
+.gpu-model { margin: 3px 0 10px; overflow: hidden; color: #8793a3; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.gpu-row { display: grid; grid-template-columns: 30px 34px 1fr; align-items: center; gap: 5px; color: #6a7a8e; font-size: 10px; }
+.gpu-row b { color: #304359; font-size: 10px; text-align: right; }
+.mini-track { height: 4px; margin: 4px 0; }
+.gpu-meta { display: flex; align-items: center; justify-content: space-between; gap: 5px; margin-top: 6px; color: #6d7d90; font-size: 9px; }
+.no-gpu { display: grid; place-items: center; min-height: 84px; border: 1px dashed #cbd5e1; border-radius: 14px; color: #94a3b8; font-size: 12px; }
+
+.node-footer { display: grid; grid-template-columns: repeat(4, auto); align-items: center; gap: 10px; margin-top: 16px; padding-top: 14px; border-top: 1px solid #e2e8f0; color: #34475d; font-size: 11px; }
+.node-footer span { display: flex; gap: 4px; white-space: nowrap; }
+.node-footer i { color: #8a98a9; font-style: normal; }
+.node-footer .heartbeat { justify-self: end; }
+
+@keyframes breathe { 50% { box-shadow: 0 0 0 9px rgba(16,185,129,.04); } }
+
+@media (max-width: 1150px) {
+  .summary-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 760px) {
+  .monitor-hero, .monitor-toolbar { align-items: stretch; flex-direction: column; }
+  .monitor-hero { padding: 24px 20px; }
+  .hero-actions { justify-content: space-between; }
+  .summary-grid { grid-template-columns: 1fr 1fr; }
+  .summary-card { min-height: 86px; padding: 14px; }
+  .node-grid, .skeleton-grid { grid-template-columns: minmax(0, 1fr); }
+  .node-search { width: 100%; }
+}
+
+@media (max-width: 500px) {
+  .summary-grid, .primary-metrics, .gpu-grid { grid-template-columns: 1fr; }
+  .summary-grid { gap: 9px; }
+  .summary-card { min-height: 76px; }
+  .node-card { padding: 16px; }
+  .node-footer { grid-template-columns: repeat(2, 1fr); }
+  .node-footer .heartbeat { justify-self: start; }
+  .refresh-meta { display: none; }
+}
+</style>

@@ -9,8 +9,18 @@ type MetricsData struct {
 	IntervalSeconds         int                       `json:"interval_seconds,omitempty"`
 	CPUModel                string                    `json:"cpu_model,omitempty"`
 	CPUCount                int                       `json:"cpu_count,omitempty"`
+	HostCPUPercent          float64                   `json:"host_cpu_percent,omitempty"`
+	HostMemoryTotalMB       float64                   `json:"host_memory_total_mb,omitempty"`
+	HostMemoryUsedMB        float64                   `json:"host_memory_used_mb,omitempty"`
+	HostLoad1               float64                   `json:"host_load_1,omitempty"`
+	HostLoad5               float64                   `json:"host_load_5,omitempty"`
+	HostLoad15              float64                   `json:"host_load_15,omitempty"`
+	HostUptimeSeconds       uint64                    `json:"host_uptime_seconds,omitempty"`
+	AgentMemoryMB           float64                   `json:"agent_memory_mb,omitempty"`
+	MonitorMetricsAvailable bool                      `json:"monitor_metrics_available,omitempty"`
 	GPUModel                string                    `json:"gpu_model,omitempty"`
 	GPUCount                int                       `json:"gpu_count,omitempty"`
+	GPUDevices              []GPUDeviceStatus         `json:"gpu_devices,omitempty"`
 	DiskTotalGB             float64                   `json:"disk_total_gb,omitempty"`
 	DiskUsedGB              float64                   `json:"disk_used_gb,omitempty"`
 	HomeTotalGB             float64                   `json:"home_total_gb,omitempty"`
@@ -71,6 +81,21 @@ type GPUUsage struct {
 	GPUModel string  `json:"gpu_model"`
 	GPUBusID string  `json:"gpu_bus_id"`
 	MemoryMB float64 `json:"memory_mb"`
+}
+
+// GPUDeviceStatus 为单张 GPU 的实时运行状态，用于总监控看板。
+type GPUDeviceStatus struct {
+	Index            int32   `json:"index"`
+	UUID             string  `json:"uuid,omitempty"`
+	Name             string  `json:"name,omitempty"`
+	BusID            string  `json:"bus_id,omitempty"`
+	UtilizationPct   float64 `json:"utilization_percent"`
+	MemoryUsedMB     float64 `json:"memory_used_mb"`
+	MemoryTotalMB    float64 `json:"memory_total_mb"`
+	TemperatureC     float64 `json:"temperature_c,omitempty"`
+	PowerDrawW       float64 `json:"power_draw_w,omitempty"`
+	PowerLimitW      float64 `json:"power_limit_w,omitempty"`
+	ComputeProcesses int     `json:"compute_processes"`
 }
 
 type ControllerResponse struct {

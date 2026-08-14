@@ -1184,6 +1184,7 @@ func (s *Server) RouterWeb() *gin.Engine {
 	admin.POST("/usage/retention", s.requireSuperAdmin(), s.handleAdminUsageRetentionSet)
 	admin.POST("/usage/delete-range", s.requireSuperAdmin(), s.handleAdminUsageDeleteRange)
 	admin.GET("/nodes", s.requireNodesPermission(), s.handleAdminNodes)
+	admin.GET("/node-monitor", s.requireNodesPermission(), s.handleAdminNodeMonitor)
 	admin.GET("/nodes/:id/detail", s.requireNodesPermission(), s.handleAdminNodeDetail)
 	admin.GET("/nodes/:id/security-events", s.requireNodesPermission(), s.handleAdminNodeSecurityEvents)
 	admin.POST("/nodes/:id/ssh-guard", s.requireNodesModifyPermission(), s.handleAdminNodeSSHGuardSet)
@@ -10545,6 +10546,9 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 			data.SystemServices,
 			round4(costTotal),
 		); err != nil {
+			return err
+		}
+		if err := s.store.UpsertNodeMonitorStatusTx(ctx, tx, data, reportTS); err != nil {
 			return err
 		}
 		previousLocalUsers, err := s.store.ListNodeLocalUsernamesByNodeTx(ctx, tx, data.NodeID, 100000)

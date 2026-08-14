@@ -187,14 +187,14 @@ func detectPortScan(ctx context.Context) (bool, []string, []int) {
 	if err != nil || len(out) == 0 {
 		return false, nil, nil
 	}
-	suspiciousStates := map[string]struct{}{
-		"SYN-RECV": {},
-		"SYN-SENT": {},
-	}
+	return detectPortScanFromSSOutput(string(out))
+}
+
+func detectPortScanFromSSOutput(output string) (bool, []string, []int) {
 	portsBySource := map[string]map[int]struct{}{}
 	connsBySource := map[string]int{}
 
-	for _, ln := range strings.Split(string(out), "\n") {
+	for _, ln := range strings.Split(output, "\n") {
 		line := strings.TrimSpace(ln)
 		if line == "" {
 			continue
@@ -204,7 +204,10 @@ func detectPortScan(ctx context.Context) (bool, []string, []int) {
 			continue
 		}
 		state := strings.ToUpper(strings.TrimSpace(fields[0]))
-		if _, ok := suspiciousStates[state]; !ok {
+		// SYN-RECV 才表示对端正在主动连接本机。SYN-SENT 是本机主动向外连接，
+		// 若把它也纳入统计，会把对端服务误报为“扫描来源”，并把本机随机
+		// 临时端口误报为“目标端口”。
+		if state != "SYN-RECV" {
 			continue
 		}
 		local := strings.TrimSpace(fields[len(fields)-2])
