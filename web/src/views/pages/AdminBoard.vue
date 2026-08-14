@@ -861,8 +861,6 @@ watch(
     radial-gradient(500px 180px at 92% -20%, rgba(37, 99, 235, .2), transparent 70%),
     linear-gradient(135deg, rgba(255,255,255,.7), rgba(244,248,255,.42));
   box-shadow: var(--glass-shadow);
-  backdrop-filter: blur(20px) saturate(155%);
-  -webkit-backdrop-filter: blur(20px) saturate(155%);
 }
 .hero-copy { min-width: 0; }
 .eyebrow { display: block; margin-bottom: 9px; color: #2563eb; font-size: 11px; font-weight: 800; letter-spacing: .13em; }
@@ -880,7 +878,7 @@ watch(
 .quick-ranges { display: flex; align-items: center; justify-content: flex-end; gap: 3px; flex-wrap: wrap; color: #94a3b8; font-size: 12px; }
 .range-meta { margin-top: 8px; color: #94a3b8; font-size: 12px; }
 .metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; min-height: 126px; }
-.metric-card { position: relative; min-width: 0; padding: 20px; overflow: hidden; border: 1px solid var(--glass-border); border-radius: 18px; background: linear-gradient(145deg, rgba(255,255,255,.68), rgba(255,255,255,.34)); box-shadow: 0 13px 34px rgba(45,71,112,.1), inset 0 1px 0 rgba(255,255,255,.9); backdrop-filter: blur(14px) saturate(145%); -webkit-backdrop-filter: blur(14px) saturate(145%); }
+.metric-card { position: relative; min-width: 0; padding: 20px; overflow: hidden; border: 1px solid var(--glass-border); border-radius: 18px; background: linear-gradient(145deg, rgba(255,255,255,.76), rgba(255,255,255,.52)); box-shadow: 0 13px 34px rgba(45,71,112,.1), inset 0 1px 0 rgba(255,255,255,.9); }
 .metric-card::after { content: ""; position: absolute; right: -24px; top: -30px; width: 100px; height: 100px; border-radius: 999px; opacity: .12; background: currentColor; }
 .metric-label { display: block; color: #64748b; font-size: 13px; font-weight: 650; }
 .metric-card strong { display: block; margin-top: 13px; color: #0f172a; font-size: clamp(23px, 2vw, 30px); line-height: 1; letter-spacing: -.04em; white-space: nowrap; }

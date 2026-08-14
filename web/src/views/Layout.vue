@@ -687,9 +687,7 @@ onBeforeUnmount(() => {
   gap: 12px;
   padding: 10px 22px;
   border-bottom: 1px solid rgba(255, 255, 255, .7);
-  background: rgba(255, 255, 255, .52);
-  backdrop-filter: blur(20px) saturate(155%);
-  -webkit-backdrop-filter: blur(20px) saturate(155%);
+  background: rgba(255, 255, 255, .94);
   box-shadow: 0 4px 18px rgba(15, 23, 42, .045), inset 0 -1px 0 rgba(148, 163, 184, .08);
 }
 .header-left {
@@ -777,7 +775,6 @@ onBeforeUnmount(() => {
   inset: 0;
   z-index: 1100;
   background: rgba(15, 23, 42, 0.45);
-  backdrop-filter: blur(1px);
 }
 .mobile-menu-toggle {
   color: #0f172a;
