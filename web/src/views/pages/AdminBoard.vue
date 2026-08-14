@@ -13,8 +13,8 @@
       </div>
       <div class="head-actions ops-hero-actions">
         <span v-if="lastSyncedAt" class="sync-time">更新于 {{ lastSyncedAt }}</span>
-        <el-button v-if="authState.role === 'admin'" plain @click="toggleRetention">
-          <el-icon><Delete /></el-icon>{{ retentionExpanded ? "收起数据工具" : "数据工具" }}
+        <el-button v-if="authState.role === 'admin'" plain @click="openRetentionTools">
+          <el-icon><Delete /></el-icon>数据工具
         </el-button>
         <el-button v-if="authState.role === 'admin'" plain :loading="exporting" @click="exportRangeCSV">导出 CSV</el-button>
         <el-button type="primary" :loading="loading" @click="loadAll">同步数据</el-button>
@@ -82,13 +82,8 @@
       </article>
     </div>
 
-    <el-card v-if="authState.role === 'admin' && retentionExpanded" class="section-card tool-card" v-loading="retentionLoading">
-      <template #header>
-        <div class="section-title-wrap">
-          <span class="section-icon tone-retention"><el-icon><Delete /></el-icon></span>
-          <span>数据留存与删除</span>
-        </div>
-      </template>
+    <el-drawer v-if="authState.role === 'admin'" v-model="retentionVisible" title="数据留存与删除" size="760px" destroy-on-close class="glass-drawer">
+      <div v-loading="retentionLoading" class="retention-drawer-content">
       <el-form inline>
         <el-form-item label="自动删除保留天数">
           <el-input-number v-model="retentionDaysDraft" :min="0" :max="3650" :step="1" :precision="0" />
@@ -144,7 +139,8 @@
         show-icon
         :title="`删除估算：${deleteRangeEstimate.records} 条，CSV约 ${bytesText(deleteRangeEstimate.estimated_csv_bytes)}，数据库约 ${bytesText(deleteRangeEstimate.estimated_db_bytes)}`"
       />
-    </el-card>
+      </div>
+    </el-drawer>
 
     <el-card class="board-card section-card">
       <template #header>
@@ -342,7 +338,7 @@ let loadAllSeq = 0;
 const appliedFromDate = ref(fromDate.value);
 const appliedToDate = ref(toDate.value);
 const lastSyncedAt = ref("");
-const retentionExpanded = ref(false);
+const retentionVisible = ref(false);
 const retentionLoading = ref(false);
 const monthlyRequested = ref(false);
 const nodeLoading = ref(false);
@@ -662,9 +658,9 @@ async function refreshUsageDayStats(client?: ApiClient, force = false) {
   availableUsageDaysLoaded.value = true;
 }
 
-async function toggleRetention() {
-  retentionExpanded.value = !retentionExpanded.value;
-  if (!retentionExpanded.value || authState.role !== "admin") return;
+async function openRetentionTools() {
+  if (authState.role !== "admin") return;
+  retentionVisible.value = true;
   retentionLoading.value = true;
   error.value = "";
   try {
@@ -859,12 +855,14 @@ watch(
   gap: 24px;
   padding: 24px 26px;
   overflow: hidden;
-  border: 1px solid #dce6f2;
+  border: 1px solid var(--glass-border);
   border-radius: 20px;
   background:
-    radial-gradient(500px 180px at 92% -20%, rgba(37, 99, 235, .14), transparent 70%),
-    linear-gradient(135deg, #fff 0%, #f7faff 100%);
-  box-shadow: 0 12px 30px rgba(15, 23, 42, .07);
+    radial-gradient(500px 180px at 92% -20%, rgba(37, 99, 235, .2), transparent 70%),
+    linear-gradient(135deg, rgba(255,255,255,.7), rgba(244,248,255,.42));
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: blur(20px) saturate(155%);
+  -webkit-backdrop-filter: blur(20px) saturate(155%);
 }
 .hero-copy { min-width: 0; }
 .eyebrow { display: block; margin-bottom: 9px; color: #2563eb; font-size: 11px; font-weight: 800; letter-spacing: .13em; }
@@ -882,7 +880,7 @@ watch(
 .quick-ranges { display: flex; align-items: center; justify-content: flex-end; gap: 3px; flex-wrap: wrap; color: #94a3b8; font-size: 12px; }
 .range-meta { margin-top: 8px; color: #94a3b8; font-size: 12px; }
 .metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; min-height: 126px; }
-.metric-card { position: relative; min-width: 0; padding: 20px; overflow: hidden; border: 1px solid #e2e8f0; border-radius: 18px; background: #fff; box-shadow: 0 8px 22px rgba(15, 23, 42, .055); }
+.metric-card { position: relative; min-width: 0; padding: 20px; overflow: hidden; border: 1px solid var(--glass-border); border-radius: 18px; background: linear-gradient(145deg, rgba(255,255,255,.68), rgba(255,255,255,.34)); box-shadow: 0 13px 34px rgba(45,71,112,.1), inset 0 1px 0 rgba(255,255,255,.9); backdrop-filter: blur(14px) saturate(145%); -webkit-backdrop-filter: blur(14px) saturate(145%); }
 .metric-card::after { content: ""; position: absolute; right: -24px; top: -30px; width: 100px; height: 100px; border-radius: 999px; opacity: .12; background: currentColor; }
 .metric-label { display: block; color: #64748b; font-size: 13px; font-weight: 650; }
 .metric-card strong { display: block; margin-top: 13px; color: #0f172a; font-size: clamp(23px, 2vw, 30px); line-height: 1; letter-spacing: -.04em; white-space: nowrap; }

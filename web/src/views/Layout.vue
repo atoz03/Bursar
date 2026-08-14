@@ -577,7 +577,7 @@ onBeforeUnmount(() => {
 .shell {
   position: relative;
   min-height: 100vh;
-  background: #f4f7fb;
+  background: transparent;
 }
 .aside {
   position: sticky;
@@ -686,10 +686,11 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 12px;
   padding: 10px 22px;
-  border-bottom: 1px solid rgba(203, 213, 225, .72);
-  background: rgba(255, 255, 255, .88);
-  backdrop-filter: blur(16px);
-  box-shadow: 0 4px 18px rgba(15, 23, 42, .045);
+  border-bottom: 1px solid rgba(255, 255, 255, .7);
+  background: rgba(255, 255, 255, .52);
+  backdrop-filter: blur(20px) saturate(155%);
+  -webkit-backdrop-filter: blur(20px) saturate(155%);
+  box-shadow: 0 4px 18px rgba(15, 23, 42, .045), inset 0 -1px 0 rgba(148, 163, 184, .08);
 }
 .header-left {
   display: flex;

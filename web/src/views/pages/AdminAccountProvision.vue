@@ -1,21 +1,24 @@
 <template>
   <div class="admin-account-provision-page">
-    <el-card class="section-card overview-card">
-      <template #header>
-        <div class="head">
-          <div class="section-title-wrap">
-            <span class="section-icon tone-provision"><el-icon><Key /></el-icon></span>
-            <span>账号开通</span>
-          </div>
-          <div class="head-actions">
-            <el-button @click="toggleProvisionHistory">{{ showProvisionHistory ? "收起历史" : "开通历史" }}</el-button>
-            <el-button :loading="pageLoading" @click="reloadAll">刷新</el-button>
+    <section class="ops-page-hero">
+      <div class="ops-hero-copy">
+        <span class="ops-eyebrow">ACCOUNT PROVISIONING</span>
+        <div class="ops-title-row">
+          <span class="ops-hero-icon"><el-icon><Key /></el-icon></span>
+          <div>
+            <h1>账号开通</h1>
+            <p>处理节点账号申请、密钥下发和开通结果。</p>
           </div>
         </div>
-      </template>
-      <el-alert v-if="error" :title="error" type="error" show-icon class="mb" />
-      <el-alert v-if="success" :title="success" type="success" show-icon class="mb" />
-    </el-card>
+      </div>
+      <div class="ops-hero-actions">
+        <el-button @click="openProvisionHistory">开通历史</el-button>
+        <el-button :loading="pageLoading" type="primary" @click="reloadAll">刷新数据</el-button>
+      </div>
+    </section>
+
+    <el-alert v-if="error" :title="error" type="error" show-icon />
+    <el-alert v-if="success" :title="success" type="success" show-icon />
 
     <el-card class="section-card provision-card">
       <template #header>
@@ -296,15 +299,12 @@
       </el-table>
     </el-card>
 
-    <el-card v-if="showProvisionHistory" class="section-card provision-history-card">
-      <template #header>
-        <div class="head-actions section-title-wrap provision-history-head">
-          <span class="section-icon tone-history"><el-icon><Clock /></el-icon></span>
-          <span>节点账号开通历史</span>
-          <el-button size="small" :loading="provisionLogsLoading" @click="reloadProvisionLogs">刷新历史</el-button>
-        </div>
-      </template>
-      <el-table :data="provisionLogs" stripe size="small" max-height="320">
+    <el-drawer v-model="provisionHistoryVisible" title="开通历史" size="72%" destroy-on-close class="glass-drawer">
+      <div class="drawer-toolbar">
+        <span class="mini">仅在打开时加载，不影响开通页面速度。</span>
+        <el-button size="small" :loading="provisionLogsLoading" @click="reloadProvisionLogs">刷新</el-button>
+      </div>
+      <el-table v-loading="provisionLogsLoading" :data="provisionLogs" stripe size="small" max-height="calc(100vh - 170px)" empty-text="暂无开通记录">
         <el-table-column label="开通时间" min-width="172" align="left" header-align="left">
           <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
         </el-table-column>
@@ -320,7 +320,7 @@
         </el-table-column>
         <el-table-column prop="mail_error" label="失败原因" min-width="220" align="left" header-align="left" />
       </el-table>
-    </el-card>
+    </el-drawer>
 
     <el-dialog v-model="openRejectHistoryVisible" title="开通申请驳回历史" width="1050px" destroy-on-close>
       <div class="head-actions mb">
@@ -424,10 +424,10 @@ import { authState } from "../../lib/authStore";
 import { formatServerDateTime, toServerEpochMs } from "../../lib/time";
 import { writeClipboardText } from "../../lib/clipboard";
 import PlatformUserDetailDialog from "../../components/PlatformUserDetailDialog.vue";
-import { Clock, Document, Key, Monitor, UserFilled } from "@element-plus/icons-vue";
+import { Document, Key, Monitor, UserFilled } from "@element-plus/icons-vue";
 
 const pageLoading = ref(false);
-const showProvisionHistory = ref(false);
+const provisionHistoryVisible = ref(false);
 const provisionHistoryLoaded = ref(false);
 const provisioning = ref(false);
 const error = ref("");
@@ -834,9 +834,9 @@ async function reloadProvisionLogs() {
   }
 }
 
-async function toggleProvisionHistory() {
-  showProvisionHistory.value = !showProvisionHistory.value;
-  if (showProvisionHistory.value && !provisionHistoryLoaded.value) {
+async function openProvisionHistory() {
+  provisionHistoryVisible.value = true;
+  if (!provisionHistoryLoaded.value) {
     await reloadProvisionLogs();
   }
 }
@@ -1170,9 +1170,7 @@ async function reloadAll() {
   pageLoading.value = true;
   error.value = "";
   try {
-    const tasks = [loadPlatformUsers(), loadNodeOptions(), reloadOpenRequests()];
-    if (showProvisionHistory.value) tasks.push(reloadProvisionLogs());
-    await Promise.all(tasks);
+    await Promise.all([loadPlatformUsers(), loadNodeOptions(), reloadOpenRequests()]);
   } catch (e: any) {
     error.value = e?.message ?? String(e);
   } finally {
@@ -1217,9 +1215,7 @@ reloadAll();
   font-weight: 600;
 }
 
-.provision-history-head {
-  justify-content: flex-start;
-}
+.drawer-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
 
 .section-icon {
   display: inline-flex;

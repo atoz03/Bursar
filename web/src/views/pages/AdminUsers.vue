@@ -78,6 +78,18 @@
             </div>
           </template>
         </el-table-column>
+        <el-table-column prop="total_balance" label="总积分" width="118" sortable="custom">
+          <template #default="{ row }">{{ fmt2(row.total_balance ?? ((row.balance ?? 0) + (row.carryover_balance ?? 0) + (row.exclusive_balance ?? 0))) }}</template>
+        </el-table-column>
+        <el-table-column prop="balance" label="通用积分" width="118" sortable="custom">
+          <template #default="{ row }">{{ fmt2(row.balance) }}</template>
+        </el-table-column>
+        <el-table-column prop="carryover_balance" label="结转积分" width="118" sortable="custom">
+          <template #default="{ row }">{{ fmt2(row.carryover_balance ?? 0) }}</template>
+        </el-table-column>
+        <el-table-column prop="exclusive_balance" label="专属积分" width="118" sortable="custom">
+          <template #default="{ row }">{{ fmt2(row.exclusive_balance ?? 0) }}</template>
+        </el-table-column>
         <el-table-column prop="username" label="平台账号" width="160" sortable="custom">
           <template #default="{ row }">
             <span class="username-cell">
@@ -108,9 +120,6 @@
         <el-table-column prop="email" label="邮箱" min-width="220" sortable="custom" />
         <el-table-column prop="expected_graduation_year" label="预计毕业" width="120" sortable="custom">
           <template #default="{ row }">{{ fmtGrad(row.expected_graduation_year, row.expected_graduation_month) }}</template>
-        </el-table-column>
-        <el-table-column prop="balance" label="积分余额" width="120" sortable="custom">
-          <template #default="{ row }">{{ fmt2(row.balance) }}</template>
         </el-table-column>
         <el-table-column prop="status" label="状态" width="100" sortable="custom">
           <template #default="{ row }">{{ effectiveStatus(row) }}</template>
@@ -403,7 +412,7 @@ const exemptionSet = ref<Set<string>>(new Set());
 const keyword = ref("");
 type UserKeywordField = "all" | "username" | "platform_uid" | "real_name" | "student_id" | "advisor" | "email" | "phone" | "role" | "status";
 type UserSortOrder = "ascending" | "descending" | null;
-type UserSortKey = "username" | "platform_uid" | "real_name" | "role" | "two_factor_enabled" | "student_id" | "email" | "expected_graduation_year" | "balance" | "status" | "created_at";
+type UserSortKey = "username" | "platform_uid" | "real_name" | "role" | "two_factor_enabled" | "student_id" | "email" | "expected_graduation_year" | "total_balance" | "balance" | "carryover_balance" | "exclusive_balance" | "status" | "created_at";
 const keywordField = ref<UserKeywordField>("all");
 const userSortKey = ref<UserSortKey | "">("");
 const userSortOrder = ref<UserSortOrder>(null);
@@ -540,7 +549,8 @@ function adminUserSortValue(row: AdminUserDetail, key: UserSortKey): number | st
     const month = Number(row.expected_graduation_month ?? 0);
     return year * 100 + month;
   }
-  if (key === "balance") return Number(row.balance ?? 0);
+  if (key === "total_balance") return Number(row.total_balance ?? ((row.balance ?? 0) + (row.carryover_balance ?? 0) + (row.exclusive_balance ?? 0)));
+  if (key === "balance" || key === "carryover_balance" || key === "exclusive_balance") return Number(row[key] ?? 0);
   if (key === "status") return effectiveStatus(row);
   return String((row as any)?.[key] ?? "").trim();
 }
