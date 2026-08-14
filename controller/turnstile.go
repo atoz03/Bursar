@@ -50,6 +50,12 @@ func (s *Server) verifyTurnstile(ctx context.Context, token string, expectedActi
 		return fmt.Errorf("%w: %v", errAuthCaptchaUnavailable, err)
 	}
 	if !result.Success {
+		for _, code := range result.ErrorCodes {
+			switch strings.TrimSpace(code) {
+			case "missing-input-secret", "invalid-input-secret", "internal-error":
+				return fmt.Errorf("%w: %s", errAuthCaptchaUnavailable, strings.Join(result.ErrorCodes, ","))
+			}
+		}
 		return fmt.Errorf("%w: %s", errRegisterCaptchaInvalid, strings.Join(result.ErrorCodes, ","))
 	}
 	if strings.TrimSpace(expectedAction) != "" && strings.TrimSpace(result.Action) != strings.TrimSpace(expectedAction) {

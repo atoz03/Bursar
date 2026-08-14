@@ -60,4 +60,13 @@ func TestVerifyTurnstile(t *testing.T) {
 			t.Fatalf("error=%v, want captcha unavailable", err)
 		}
 	})
+
+	t.Run("reports an invalid secret as unavailable", func(t *testing.T) {
+		s, closeServer := newTurnstileTestServer(t, `{"success":false,"error-codes":["invalid-input-secret"]}`, http.StatusOK)
+		defer closeServer()
+		err := s.verifyTurnstile(context.Background(), "test-token", "login")
+		if !errors.Is(err, errAuthCaptchaUnavailable) {
+			t.Fatalf("error=%v, want captcha unavailable", err)
+		}
+	})
 }
