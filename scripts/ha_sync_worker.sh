@@ -195,7 +195,7 @@ sync_p2s_binary() {
     die_step "sync_binary" "安装容灾控制器二进制失败，请检查远端 HA helper"
   fi
   local_sha="$(sha256sum "${LOCAL_BIN}" | awk '{print $1}')"
-  remote_sha="$(ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "sha256sum '${REMOTE_BIN}' | awk '{print \\\$1}'" | xargs)"
+  remote_sha="$(ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "sha256sum '${REMOTE_BIN}'" | awk '{print $1}' | xargs)"
   [[ "${local_sha}" == "${remote_sha}" ]] || die_step "sync_binary" "二进制哈希不一致 local=${local_sha} remote=${remote_sha}"
   step_result "sync_binary" "ok" "主->备二进制同步完成 sha256=${local_sha}"
 }
@@ -261,7 +261,7 @@ sync_s2p_binary() {
   if ! ${SUDO_LOCAL} install -m 0755 "${tmp_local}" "${LOCAL_BIN}"; then
     die_step "sync_binary" "安装本机控制器二进制失败"
   fi
-  remote_sha="$(ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "sha256sum '${REMOTE_BIN}' | awk '{print \\\$1}'" | xargs)"
+  remote_sha="$(ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "sha256sum '${REMOTE_BIN}'" | awk '{print $1}' | xargs)"
   local_sha="$(sha256sum "${LOCAL_BIN}" | awk '{print $1}')"
   [[ "${local_sha}" == "${remote_sha}" ]] || die_step "sync_binary" "二进制哈希不一致 local=${local_sha} remote=${remote_sha}"
   rm -f "${tmp_local}" || true
