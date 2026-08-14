@@ -349,30 +349,29 @@ process_one() {
     return 0
   fi
 
-  chmod 600 "${key_path}" || true
-  local key_use_path="${key_path}"
-  if ! head -n 1 "${key_path}" | grep -q "BEGIN OPENSSH PRIVATE KEY"; then
-    key_use_path="$(mktemp)"
-    awk '
-      /-----BEGIN OPENSSH PRIVATE KEY-----/ {in_key=1}
-      in_key {print}
-      /-----END OPENSSH PRIVATE KEY-----/ {if (in_key) exit}
-    ' "${key_path}" > "${key_use_path}"
-    if ! grep -q "BEGIN OPENSSH PRIVATE KEY" "${key_use_path}" || ! grep -q "END OPENSSH PRIVATE KEY" "${key_use_path}"; then
-      rm -f "${key_use_path}"
-      end_ts="$(date '+%F %T')"
-      write_result "${node_id}" "SKIPPED" "${start_ts}" "${end_ts}" "${ip}" "${user}" "未找到有效私钥块" "${result_file}"
-      return 0
-    fi
-    chmod 600 "${key_use_path}" || true
+  # 不修改共享目录中的原始密钥权限；始终抽取到仅当前进程可读的临时文件，
+  # 同时兼容“纯私钥文件”和带说明文字的密钥文件。
+  local key_use_path
+  key_use_path="$(mktemp)"
+  awk '
+    /-----BEGIN OPENSSH PRIVATE KEY-----/ {in_key=1}
+    in_key {print}
+    /-----END OPENSSH PRIVATE KEY-----/ {if (in_key) exit}
+  ' "${key_path}" > "${key_use_path}"
+  if ! grep -q "BEGIN OPENSSH PRIVATE KEY" "${key_use_path}" || ! grep -q "END OPENSSH PRIVATE KEY" "${key_use_path}"; then
+    rm -f "${key_use_path}"
+    end_ts="$(date '+%F %T')"
+    write_result "${node_id}" "SKIPPED" "${start_ts}" "${end_ts}" "${ip}" "${user}" "未找到有效私钥块" "${result_file}"
+    return 0
   fi
+  chmod 600 "${key_use_path}" || true
 
   local target_dir="${TARGET_BASE}/${user}/${PROJECT_DIR_NAME}"
   local install_log
   install_log="$(mktemp)"
   if ! copy_workspace "${key_use_path}" "${port}" "${user}" "${ip}" "${target_dir}"; then
     rm -f "${install_log}" || true
-    [[ "${key_use_path}" != "${key_path}" ]] && rm -f "${key_use_path}" || true
+    rm -f "${key_use_path}" || true
     end_ts="$(date '+%F %T')"
     write_result "${node_id}" "FAILED" "${start_ts}" "${end_ts}" "${ip}" "${user}" "分发失败" "${result_file}"
     return 0
@@ -408,7 +407,7 @@ process_one() {
   fi
 
   rm -f "${install_log}" || true
-  [[ "${key_use_path}" != "${key_path}" ]] && rm -f "${key_use_path}" || true
+  rm -f "${key_use_path}" || true
   return 0
 }
 
