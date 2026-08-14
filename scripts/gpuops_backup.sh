@@ -33,6 +33,14 @@ command -v restic >/dev/null 2>&1 || { echo "缺少 restic" >&2; exit 2; }
 command -v jq >/dev/null 2>&1 || { echo "缺少 jq" >&2; exit 2; }
 command -v flock >/dev/null 2>&1 || { echo "缺少 flock" >&2; exit 2; }
 
+restic_run() {
+  local backend_options=()
+  if [[ -n "${RESTIC_SFTP_COMMAND:-}" ]]; then
+    backend_options=(-o "sftp.command=${RESTIC_SFTP_COMMAND}")
+  fi
+  restic "${backend_options[@]}" "$@"
+}
+
 resolve_postgres_container() {
   if [[ -n "${POSTGRES_CONTAINER}" ]]; then
     docker inspect "${POSTGRES_CONTAINER}" >/dev/null 2>&1 || {
@@ -133,16 +141,16 @@ for path in "${requested_data_paths[@]}"; do
 done
 included_paths_json="$(printf '%s\n' "${backup_paths[@]}" | jq -R . | jq -s .)"
 
-restic backup \
+restic_run backup \
   --tag gpu-ops \
   --tag controller \
   --one-file-system \
   "${backup_paths[@]}"
 
-snapshot_id="$(restic snapshots --latest 1 --json --tag gpu-ops | jq -r '.[-1].short_id // .[-1].id // empty')"
+snapshot_id="$(restic_run snapshots --latest 1 --json --tag gpu-ops | jq -r '.[-1].short_id // .[-1].id // empty')"
 [[ -n "${snapshot_id}" ]] || { echo "无法取得 restic snapshot id" >&2; exit 4; }
 
-restic forget \
+restic_run forget \
   --tag gpu-ops \
   --keep-daily "${KEEP_DAILY}" \
   --keep-weekly "${KEEP_WEEKLY}" \

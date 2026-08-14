@@ -600,6 +600,11 @@ cd /home/gpuops/gpu-ops
 BACKUP_REPOSITORY='sftp:backup@<backup-host>:/srv/restic/gpu-ops' \
 bash scripts/install_backup_local.sh
 
+# 使用独立 SSH 私钥连接异机仓库
+BACKUP_REPOSITORY='sftp:gpuops@192.0.2.10:/var/lib/gpu-ops/gpu-ops-restic' \
+BACKUP_SFTP_KEY_FILE='/path/to/ssh-private-key' \
+bash scripts/install_backup_local.sh
+
 # 安装后立即生成首份备份并验证
 sudo systemctl start gpuops-backup.service
 sudo systemctl start gpuops-backup-verify.service
@@ -610,6 +615,7 @@ sudo systemctl start gpuops-backup-verify.service
 - 恢复演练会启动一次性 PostgreSQL 容器，不覆盖生产数据库。
 - 管理员可在 `/admin/ha` 查看最近快照和恢复演练状态。
 - Restic 密码文件必须另行离线保管；密码与仓库同时丢失时无法恢复。
+- `BACKUP_SFTP_KEY_FILE` 会由安装器复制到仅 root 可读的位置，定时任务无需依赖登录用户的 SSH 配置。
 - 如确实需要附带其他小型目录，可在安装时显式设置 `BACKUP_DATA_PATHS='/path/one /path/two'`；不要用它备份大规模科研数据。
 - 备份脚本默认按宿主机发布端口 `5432` 自动识别 PostgreSQL 容器；存在多个候选时必须显式设置 `POSTGRES_CONTAINER=<容器名>`。
 
