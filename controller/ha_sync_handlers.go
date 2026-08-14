@@ -167,6 +167,18 @@ func (s *Server) executeHASyncRun(ctx context.Context, cfg HASyncConfig, directi
 }
 
 func (s *Server) startHASyncRun(triggerMode string, direction string, startedBy string) (int64, error) {
+	if !s.cfg.HAEnabled || !strings.EqualFold(strings.TrimSpace(s.cfg.HARole), "primary") {
+		return 0, errors.New("仅已启用 HA 的 primary 控制器可以编排同步")
+	}
+	loadCtx, loadCancel := context.WithTimeout(context.Background(), 8*time.Second)
+	cfg, cfgErr := s.store.GetHASyncConfig(loadCtx, s.cfg)
+	loadCancel()
+	if cfgErr != nil {
+		return 0, fmt.Errorf("读取 HA 同步配置失败: %w", cfgErr)
+	}
+	if err := validateHASyncConfigForRun(cfg); err != nil {
+		return 0, err
+	}
 	if err := s.withHASyncLock(); err != nil {
 		return 0, err
 	}
@@ -183,15 +195,6 @@ func (s *Server) startHASyncRun(triggerMode string, direction string, startedBy 
 		defer s.releaseHASyncLock()
 		runCtx, runCancel := context.WithTimeout(context.Background(), 2*time.Hour)
 		defer runCancel()
-		cfg, cfgErr := s.store.GetHASyncConfig(runCtx, s.cfg)
-		if cfgErr != nil {
-			_ = s.store.FinishHASyncRun(context.Background(), runID, "failed", "读取 HA 同步配置失败: "+cfgErr.Error(), []HASyncStep{{
-				Name:    "load_config",
-				Success: false,
-				Message: cfgErr.Error(),
-			}})
-			return
-		}
 		status, summary, detail := s.executeHASyncRun(runCtx, cfg, direction)
 		if err := s.store.FinishHASyncRun(context.Background(), runID, status, summary, detail); err != nil {
 			log.Printf("记录 HA 同步结果失败 run_id=%d err=%v", runID, err)
@@ -203,6 +206,9 @@ func (s *Server) startHASyncRun(triggerMode string, direction string, startedBy 
 
 func (s *Server) StartHASyncScheduler(ctx context.Context) {
 	runIfDue := func() {
+		if !s.cfg.HAEnabled || !strings.EqualFold(strings.TrimSpace(s.cfg.HARole), "primary") {
+			return
+		}
 		runCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 
@@ -355,7 +361,7 @@ func (s *Server) handleAdminHASyncNow(c *gin.Context) {
 			c.JSON(409, gin.H{"error": "已有 HA 同步任务在运行，请稍后再试"})
 			return
 		}
-		c.JSON(500, gin.H{"error": err.Error()})
+		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(200, gin.H{"ok": true, "run_id": runID, "message": "HA 同步任务已启动"})
@@ -391,16 +397,33 @@ func runLocalSystemctl(ctx context.Context, service string) (HASyncStep, error) 
 }
 
 func (s *Server) handleAdminHAFailoverActivate(c *gin.Context) {
-	steps := make([]HASyncStep, 0, 2)
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
-	defer cancel()
-	stepController, errController := runLocalSystemctl(ctx, "gpu-controller")
-	steps = append(steps, stepController)
-	stepKeepalived, errKeepalived := runLocalSystemctl(ctx, "keepalived")
-	steps = append(steps, stepKeepalived)
-	if errController != nil && errKeepalived != nil {
-		c.JSON(500, gin.H{"error": "启动容灾接管服务失败，请检查 systemctl 权限", "steps": steps})
+	if !s.cfg.HAEnabled || !strings.EqualFold(strings.TrimSpace(s.cfg.HARole), "standby") {
+		c.JSON(409, gin.H{"error": "仅 standby 控制器允许执行接管，primary 上已禁止该操作"})
 		return
 	}
-	c.JSON(200, gin.H{"ok": true, "message": "容灾节点接管指令已执行", "steps": steps})
+	var req struct {
+		Confirm string `json:"confirm"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.Confirm != "ACTIVATE_STANDBY" {
+		c.JSON(400, gin.H{"error": "需要明确确认 ACTIVATE_STANDBY"})
+		return
+	}
+	cfg, err := s.store.GetHASyncConfig(c.Request.Context(), s.cfg)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if !cfg.AutoFailover {
+		c.JSON(409, gin.H{"error": "接管策略未启用"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
+	defer cancel()
+	step, err := runLocalSystemctl(ctx, "keepalived")
+	steps := []HASyncStep{step}
+	if err != nil {
+		c.JSON(500, gin.H{"error": "启动 Keepalived 失败，未执行接管", "steps": steps})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true, "message": "Standby 接管服务已启动", "steps": steps})
 }

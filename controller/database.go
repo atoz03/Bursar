@@ -83,6 +83,13 @@ type Store struct {
 	db *sql.DB
 }
 
+func (s *Store) PingContext(ctx context.Context) error {
+	if s == nil || s.db == nil {
+		return errors.New("database unavailable")
+	}
+	return s.db.PingContext(ctx)
+}
+
 func NewStore(cfg Config) (*Store, error) {
 	dsn := ensurePostgresURLTimezone(cfg.DatabaseDSN, beijingTZName)
 	db, err := sql.Open("postgres", dsn)

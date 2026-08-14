@@ -116,7 +116,20 @@ fi
 rm -f /tmp/ha-sync-missing-cmd.txt
 step_result "precheck_cmd" "ok" "本机命令检查通过"
 
-SSH_OPTS=(-i "${TMP_KEY}" -p "${DR_SSH_PORT}" -o StrictHostKeyChecking=no -o ConnectTimeout="${SSH_TIMEOUT}")
+local_ips=" $(hostname -I 2>/dev/null || true) 127.0.0.1 ::1 "
+resolved_dr_ips="$(getent ahosts "${DR_HOST}" 2>/dev/null | awk '{print $1}' | sort -u | xargs || true)"
+for resolved_ip in ${resolved_dr_ips}; do
+  if [[ "${local_ips}" == *" ${resolved_ip} "* ]]; then
+    die_step "validate_target" "容灾节点 ${DR_HOST} 解析到本机 ${resolved_ip}，已拒绝自同步"
+  fi
+done
+step_result "validate_target" "ok" "容灾目标为独立主机：${DR_HOST}"
+
+KNOWN_HOSTS_FILE="${HA_KNOWN_HOSTS_FILE:-${ROOT_DIR}/config/ha_known_hosts}"
+mkdir -p "$(dirname "${KNOWN_HOSTS_FILE}")"
+touch "${KNOWN_HOSTS_FILE}"
+chmod 600 "${KNOWN_HOSTS_FILE}" || true
+SSH_OPTS=(-i "${TMP_KEY}" -p "${DR_SSH_PORT}" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="${KNOWN_HOSTS_FILE}" -o ConnectTimeout="${SSH_TIMEOUT}")
 REMOTE="${DR_SSH_USER}@${DR_HOST}"
 
 if ! ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "echo ok" >/dev/null 2>&1; then
@@ -166,8 +179,12 @@ fi
 sync_p2s_binary() {
   [[ -f "${LOCAL_BIN}" ]] || die_step "sync_binary" "本机二进制不存在：${LOCAL_BIN}"
   tmp_remote="/tmp/gpu-controller.ha.$$.bin"
-  scp -q "${SSH_OPTS[@]}" "${LOCAL_BIN}" "${REMOTE}:${tmp_remote}"
-  ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "sudo -n install -m 0755 '${tmp_remote}' '${REMOTE_BIN}' && rm -f '${tmp_remote}'"
+  if ! scp -q "${SSH_OPTS[@]}" "${LOCAL_BIN}" "${REMOTE}:${tmp_remote}"; then
+    die_step "sync_binary" "上传控制器二进制失败"
+  fi
+  if ! ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "sudo -n install -m 0755 '${tmp_remote}' '${REMOTE_BIN}' && rm -f '${tmp_remote}'"; then
+    die_step "sync_binary" "安装容灾控制器二进制失败，请检查远端 sudo 权限"
+  fi
   local_sha="$(sha256sum "${LOCAL_BIN}" | awk '{print $1}')"
   remote_sha="$(ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "sha256sum '${REMOTE_BIN}' | awk '{print \\\$1}'" | xargs)"
   [[ "${local_sha}" == "${remote_sha}" ]] || die_step "sync_binary" "二进制哈希不一致 local=${local_sha} remote=${remote_sha}"
@@ -176,8 +193,12 @@ sync_p2s_binary() {
 
 sync_s2p_binary() {
   tmp_local="$(mktemp /tmp/gpu-controller.ha.sync.XXXXXX)"
-  scp -q "${SSH_OPTS[@]}" "${REMOTE}:${REMOTE_BIN}" "${tmp_local}"
-  ${SUDO_LOCAL} install -m 0755 "${tmp_local}" "${LOCAL_BIN}"
+  if ! scp -q "${SSH_OPTS[@]}" "${REMOTE}:${REMOTE_BIN}" "${tmp_local}"; then
+    die_step "sync_binary" "下载容灾控制器二进制失败"
+  fi
+  if ! ${SUDO_LOCAL} install -m 0755 "${tmp_local}" "${LOCAL_BIN}"; then
+    die_step "sync_binary" "安装本机控制器二进制失败"
+  fi
   remote_sha="$(ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "sha256sum '${REMOTE_BIN}' | awk '{print \\\$1}'" | xargs)"
   local_sha="$(sha256sum "${LOCAL_BIN}" | awk '{print $1}')"
   [[ "${local_sha}" == "${remote_sha}" ]] || die_step "sync_binary" "二进制哈希不一致 local=${local_sha} remote=${remote_sha}"
@@ -194,9 +215,13 @@ sync_p2s_web() {
     die_step "sync_web_dist" "本机 web/dist 不存在：${LOCAL_WEB_DIST}"
   fi
   if command -v rsync >/dev/null 2>&1; then
-    rsync -az --delete -e "ssh -i ${TMP_KEY} -p ${DR_SSH_PORT} -o StrictHostKeyChecking=no -o ConnectTimeout=${SSH_TIMEOUT}" "${LOCAL_WEB_DIST}" "${REMOTE}:${REMOTE_WEB_DIST}"
+    if ! rsync -az --delete -e "ssh -i ${TMP_KEY} -p ${DR_SSH_PORT} -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${KNOWN_HOSTS_FILE} -o ConnectTimeout=${SSH_TIMEOUT}" "${LOCAL_WEB_DIST}" "${REMOTE}:${REMOTE_WEB_DIST}"; then
+      die_step "sync_web_dist" "主->备 web/dist 同步失败"
+    fi
   else
-    tar -C "${LOCAL_WEB_DIST}" -cf - . | ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "mkdir -p '${REMOTE_WEB_DIST}' && tar -C '${REMOTE_WEB_DIST}' -xf -"
+    if ! tar -C "${LOCAL_WEB_DIST}" -cf - . | ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "mkdir -p '${REMOTE_WEB_DIST}' && tar -C '${REMOTE_WEB_DIST}' -xf -"; then
+      die_step "sync_web_dist" "主->备 web/dist 同步失败"
+    fi
   fi
   step_result "sync_web_dist" "ok" "主->备 web/dist 同步完成"
 }
@@ -208,9 +233,13 @@ sync_s2p_web() {
   fi
   mkdir -p "${LOCAL_WEB_DIST}"
   if command -v rsync >/dev/null 2>&1; then
-    rsync -az --delete -e "ssh -i ${TMP_KEY} -p ${DR_SSH_PORT} -o StrictHostKeyChecking=no -o ConnectTimeout=${SSH_TIMEOUT}" "${REMOTE}:${REMOTE_WEB_DIST}" "${LOCAL_WEB_DIST}"
+    if ! rsync -az --delete -e "ssh -i ${TMP_KEY} -p ${DR_SSH_PORT} -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${KNOWN_HOSTS_FILE} -o ConnectTimeout=${SSH_TIMEOUT}" "${REMOTE}:${REMOTE_WEB_DIST}" "${LOCAL_WEB_DIST}"; then
+      die_step "sync_web_dist" "备->主 web/dist 同步失败"
+    fi
   else
-    ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "tar -C '${REMOTE_WEB_DIST}' -cf - ." | tar -C "${LOCAL_WEB_DIST}" -xf -
+    if ! ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "tar -C '${REMOTE_WEB_DIST}' -cf - ." | tar -C "${LOCAL_WEB_DIST}" -xf -; then
+      die_step "sync_web_dist" "备->主 web/dist 同步失败"
+    fi
   fi
   step_result "sync_web_dist" "ok" "备->主 web/dist 同步完成"
 }
@@ -229,9 +258,26 @@ sync_p2s_database() {
     step_result "sync_database" "ok" "主备共用同一数据库 DSN，无需额外同步"
     return 0
   fi
-  pg_dump --clean --if-exists --no-owner --no-privileges "${src_dsn}" \
-    | ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "psql '${dst_dsn}'"
-  step_result "sync_database" "ok" "主->备数据库同步完成（独立数据库模式）"
+  command -v pg_dump >/dev/null 2>&1 || die_step "sync_database" "本机缺少 pg_dump"
+  command -v pg_restore >/dev/null 2>&1 || die_step "sync_database" "本机缺少 pg_restore"
+  dump_local="$(mktemp /tmp/gpuops-ha.XXXXXX.dump)"
+  dump_remote="/tmp/gpuops-ha.$$.dump"
+  if ! pg_dump --format=custom --compress=6 --no-owner --no-privileges --file="${dump_local}" "${src_dsn}"; then
+    die_step "sync_database" "生成主数据库归档失败"
+  fi
+  if ! pg_restore --list "${dump_local}" >/dev/null; then
+    die_step "sync_database" "主数据库归档校验失败"
+  fi
+  if ! scp -q "${SSH_OPTS[@]}" "${dump_local}" "${REMOTE}:${dump_remote}"; then
+    die_step "sync_database" "上传数据库归档失败"
+  fi
+  dst_dsn_q="$(printf '%q' "${dst_dsn}")"
+  dump_remote_q="$(printf '%q' "${dump_remote}")"
+  if ! ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "pg_restore --clean --if-exists --no-owner --no-privileges --exit-on-error --single-transaction --dbname=${dst_dsn_q} ${dump_remote_q} && rm -f ${dump_remote_q}"; then
+    die_step "sync_database" "容灾数据库单事务恢复失败，原数据库未被部分覆盖"
+  fi
+  rm -f "${dump_local}"
+  step_result "sync_database" "ok" "主->备数据库归档校验及单事务恢复完成"
 }
 
 sync_s2p_database() {
@@ -248,19 +294,42 @@ sync_s2p_database() {
     step_result "sync_database" "ok" "主备共用同一数据库 DSN，无需额外同步"
     return 0
   fi
-  ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "pg_dump --clean --if-exists --no-owner --no-privileges '${src_dsn}'" \
-    | psql "${dst_dsn}"
-  step_result "sync_database" "ok" "备->主数据库同步完成（独立数据库模式）"
+  command -v pg_restore >/dev/null 2>&1 || die_step "sync_database" "本机缺少 pg_restore"
+  dump_local="$(mktemp /tmp/gpuops-ha-recovery.XXXXXX.dump)"
+  dump_remote="/tmp/gpuops-ha-recovery.$$.dump"
+  src_dsn_q="$(printf '%q' "${src_dsn}")"
+  dump_remote_q="$(printf '%q' "${dump_remote}")"
+  if ! ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "pg_dump --format=custom --compress=6 --no-owner --no-privileges --file=${dump_remote_q} ${src_dsn_q}"; then
+    die_step "sync_database" "生成容灾数据库归档失败"
+  fi
+  if ! scp -q "${SSH_OPTS[@]}" "${REMOTE}:${dump_remote}" "${dump_local}"; then
+    die_step "sync_database" "下载容灾数据库归档失败"
+  fi
+  ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "rm -f ${dump_remote_q}" || true
+  if ! pg_restore --list "${dump_local}" >/dev/null; then
+    die_step "sync_database" "容灾数据库归档校验失败"
+  fi
+  if ! pg_restore --clean --if-exists --no-owner --no-privileges --exit-on-error --single-transaction --dbname="${dst_dsn}" "${dump_local}"; then
+    die_step "sync_database" "主数据库单事务回切失败，原数据库未被部分覆盖"
+  fi
+  rm -f "${dump_local}"
+  step_result "sync_database" "ok" "备->主数据库归档校验及单事务恢复完成"
 }
 
 restart_remote_service() {
-  ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "sudo -n systemctl restart '${REMOTE_SERVICE_NAME}' && sudo -n systemctl is-active '${REMOTE_SERVICE_NAME}'"
+  if ! ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "sudo -n systemctl restart '${REMOTE_SERVICE_NAME}' && sudo -n systemctl is-active '${REMOTE_SERVICE_NAME}'"; then
+    die_step "restart_service" "容灾服务重启或存活检查失败：${REMOTE_SERVICE_NAME}"
+  fi
   step_result "restart_service" "ok" "容灾服务重启成功：${REMOTE_SERVICE_NAME}"
 }
 
 restart_local_service() {
-  ${SUDO_LOCAL} systemctl restart "${LOCAL_SERVICE_NAME}"
-  ${SUDO_LOCAL} systemctl is-active "${LOCAL_SERVICE_NAME}" >/dev/null
+  if ! ${SUDO_LOCAL} systemctl restart "${LOCAL_SERVICE_NAME}"; then
+    die_step "restart_service" "本机服务重启失败：${LOCAL_SERVICE_NAME}"
+  fi
+  if ! ${SUDO_LOCAL} systemctl is-active "${LOCAL_SERVICE_NAME}" >/dev/null; then
+    die_step "restart_service" "本机服务未恢复 active：${LOCAL_SERVICE_NAME}"
+  fi
   step_result "restart_service" "ok" "本机服务重启成功：${LOCAL_SERVICE_NAME}"
 }
 

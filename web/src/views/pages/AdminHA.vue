@@ -16,6 +16,16 @@
 
     <el-alert v-if="error" :title="error" type="error" show-icon class="mb" />
 
+    <el-alert
+      v-if="!loading"
+      :type="disasterReady ? 'success' : 'error'"
+      :title="disasterReady ? '数据保护链路已就绪' : '容灾未就绪，请勿执行回切或接管'"
+      :description="readinessDescription"
+      show-icon
+      :closable="false"
+      class="readiness-alert"
+    />
+
     <div v-if="status" class="top-cards">
       <el-card class="mini">
         <div class="k">本机</div>
@@ -40,6 +50,30 @@
           <el-tag :type="versionTagType">{{ versionText }}</el-tag>
         </div>
         <div class="s">本机 {{ shortHash(status.local.app_binary_sha256) }} / 对端 {{ shortHash(status.peer?.status?.app_binary_sha256) }}</div>
+      </el-card>
+    </div>
+
+    <el-divider>备份与恢复验证</el-divider>
+    <div class="top-cards backup-cards">
+      <el-card class="mini">
+        <div class="k">加密备份</div>
+        <div class="v"><el-tag :type="backupTagType">{{ backupStateText }}</el-tag></div>
+        <div class="s">{{ backupStatus?.backup.message || "尚未安装备份任务" }}</div>
+      </el-card>
+      <el-card class="mini">
+        <div class="k">最近成功备份</div>
+        <div class="v compact">{{ fmtTime(backupStatus?.backup.last_success_at || backupStatus?.backup.finished_at) }}</div>
+        <div class="s">快照 {{ backupStatus?.backup.last_snapshot_id || backupStatus?.backup.snapshot_id || "-" }}</div>
+      </el-card>
+      <el-card class="mini">
+        <div class="k">隔离恢复演练</div>
+        <div class="v"><el-tag :type="verifyTagType">{{ verifyStateText }}</el-tag></div>
+        <div class="s">{{ backupStatus?.verification.message || "尚无恢复验证记录" }}</div>
+      </el-card>
+      <el-card class="mini">
+        <div class="k">保护范围</div>
+        <div class="v compact">数据库、配置、NFS 数据</div>
+        <div class="s">保留策略：7 日 / 4 周 / 12 月</div>
       </el-card>
     </div>
 
@@ -141,15 +175,17 @@
         <el-button type="primary" :loading="saving" @click="saveConfig">保存配置</el-button>
         <el-button
           type="success"
+          :disabled="!syncActionAvailable"
           :loading="syncingDirection === 'primary_to_standby'"
           @click="syncNow('primary_to_standby')"
         >主→容灾 立即同步</el-button>
         <el-button
           type="warning"
+          :disabled="!syncActionAvailable"
           :loading="syncingDirection === 'standby_to_primary'"
           @click="syncNow('standby_to_primary')"
         >容灾→主 回切同步</el-button>
-        <el-button type="danger" :loading="failoverLoading" @click="activateFailover">立即启用容灾接管</el-button>
+        <el-button type="danger" :disabled="!failoverActionAvailable" :loading="failoverLoading" @click="activateFailover">备机手动接管</el-button>
       </div>
       <div class="meta">
         <el-text type="info" size="small">任务运行中：{{ syncRunning ? "是" : "否" }}</el-text>
@@ -201,7 +237,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { ApiClient, type HAStatusResp, type HASyncConfig, type HASyncRun } from "../../lib/api";
+import { ApiClient, type BackupStatusResp, type HAStatusResp, type HASyncConfig, type HASyncRun } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
 import { formatServerDateTime } from "../../lib/time";
@@ -213,6 +249,7 @@ const failoverLoading = ref(false);
 const syncingDirection = ref<"" | "primary_to_standby" | "standby_to_primary">("");
 const error = ref("");
 const status = ref<HAStatusResp | null>(null);
+const backupStatus = ref<BackupStatusResp | null>(null);
 const syncConfig = ref<HASyncConfig>({
   enabled: true,
   interval_days: 1,
@@ -261,6 +298,48 @@ const versionTagType = computed(() => {
   if (!status.value.peer.reachable) return "warning";
   return status.value.version_match ? "success" : "danger";
 });
+const hasSuccessfulSync = computed(() => syncRuns.value.some((run) => run.status === "success" && run.direction === "primary_to_standby"));
+const syncActionAvailable = computed(() => {
+  const host = String(syncConfig.value.dr_host || "").trim();
+  return status.value?.local?.role === "primary" && !!host && !/[<>]/.test(host) && host !== "127.0.0.1";
+});
+const failoverActionAvailable = computed(() => status.value?.local?.role === "standby" && syncConfig.value.auto_failover);
+const disasterReady = computed(() =>
+  !!status.value?.peer?.reachable
+  && !!status.value?.version_match
+  && hasSuccessfulSync.value
+  && !!backupStatus.value?.ready,
+);
+const readinessDescription = computed(() => {
+  const issues: string[] = [];
+  if (!status.value?.peer?.reachable) issues.push("容灾对端不可达或未配置");
+  if (status.value?.peer?.reachable && !status.value?.version_match) issues.push("主备版本不一致");
+  if (!hasSuccessfulSync.value) issues.push("没有成功的主到备同步记录");
+  if (!backupStatus.value) issues.push("备份状态接口尚未部署");
+  for (const check of backupStatus.value?.checks || []) {
+    if (!check.ok) issues.push(check.message);
+  }
+  return issues.length ? issues.join("；") : "最近备份、恢复演练和主备状态均通过检查。";
+});
+const backupStateText = computed(() => statusText(backupStatus.value?.backup.state));
+const verifyStateText = computed(() => statusText(backupStatus.value?.verification.state));
+const backupTagType = computed(() => jobTagType(backupStatus.value?.backup.state));
+const verifyTagType = computed(() => jobTagType(backupStatus.value?.verification.state));
+
+function statusText(state?: string): string {
+  if (state === "success") return "成功";
+  if (state === "running") return "运行中";
+  if (state === "failed") return "失败";
+  if (state === "not_configured") return "未配置";
+  return state ? "异常" : "未配置";
+}
+
+function jobTagType(state?: string): "success" | "warning" | "danger" | "info" {
+  if (state === "success") return "success";
+  if (state === "running") return "warning";
+  if (state === "failed" || state === "invalid" || state === "unreadable") return "danger";
+  return "info";
+}
 
 function fmtTime(v?: string): string {
   if (!v) return "-";
@@ -330,8 +409,13 @@ async function reload(resetTimer = true) {
   error.value = "";
   try {
     const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
-    const [statusResp, syncResp] = await Promise.all([client.adminHAStatus(), client.adminHASyncConfig(30)]);
+    const [statusResp, syncResp, backupResp] = await Promise.all([
+      client.adminHAStatus(),
+      client.adminHASyncConfig(30),
+      client.adminBackupStatus().catch(() => null),
+    ]);
     status.value = statusResp;
+    if (backupResp) backupStatus.value = backupResp;
     syncConfig.value = { ...syncResp.config };
     syncRuns.value = syncResp.runs || [];
     syncRunning.value = !!syncResp.running;
@@ -396,18 +480,21 @@ async function syncNow(direction: "primary_to_standby" | "standby_to_primary") {
 async function activateFailover() {
   if (failoverLoading.value) return;
   try {
-    await ElMessageBox.confirm("将立即尝试启动本机容灾接管服务（gpu-controller/keepalived），是否继续？", "确认接管", {
+    const prompt: any = await ElMessageBox.prompt("仅在确认主节点不可用、且备机数据有效时操作。请输入 ACTIVATE_STANDBY", "备机手动接管", {
       type: "warning",
-      confirmButtonText: "执行",
+      confirmButtonText: "确认接管",
       cancelButtonText: "取消",
+      inputPattern: /^ACTIVATE_STANDBY$/,
+      inputErrorMessage: "请输入 ACTIVATE_STANDBY",
     });
+    if (prompt.value !== "ACTIVATE_STANDBY") return;
   } catch {
     return;
   }
   failoverLoading.value = true;
   try {
     const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
-    const r = await client.adminHAFailoverActivate();
+    const r = await client.adminHAFailoverActivate("ACTIVATE_STANDBY");
     const fail = (r.steps || []).filter((x) => !x.success);
     if (fail.length > 0) {
       ElMessage.warning(`接管命令已执行，但有 ${fail.length} 个步骤失败，请查看日志`);
@@ -462,6 +549,10 @@ onBeforeUnmount(() => {
 .mb {
   margin-bottom: 12px;
 }
+.readiness-alert {
+  margin-bottom: 18px;
+  border-radius: 14px;
+}
 .top-cards {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -476,6 +567,13 @@ onBeforeUnmount(() => {
   font-size: 18px;
   font-weight: 700;
   margin-top: 4px;
+}
+.mini .v.compact {
+  font-size: 15px;
+  line-height: 1.45;
+}
+.backup-cards .mini {
+  min-height: 132px;
 }
 .mini .s {
   color: #64748b;
