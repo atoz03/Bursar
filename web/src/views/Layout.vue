@@ -1,13 +1,21 @@
 <template>
   <el-container class="shell" :class="{ 'mobile-shell': isMobile, 'mobile-menu-open': mobileMenuOpen }">
     <div v-if="isMobile && mobileMenuOpen" class="mobile-mask" @click="mobileMenuOpen = false" />
-    <el-aside width="250px" class="aside">
+    <el-aside width="244px" class="aside">
       <div class="brand">
-        <el-icon :size="30"><Cpu /></el-icon>
-        <div>
+        <span class="brand-mark"><el-icon :size="23"><Cpu /></el-icon></span>
+        <div class="brand-copy">
           <div class="brand-title">GPU Ops</div>
           <div class="brand-sub">{{ t("GPU 运维平台", "GPU Operations Platform") }}</div>
         </div>
+        <el-tag
+          v-if="authState.role === 'admin'"
+          class="demo-entry-tag"
+          size="small"
+          effect="dark"
+          type="warning"
+          @click="openDemo"
+        >DEMO</el-tag>
       </div>
 
       <el-menu :default-active="activePath" :default-openeds="defaultOpeneds" router class="menu" @select="onMenuSelect">
@@ -286,6 +294,11 @@ function onMenuSelect() {
   }
 }
 
+function openDemo() {
+  router.push("/admin/demo");
+  if (isMobile.value) mobileMenuOpen.value = false;
+}
+
 function clearReviewTodoTimer() {
   if (reviewTodoTimer) {
     clearInterval(reviewTodoTimer);
@@ -392,6 +405,7 @@ async function loadReviewTodoCount() {
 
 function resetReviewTodoPolling() {
   clearReviewTodoTimer();
+  if (route.path.startsWith("/admin/demo")) return;
   if (!isDocumentVisible()) return;
   loadReviewTodoCount();
   if (!canLoadReviewTodo()) return;
@@ -433,6 +447,7 @@ async function loadUserNoticeState() {
 
 function resetUserNoticePolling() {
   clearUserNoticeTimer();
+  if (route.path.startsWith("/admin/demo")) return;
   if (!isDocumentVisible()) return;
   loadUserNoticeState();
   if (!canLoadUserNotice()) return;
@@ -466,6 +481,7 @@ async function loadUserPointsState() {
 
 function resetUserPointsPolling() {
   clearUserPointsTimer();
+  if (route.path.startsWith("/admin/demo")) return;
   if (!isDocumentVisible()) return;
   loadUserPointsState();
   if (!canLoadUserPoints()) return;
@@ -510,6 +526,7 @@ async function loadUserAccountProvisionState() {
 
 function resetUserAccountProvisionPolling() {
   clearUserAccountProvisionTimer();
+  if (route.path.startsWith("/admin/demo")) return;
   if (!isDocumentVisible()) return;
   loadUserAccountProvisionState();
   if (!canLoadUserAccountProvision()) return;
@@ -550,6 +567,10 @@ watch(
     if (isMobile.value) {
       mobileMenuOpen.value = false;
     }
+    resetReviewTodoPolling();
+    resetUserNoticePolling();
+    resetUserPointsPolling();
+    resetUserAccountProvisionPolling();
   },
 );
 
@@ -586,36 +607,85 @@ onBeforeUnmount(() => {
   height: 100vh;
   display: flex;
   flex-direction: column;
-  border-right: 1px solid rgba(148, 163, 184, .14);
-  background: linear-gradient(180deg, #111827 0%, #0b1220 100%);
-  box-shadow: 5px 0 24px rgba(15, 23, 42, .08);
+  overflow: hidden;
+  border-right: 1px solid rgba(125, 159, 203, .14);
+  background:
+    radial-gradient(340px 260px at -18% -3%, rgba(37, 99, 235, .32), transparent 68%),
+    radial-gradient(280px 360px at 118% 62%, rgba(8, 145, 178, .16), transparent 72%),
+    linear-gradient(175deg, #121d32 0%, #0d1729 52%, #091321 100%);
+  box-shadow: 7px 0 28px rgba(15, 23, 42, .11), inset -1px 0 0 rgba(255, 255, 255, .025);
 }
 .brand {
+  position: relative;
+  z-index: 1;
   display: flex;
-  gap: 10px;
+  gap: 11px;
   align-items: center;
-  min-height: 72px;
-  padding: 17px 18px;
-  border-bottom: 1px solid rgba(148, 163, 184, .14);
+  min-height: 78px;
+  padding: 15px 13px 14px 15px;
+  border-bottom: 1px solid rgba(148, 163, 184, .12);
   color: #f8fafc;
+  background: linear-gradient(180deg, rgba(255, 255, 255, .035), transparent);
+}
+.brand-mark {
+  width: 39px;
+  height: 39px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border: 1px solid rgba(165, 243, 252, .24);
+  border-radius: 12px;
+  color: #ecfeff;
+  background:
+    radial-gradient(circle at 25% 15%, rgba(255, 255, 255, .28), transparent 42%),
+    linear-gradient(135deg, rgba(37, 99, 235, .92), rgba(8, 145, 178, .8));
+  box-shadow: 0 9px 22px rgba(2, 132, 199, .2), inset 0 1px 0 rgba(255, 255, 255, .28);
+}
+.brand-copy {
+  min-width: 0;
+  flex: 1;
 }
 .brand-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #f8fbff;
+  font-size: 13px;
   font-weight: 800;
-  letter-spacing: .06em;
+  letter-spacing: .055em;
 }
 .brand-sub {
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 12px;
-  color: rgba(226, 232, 240, 0.8);
+  color: rgba(185, 204, 228, .72);
+}
+.demo-entry-tag {
+  flex: 0 0 auto;
+  height: 20px;
+  padding: 0 6px;
+  border-color: rgba(251, 191, 36, .28) !important;
+  color: #fde68a !important;
+  background: rgba(180, 83, 9, .34) !important;
+  font-size: 9px;
+  font-weight: 850;
+  letter-spacing: .08em;
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1);
 }
 .menu {
+  position: relative;
+  z-index: 1;
   flex: 1;
   min-height: 0;
   overflow-y: scroll;
   border-right: none;
-  padding: 10px 9px 24px;
+  padding: 12px 9px 28px;
   background: transparent;
   scrollbar-width: thin;
-  scrollbar-color: rgba(148, 163, 184, .28) transparent;
+  scrollbar-color: rgba(125, 155, 194, .46) transparent;
 }
 .menu::-webkit-scrollbar {
   width: 8px;
@@ -626,7 +696,7 @@ onBeforeUnmount(() => {
 .menu::-webkit-scrollbar-thumb {
   border: 2px solid transparent;
   border-radius: 999px;
-  background: rgba(148, 163, 184, .42);
+  background: rgba(125, 155, 194, .46);
   background-clip: padding-box;
 }
 .menu::-webkit-scrollbar-thumb:hover {
@@ -638,39 +708,86 @@ onBeforeUnmount(() => {
   background: transparent !important;
 }
 .menu :deep(.el-sub-menu .el-menu) {
-  margin: 2px 0 8px;
-  padding: 3px;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, .035) !important;
+  margin: 1px 0 9px 13px;
+  padding: 3px 3px 4px 7px;
+  border-left: 1px solid rgba(125, 159, 203, .16);
+  border-radius: 0 10px 10px 0;
+  background: linear-gradient(90deg, rgba(255, 255, 255, .025), transparent) !important;
 }
 .menu :deep(.el-sub-menu__title) {
-  height: 46px;
-  color: #cbd5e1 !important;
-  border-radius: 10px;
-  font-weight: 650;
+  height: 44px;
+  margin: 1px 0;
+  padding: 0 12px !important;
+  color: #c5d2e4 !important;
+  border: 1px solid transparent;
+  border-radius: 11px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: .01em;
+  transition: color .16s ease, background .16s ease, border-color .16s ease;
+}
+.menu :deep(.el-sub-menu__title:hover) {
+  color: #ffffff !important;
+  border-color: rgba(125, 159, 203, .12);
+  background: rgba(255, 255, 255, .045) !important;
+}
+.menu :deep(.el-sub-menu.is-active > .el-sub-menu__title) {
+  color: #edf6ff !important;
 }
 .menu :deep(.el-sub-menu__icon-arrow) {
-  color: rgba(236, 254, 255, 0.9) !important;
+  color: rgba(166, 190, 221, .8) !important;
+  font-size: 11px;
 }
 .menu :deep(.el-menu-item) {
-  height: 40px;
-  color: #b8c3d4 !important;
-  border-radius: 8px;
+  position: relative;
+  height: 38px;
+  padding: 0 11px !important;
+  color: #9eafc5 !important;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  font-size: 12px;
+  transition: color .16s ease, background .16s ease, border-color .16s ease, transform .16s ease;
 }
 .menu :deep(.el-sub-menu .el-menu-item) {
   min-width: auto;
-  margin-left: 6px;
+  margin: 2px 0;
+}
+.menu :deep(.el-sub-menu .el-menu-item::before) {
+  content: "";
+  width: 5px;
+  height: 5px;
+  margin-right: 9px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #526780;
+  transition: background .16s ease, box-shadow .16s ease;
 }
 .menu :deep(.el-menu-item:hover) {
   color: #ffffff !important;
-  background: rgba(59, 130, 246, .14) !important;
+  border-color: rgba(96, 165, 250, .1);
+  background: rgba(59, 130, 246, .11) !important;
+  transform: translateX(1px);
 }
 .menu :deep(.el-menu-item.is-active) {
   color: #ffffff !important;
-  background: linear-gradient(90deg, rgba(37, 99, 235, .9), rgba(59, 130, 246, .7)) !important;
-  border-radius: 8px;
+  border-color: rgba(125, 211, 252, .16);
+  background:
+    radial-gradient(120px 42px at 12% 50%, rgba(34, 211, 238, .17), transparent 72%),
+    linear-gradient(90deg, rgba(37, 99, 235, .82), rgba(37, 99, 235, .48)) !important;
+  border-radius: 9px;
   font-weight: 700;
-  box-shadow: 0 6px 16px rgba(37, 99, 235, .2);
+  box-shadow: 0 7px 18px rgba(30, 64, 175, .18), inset 0 1px 0 rgba(255, 255, 255, .12);
+  transform: none;
+}
+.menu :deep(.el-sub-menu .el-menu-item.is-active::before) {
+  background: #67e8f9;
+  box-shadow: 0 0 0 4px rgba(34, 211, 238, .12);
+}
+.menu :deep(.el-badge__content.is-fixed) {
+  top: 7px;
+  right: 1px;
+  border: 2px solid #122039;
+  box-shadow: 0 2px 7px rgba(0, 0, 0, .22);
 }
 .menu :deep(.el-menu-item.is-disabled) {
   color: rgba(226, 232, 240, 0.7) !important;
@@ -791,7 +908,7 @@ onBeforeUnmount(() => {
     top: 0;
     left: 0;
     bottom: 0;
-    width: 250px !important;
+    width: 244px !important;
     z-index: 1200;
     overflow-y: auto;
     transform: translateX(-104%);
