@@ -72,7 +72,7 @@
       </el-card>
       <el-card class="mini">
         <div class="k">保护范围</div>
-        <div class="v compact">数据库、配置、NFS 数据</div>
+        <div class="v compact">平台数据库与控制器配置</div>
         <div class="s">保留策略：7 日 / 4 周 / 12 月</div>
       </el-card>
     </div>

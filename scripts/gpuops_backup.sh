@@ -16,8 +16,10 @@ fi
 
 BACKUP_STATUS_FILE="${BACKUP_STATUS_FILE:-/var/lib/gpu-controller/backup-status.json}"
 BACKUP_STAGING_ROOT="${BACKUP_STAGING_ROOT:-/var/lib/gpu-controller/backup-staging}"
-BACKUP_DATA_PATHS="${BACKUP_DATA_PATHS:-/srv/gpu-ops/nodes /srv/gpu-ops/cluster}"
+# 默认只保护平台自身。用户科研数据由存储系统独立负责；确有需要时再显式配置。
+BACKUP_DATA_PATHS="${BACKUP_DATA_PATHS:-}"
 CONTROLLER_CONFIG_PATH="${CONTROLLER_CONFIG_PATH:-/home/gpuops/gpu-ops/config/controller.local.yaml}"
+WEB_DIST_PATH="${WEB_DIST_PATH:-/home/gpuops/gpu-ops/web/dist}"
 POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-gpuops-postgres}"
 POSTGRES_DATABASE="${POSTGRES_DATABASE:-gpuops}"
 POSTGRES_USER="${POSTGRES_USER:-gpuops}"
@@ -93,6 +95,8 @@ database_bytes="$(stat -c %s "${dump_path}")"
 config_inputs=()
 for path in \
   "${CONTROLLER_CONFIG_PATH}" \
+  "${WEB_DIST_PATH}" \
+  /usr/local/bin/gpu-controller \
   /etc/systemd/system/gpu-controller.service \
   /etc/keepalived/keepalived.conf; do
   [[ -r "${path}" ]] && config_inputs+=("${path}")

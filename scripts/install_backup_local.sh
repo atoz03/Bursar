@@ -4,7 +4,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKUP_REPOSITORY="${BACKUP_REPOSITORY:-}"
-BACKUP_DATA_PATHS="${BACKUP_DATA_PATHS:-/srv/gpu-ops/nodes /srv/gpu-ops/cluster}"
+BACKUP_DATA_PATHS="${BACKUP_DATA_PATHS:-}"
 BACKUP_RUN_USER="${BACKUP_RUN_USER:-root}"
 BACKUP_STATUS_GROUP="${BACKUP_STATUS_GROUP:-gpuops}"
 
@@ -17,7 +17,7 @@ if [[ "${BACKUP_REPOSITORY}" == /var/lib/docker/* || "${BACKUP_REPOSITORY}" == /
   echo "拒绝将备份仓库放在控制器系统盘：${BACKUP_REPOSITORY}" >&2
   exit 2
 fi
-if [[ "${BACKUP_REPOSITORY}" == /* ]]; then
+if [[ "${BACKUP_REPOSITORY}" == /* && -n "${BACKUP_DATA_PATHS}" ]]; then
   read -r -a protected_paths <<<"${BACKUP_DATA_PATHS}"
   for protected_path in "${protected_paths[@]}"; do
     if [[ "${BACKUP_REPOSITORY}" == "${protected_path}" || "${BACKUP_REPOSITORY}" == "${protected_path}"/* ]]; then

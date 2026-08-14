@@ -593,7 +593,7 @@ sudo systemctl start gpu-controller
 
 ## 🔐 加密备份与恢复演练
 
-平台使用 restic 保存数据库归档、控制器配置以及 NFS 用户数据，默认保留 7 个日备份、4 个周备份和 12 个月备份。备份仓库必须位于独立磁盘、SFTP 或对象存储，不能放在控制器系统盘或被备份目录内部。
+平台使用 restic 保存 PostgreSQL 归档、控制器配置、当前控制器二进制、前端产物和 systemd/Keepalived 配置，默认保留 7 个日备份、4 个周备份和 12 个月备份。用户科研数据不属于平台备份范围，不会默认扫描 `/srv/gpu-ops/nodes` 或 `/srv/gpu-ops/cluster`。备份仓库应位于独立磁盘、SFTP 或对象存储。
 
 ```bash
 cd /home/gpuops/gpu-ops
@@ -610,6 +610,7 @@ sudo systemctl start gpuops-backup-verify.service
 - 恢复演练会启动一次性 PostgreSQL 容器，不覆盖生产数据库。
 - 管理员可在 `/admin/ha` 查看最近快照和恢复演练状态。
 - Restic 密码文件必须另行离线保管；密码与仓库同时丢失时无法恢复。
+- 如确实需要附带其他小型目录，可在安装时显式设置 `BACKUP_DATA_PATHS='/path/one /path/two'`；不要用它备份大规模科研数据。
 
 ---
 
@@ -626,7 +627,7 @@ sudo systemctl start gpuops-backup-verify.service
 | `deploy_dr_node_60019.sh` | 一键部署 60019 容灾节点并写入自动同步策略（默认每天 03:00） | `PRIMARY_HOST=<PRIMARY-IP> DR_SSH_USER=<user> DR_CONTROLLER_PORT=60019 bash scripts/deploy_dr_node_60019.sh` |
 | `install_ha_vip_local.sh` | 安装 Keepalived VRRP VIP，主备自动切换与修复回切 | `HA_ROLE=primary HA_INTERFACE=eth0 HA_VIP=192.0.2.10/24 HA_PEER_IP=<standby-ip> bash scripts/install_ha_vip_local.sh` |
 | `install_backup_local.sh` | 安装 restic 每日加密备份与每周隔离恢复演练 | `BACKUP_REPOSITORY=sftp:backup@<host>:/srv/restic/gpu-ops bash scripts/install_backup_local.sh` |
-| `gpuops_backup.sh` | 备份 PostgreSQL、控制器配置和 NFS 数据并执行保留策略 | `sudo systemctl start gpuops-backup.service` |
+| `gpuops_backup.sh` | 备份 PostgreSQL 与控制器运行配置并执行保留策略 | `sudo systemctl start gpuops-backup.service` |
 | `gpuops_backup_verify.sh` | 在一次性 PostgreSQL 容器内执行完整恢复校验 | `sudo systemctl start gpuops-backup-verify.service` |
 | `install_agent_local.sh` | 在计算节点本机一键安装并启用 `gpu-node-agent` | `NODE_ID=60001 CONTROLLER_URL=http://<控制器IP>:60039 AGENT_TOKEN=<token> bash scripts/install_agent_local.sh` |
 | `deploy_agent.sh` | 从控制端批量部署 agent 到多台节点 | `NODES='60000:192.0.2.10 60001:192.0.2.10' AGENT_TOKEN=<token> CONTROLLER_URL=http://<控制器IP>:60039 bash scripts/deploy_agent.sh` |
