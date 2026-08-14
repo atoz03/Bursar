@@ -86,7 +86,7 @@ bash scripts/install_deps_ubuntu2204.sh
 INSTALL_DOCKER=0 bash scripts/install_deps_ubuntu2204.sh
 
 # 指定版本
-GO_VERSION=1.22.5 NODE_MAJOR=20 PNPM_VERSION=10.28.2 bash scripts/install_deps_ubuntu2204.sh
+GO_VERSION=1.26.6 NODE_MAJOR=20 PNPM_VERSION=10.28.2 bash scripts/install_deps_ubuntu2204.sh
 ```
 
 脚本等价于下方手动步骤，若你想逐条执行可继续参考：
@@ -106,19 +106,19 @@ sudo apt-get update
 sudo apt-get install -y --no-install-recommends \
   ca-certificates curl wget git jq build-essential docker.io docker-compose-plugin
 
-# 0.3 安装 Go 1.22.5（清华失败自动切阿里/腾讯）
+# 0.3 安装 Go 1.26.6（清华失败自动切阿里/腾讯）
 cd /tmp
 rm -f go.tgz
-wget -O go.tgz https://mirrors.tuna.tsinghua.edu.cn/golang/go1.22.5.linux-amd64.tar.gz \
-|| wget -O go.tgz https://mirrors.aliyun.com/golang/go1.22.5.linux-amd64.tar.gz \
-|| wget -O go.tgz https://mirrors.cloud.tencent.com/golang/go1.22.5.linux-amd64.tar.gz
+wget -O go.tgz https://mirrors.tuna.tsinghua.edu.cn/golang/go1.26.6.linux-amd64.tar.gz \
+|| wget -O go.tgz https://mirrors.aliyun.com/golang/go1.26.6.linux-amd64.tar.gz \
+|| wget -O go.tgz https://mirrors.cloud.tencent.com/golang/go1.26.6.linux-amd64.tar.gz
 sudo rm -rf /usr/local/go
 sudo tar -C /usr/local -xzf /tmp/go.tgz
 echo 'export PATH=/usr/local/go/bin:$PATH' | sudo tee /etc/profile.d/go.sh >/dev/null
 export PATH=/usr/local/go/bin:$PATH
 grep -q '/usr/local/go/bin' ~/.bashrc || echo 'export PATH=/usr/local/go/bin:$PATH' >> ~/.bashrc
 hash -r
-go version   # 期望：go1.22.5
+go version   # 期望：go1.26.6
 
 # 0.4 安装 Node 20 + pnpm 10.28.2
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -

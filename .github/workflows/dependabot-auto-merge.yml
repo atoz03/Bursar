@@ -3,14 +3,55 @@ name: Dependabot Auto Merge
 on:
   pull_request:
 
-permissions:
-  contents: write
-  pull-requests: write
-
 jobs:
-  dependabot:
+  validate:
     if: github.actor == 'dependabot[bot]'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.6"
+          cache: true
+          cache-dependency-path: |
+            controller/go.sum
+            node-agent/go.sum
+
+      - name: Vet Go modules
+        run: go vet ./controller/... ./node-agent/...
+
+      - name: Test Go modules
+        run: go test ./controller/... ./node-agent/...
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20.20.0"
+
+      - name: Install pnpm
+        run: npm install --global pnpm@10.28.2
+
+      - name: Install web dependencies
+        run: pnpm --dir web install --frozen-lockfile
+
+      - name: Build web
+        run: pnpm --dir web build
+
+  merge:
+    if: github.actor == 'dependabot[bot]'
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
 
     steps:
       - name: Dependabot metadata
@@ -19,11 +60,22 @@ jobs:
         with:
           github-token: "${{ secrets.GITHUB_TOKEN }}"
 
-      - name: Auto merge patch/minor updates
+      - name: Merge validated patch/minor updates
         if: |
           steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
           steps.metadata.outputs.update-type == 'version-update:semver-minor'
-        run: gh pr merge --auto --squash "$PR_URL"
+        shell: bash
+        run: |
+          current_base_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$PR_BASE_REF" --jq .object.sha)"
+          if [[ "$current_base_sha" != "$PR_BASE_SHA" ]]; then
+            gh pr update-branch --rebase "$PR_URL"
+            exit 0
+          fi
+
+          gh pr merge --squash --match-head-commit "$PR_HEAD_SHA" "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

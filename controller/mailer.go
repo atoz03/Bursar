@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/smtp"
+	"strconv"
 	"strings"
 )
 
@@ -24,7 +25,7 @@ func sendPlainTextMail(settings MailSettings, toEmail string, subject string, bo
 	if fromName == "" {
 		fromName = "GPU Ops 团队"
 	}
-	addr := fmt.Sprintf("%s:%d", host, port)
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
 
 	var msg bytes.Buffer
 	msg.WriteString(fmt.Sprintf("From: %s <%s>\r\n", fromName, fromEmail))
@@ -43,7 +44,7 @@ func sendPlainTextMail(settings MailSettings, toEmail string, subject string, bo
 
 	// 465 端口通常为隐式 TLS，需要先建 TLS 连接再 SMTP 握手。
 	if port == 465 {
-		tlsConn, err := tls.Dial("tcp", addr, &tls.Config{ServerName: host})
+		tlsConn, err := tls.Dial("tcp", addr, &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12})
 		if err != nil {
 			return err
 		}
@@ -97,7 +98,7 @@ func sendPlainTextMail(settings MailSettings, toEmail string, subject string, bo
 	}
 	defer c.Close()
 	if ok, _ := c.Extension("STARTTLS"); ok {
-		if err := c.StartTLS(&tls.Config{ServerName: host}); err != nil {
+		if err := c.StartTLS(&tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}); err != nil {
 			return err
 		}
 	}
