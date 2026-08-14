@@ -50,6 +50,8 @@ PUBLIC_ENV_FILE="${PUBLIC_ENV_FILE:-/etc/gpu-cluster/public.env}"
 ACTION_POLL_INTERVAL_SECONDS="${ACTION_POLL_INTERVAL_SECONDS:-2}"
 LOCAL_USERS_REFRESH_SECONDS="${LOCAL_USERS_REFRESH_SECONDS:-900}"
 LOCAL_USERS_COLLECT_TIMEOUT_SECONDS="${LOCAL_USERS_COLLECT_TIMEOUT_SECONDS:-8}"
+SYSTEM_SERVICES_REFRESH_SECONDS="${SYSTEM_SERVICES_REFRESH_SECONDS:-60}"
+SYSTEM_SERVICES_COLLECT_TIMEOUT_SECONDS="${SYSTEM_SERVICES_COLLECT_TIMEOUT_SECONDS:-8}"
 GPU_BUS_MAP_CACHE_SECONDS="${GPU_BUS_MAP_CACHE_SECONDS:-600}"
 GPU_INVENTORY_CACHE_SECONDS="${GPU_INVENTORY_CACHE_SECONDS:-1800}"
 GPU_COMMAND_TIMEOUT_SECONDS="${GPU_COMMAND_TIMEOUT_SECONDS:-4}"
@@ -70,6 +72,14 @@ SSH_FAIL2BAN_MAXRETRY="${SSH_FAIL2BAN_MAXRETRY:-20}"
 SSH_FAIL2BAN_FINDTIME="${SSH_FAIL2BAN_FINDTIME:-5m}"
 SSH_FAIL2BAN_BANTIME="${SSH_FAIL2BAN_BANTIME:-12h}"
 SSH_FAIL2BAN_IGNOREIP="${SSH_FAIL2BAN_IGNOREIP:-}"
+ENABLE_SHARED_NFS="${ENABLE_SHARED_NFS:-0}"
+NFS_SERVER="${NFS_SERVER:-192.0.2.10}"
+NFS_NODE_EXPORT_ROOT="${NFS_NODE_EXPORT_ROOT:-/srv/gpu-ops/nodes}"
+NFS_CLUSTER_EXPORT="${NFS_CLUSTER_EXPORT:-/srv/gpu-ops/cluster}"
+NFS_NODE_MOUNT="${NFS_NODE_MOUNT:-/shared/node}"
+NFS_CLUSTER_MOUNT="${NFS_CLUSTER_MOUNT:-/shared/cluster}"
+NFS_MOUNT_OPTIONS="${NFS_MOUNT_OPTIONS:-vers=4.1,rw,hard,timeo=600,retrans=2,_netdev,x-systemd.automount}"
+NFS_MOUNT_TIMEOUT_SECONDS="${NFS_MOUNT_TIMEOUT_SECONDS:-20}"
 LEGACY_ENABLE_USER_SLICE_CPU_RESERVE="${ENABLE_USER_SLICE_CPU_RESERVE:-}"
 LEGACY_USER_SLICE_CPU_RESERVE_PERCENT="${USER_SLICE_CPU_RESERVE_PERCENT:-}"
 LEGACY_ENABLE_USER_SLICE_MEMORY_RESERVE="${ENABLE_USER_SLICE_MEMORY_RESERVE:-}"
@@ -350,6 +360,83 @@ auto_detect_node_id() {
   return 0
 }
 
+configure_shared_nfs() {
+  if [[ "${ENABLE_SHARED_NFS}" != "1" ]]; then
+    return 0
+  fi
+  if [[ -z "${NFS_SERVER}" || ! "${NODE_ID}" =~ ^[0-9]+$ ]]; then
+    echo "NFS 配置非法：NFS_SERVER/NODE_ID 不能为空，且 NODE_ID 必须为数字" >&2
+    return 2
+  fi
+  if [[ ! "${NFS_MOUNT_TIMEOUT_SECONDS}" =~ ^[0-9]+$ || "${NFS_MOUNT_TIMEOUT_SECONDS}" -le 0 ]]; then
+    echo "NFS_MOUNT_TIMEOUT_SECONDS 必须为正整数" >&2
+    return 2
+  fi
+
+  echo "[12/12] 配置共享 NFS"
+  if ! command -v mount.nfs >/dev/null 2>&1; then
+    if ! command -v apt-get >/dev/null 2>&1; then
+      echo "未找到 mount.nfs，且系统不支持 apt-get，无法安装 nfs-common" >&2
+      return 2
+    fi
+    echo "安装 NFS 客户端 nfs-common"
+    DEBIAN_FRONTEND=noninteractive ${SUDO} apt-get update -y
+    DEBIAN_FRONTEND=noninteractive ${SUDO} apt-get install -y nfs-common
+  fi
+
+  local node_source="${NFS_SERVER}:${NFS_NODE_EXPORT_ROOT%/}/${NODE_ID}"
+  local cluster_source="${NFS_SERVER}:${NFS_CLUSTER_EXPORT}"
+  ${SUDO} install -d -o root -g root -m 0755 /shared "${NFS_NODE_MOUNT}" "${NFS_CLUSTER_MOUNT}"
+
+  local target current_source
+  for target in "${NFS_NODE_MOUNT}" "${NFS_CLUSTER_MOUNT}"; do
+    current_source="$(findmnt -rn -o SOURCE --mountpoint "${target}" 2>/dev/null || true)"
+    if [[ -n "${current_source}" ]]; then
+      local expected_source="${cluster_source}"
+      if [[ "${target}" == "${NFS_NODE_MOUNT}" ]]; then
+        expected_source="${node_source}"
+      fi
+      if [[ "${current_source}" != "${expected_source}" ]]; then
+        echo "拒绝覆盖现有挂载：${target} 当前来源=${current_source}，期望=${expected_source}" >&2
+        return 2
+      fi
+    fi
+  done
+
+  if [[ ! -e /etc/fstab.gpuops-before-shared-nfs ]]; then
+    ${SUDO} cp -a /etc/fstab /etc/fstab.gpuops-before-shared-nfs
+  fi
+  local fstab_tmp
+  fstab_tmp="$(mktemp)"
+  awk -v node_mount="${NFS_NODE_MOUNT}" -v cluster_mount="${NFS_CLUSTER_MOUNT}" '
+    /^[[:space:]]*#/ || NF == 0 { print; next }
+    $2 != node_mount && $2 != cluster_mount { print }
+  ' /etc/fstab >"${fstab_tmp}"
+  printf '%s %s nfs %s 0 0\n' "${node_source}" "${NFS_NODE_MOUNT}" "${NFS_MOUNT_OPTIONS}" >>"${fstab_tmp}"
+  printf '%s %s nfs %s 0 0\n' "${cluster_source}" "${NFS_CLUSTER_MOUNT}" "${NFS_MOUNT_OPTIONS}" >>"${fstab_tmp}"
+  ${SUDO} install -m 0644 -o root -g root "${fstab_tmp}" /etc/fstab
+  rm -f "${fstab_tmp}"
+  ${SUDO} systemctl daemon-reload
+
+  local expected_source
+  for target in "${NFS_NODE_MOUNT}" "${NFS_CLUSTER_MOUNT}"; do
+    expected_source="${cluster_source}"
+    if [[ "${target}" == "${NFS_NODE_MOUNT}" ]]; then
+      expected_source="${node_source}"
+    fi
+    current_source="$(findmnt -rn -o SOURCE --mountpoint "${target}" 2>/dev/null || true)"
+    if [[ -z "${current_source}" ]]; then
+      timeout "${NFS_MOUNT_TIMEOUT_SECONDS}" ${SUDO} mount "${target}"
+      current_source="$(findmnt -rn -o SOURCE --mountpoint "${target}" 2>/dev/null || true)"
+    fi
+    if [[ "${current_source}" != "${expected_source}" ]]; then
+      echo "NFS 挂载校验失败：${target} 来源=${current_source:-<未挂载>}，期望=${expected_source}" >&2
+      return 2
+    fi
+    echo "NFS 挂载完成：${target} <- ${current_source}"
+  done
+}
+
 usage() {
   cat <<USAGE
 用法：
@@ -380,6 +467,8 @@ usage() {
   ACTION_POLL_INTERVAL_SECONDS=2   节点动作轮询周期（秒，默认 2）
   LOCAL_USERS_REFRESH_SECONDS=900  本地用户详情刷新周期（秒，默认 900）
   LOCAL_USERS_COLLECT_TIMEOUT_SECONDS=8 本地用户详情采集超时（秒，默认 8）
+  SYSTEM_SERVICES_REFRESH_SECONDS=60 systemd 服务巡检刷新周期（秒，默认 60）
+  SYSTEM_SERVICES_COLLECT_TIMEOUT_SECONDS=8 systemd 服务巡检超时（秒，默认 8）
   GPU_BUS_MAP_CACHE_SECONDS=600    GPU 总线映射缓存（秒，默认 600）
   GPU_INVENTORY_CACHE_SECONDS=1800 GPU 型号/数量缓存（秒，默认 1800）
   GPU_COMMAND_TIMEOUT_SECONDS=4    单次 nvidia-smi 超时（秒，默认 4）
@@ -398,6 +487,13 @@ usage() {
   SSH_FAIL2BAN_FINDTIME=5m         fail2ban SSH 统计窗口（默认 5m）
   SSH_FAIL2BAN_BANTIME=12h         fail2ban SSH 封禁时长（默认 12h）
   SSH_FAIL2BAN_IGNOREIP="..."      fail2ban 忽略网段（默认空，不忽略 localhost）
+  ENABLE_SHARED_NFS=1|0            配置 /shared NFS（默认 0，需先完成服务端导出）
+  NFS_SERVER=192.0.2.10         NFS 服务端地址
+  NFS_NODE_EXPORT_ROOT=...         节点私有导出根目录（默认 /srv/gpu-ops/nodes）
+  NFS_CLUSTER_EXPORT=...           集群公共导出目录（默认 /srv/gpu-ops/cluster）
+  NFS_NODE_MOUNT=/shared/node      节点私有挂载点
+  NFS_CLUSTER_MOUNT=/shared/cluster 集群公共挂载点
+  NFS_MOUNT_OPTIONS=...            /etc/fstab NFS 参数
   ENABLE_SYSTEM_CPU_RESERVE=1      是否为系统保留 CPU（默认 1，开启）
   SYSTEM_CPU_RESERVE_PERCENT=5     为系统保留 CPU 百分比（默认 5）
   ENABLE_SYSTEM_MEMORY_RESERVE=1   是否为系统保留内存（默认 1，开启）
@@ -486,6 +582,7 @@ fi
 echo "INSTALL_NODE_DEPS=${INSTALL_NODE_DEPS}"
 echo "INSTALL_DOCKER_DEPS=${INSTALL_DOCKER_DEPS}"
 echo "NODE_ID_AUTO_DETECT=${NODE_ID_AUTO_DETECT}"
+echo "ENABLE_SHARED_NFS=${ENABLE_SHARED_NFS} (NFS_SERVER=${NFS_SERVER})"
 
 if [[ "${INSTALL_DEPS}" == "1" ]]; then
   echo "[2/9] 安装依赖"
@@ -580,6 +677,8 @@ AGENT_TOKEN=${AGENT_TOKEN}
 ACTION_POLL_INTERVAL_SECONDS=${ACTION_POLL_INTERVAL_SECONDS}
 LOCAL_USERS_REFRESH_SECONDS=${LOCAL_USERS_REFRESH_SECONDS}
 LOCAL_USERS_COLLECT_TIMEOUT_SECONDS=${LOCAL_USERS_COLLECT_TIMEOUT_SECONDS}
+SYSTEM_SERVICES_REFRESH_SECONDS=${SYSTEM_SERVICES_REFRESH_SECONDS}
+SYSTEM_SERVICES_COLLECT_TIMEOUT_SECONDS=${SYSTEM_SERVICES_COLLECT_TIMEOUT_SECONDS}
 GPU_BUS_MAP_CACHE_SECONDS=${GPU_BUS_MAP_CACHE_SECONDS}
 GPU_INVENTORY_CACHE_SECONDS=${GPU_INVENTORY_CACHE_SECONDS}
 GPU_COMMAND_TIMEOUT_SECONDS=${GPU_COMMAND_TIMEOUT_SECONDS}
@@ -1118,7 +1217,16 @@ EOF_ENFORCE_TIMER
   ${SUDO} systemctl enable --now gpu-ssh-guard-enforce.timer
   ${SUDO} systemctl start gpu-ssh-guard-sync.service || true
   ${SUDO} systemctl start gpu-ssh-guard-enforce.service || true
-  ${SUDO} systemctl restart ssh || ${SUDO} systemctl restart sshd || true
+
+  # 某些节点的 /run/sshd 未由 tmpfiles 创建；直接重启会先停掉旧 sshd，
+  # 随后因配置或运行目录问题启动失败，导致远程节点失联。
+  # 必须先补齐运行目录并校验配置，校验失败时保留当前 SSH 服务。
+  ${SUDO} install -d -o root -g root -m 0755 /run/sshd
+  if [[ -x /usr/sbin/sshd ]] && ! ${SUDO} /usr/sbin/sshd -t; then
+    echo "警告：sshd 配置校验失败，跳过 SSH 服务重启以避免远程失联" >&2
+  else
+    ${SUDO} systemctl restart ssh || ${SUDO} systemctl restart sshd || true
+  fi
 fi
 
 if [[ "${ENABLE_HOST_SECURITY}" == "1" ]]; then
@@ -1228,5 +1336,7 @@ fi
 echo
 
 harden_project_workspace
+
+configure_shared_nfs
 
 echo "部署完成。"
