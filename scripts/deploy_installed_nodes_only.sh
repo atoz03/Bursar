@@ -25,6 +25,7 @@ SKIP_CONTROLLER_HEALTHCHECK="${SKIP_CONTROLLER_HEALTHCHECK:-0}"
 ENABLE_SSH_GUARD="${ENABLE_SSH_GUARD:-0}"
 ENABLE_HOST_SECURITY="${ENABLE_HOST_SECURITY:-0}"
 RESET_USER_CPU_QUOTA_ON_INSTALL="${RESET_USER_CPU_QUOTA_ON_INSTALL:-0}"
+INSTALL_DEPS="${INSTALL_DEPS:-0}"
 LEGACY_ENABLE_USER_SLICE_CPU_RESERVE="${ENABLE_USER_SLICE_CPU_RESERVE:-}"
 LEGACY_USER_SLICE_CPU_RESERVE_PERCENT="${USER_SLICE_CPU_RESERVE_PERCENT:-}"
 LEGACY_ENABLE_USER_SLICE_MEMORY_RESERVE="${ENABLE_USER_SLICE_MEMORY_RESERVE:-}"
@@ -115,6 +116,7 @@ echo "SYSTEM_MEMORY_RESERVE_GB=${SYSTEM_MEMORY_RESERVE_GB} (enable=${ENABLE_SYST
 echo "ENABLE_SSH_GUARD=${ENABLE_SSH_GUARD}"
 echo "ENABLE_HOST_SECURITY=${ENABLE_HOST_SECURITY}"
 echo "RESET_USER_CPU_QUOTA_ON_INSTALL=${RESET_USER_CPU_QUOTA_ON_INSTALL}"
+echo "INSTALL_DEPS=${INSTALL_DEPS}"
 if [[ "${LEGACY_CPU_RESERVE_COMPAT_USED}" == "1" ]]; then
   echo "兼容旧变量：USER_SLICE_CPU_RESERVE_PERCENT=${LEGACY_USER_SLICE_CPU_RESERVE_PERCENT} -> SYSTEM_CPU_RESERVE_PERCENT=${SYSTEM_CPU_RESERVE_PERCENT}"
 fi
@@ -228,6 +230,7 @@ copy_workspace() {
   tar -C "${SOURCE_DIR}" \
     --exclude='.git' \
     --exclude='.codex' \
+    --exclude='.netcatty-paste-images' \
     --exclude='config' \
     --exclude='README.md' \
     --exclude='GPU Ops使用手册.md' \
@@ -284,6 +287,8 @@ run_install_agent() {
   esc_enable_host_security="$(printf "%s" "${ENABLE_HOST_SECURITY}" | sed "s/'/'\"'\"'/g")"
   local esc_reset_user_cpu_quota
   esc_reset_user_cpu_quota="$(printf "%s" "${RESET_USER_CPU_QUOTA_ON_INSTALL}" | sed "s/'/'\"'\"'/g")"
+  local esc_install_deps
+  esc_install_deps="$(printf "%s" "${INSTALL_DEPS}" | sed "s/'/'\"'\"'/g")"
   local esc_enable_cpu_reserve
   esc_enable_cpu_reserve="$(printf "%s" "${ENABLE_SYSTEM_CPU_RESERVE}" | sed "s/'/'\"'\"'/g")"
   local esc_cpu_reserve_pct
@@ -293,7 +298,7 @@ run_install_agent() {
   local esc_mem_reserve_gb
   esc_mem_reserve_gb="$(printf "%s" "${SYSTEM_MEMORY_RESERVE_GB}" | sed "s/'/'\"'\"'/g")"
   ssh -n -i "${key_use_path}" -p "${port}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o UpdateHostKeys=no -o LogLevel=ERROR -o ConnectTimeout="${SSH_TIMEOUT}" "${user}@${ip}" \
-    "cd '${target_dir}' && sudo -n /bin/bash '${target_dir}/scripts/install_agent_local.sh' 'CONTROLLER_URL=${esc_controller_url}' 'AGENT_TOKEN=${esc_agent_token}' 'SSH_GUARD_EXCLUDE_USERS=${esc_exclude}' 'SKIP_CONTROLLER_HEALTHCHECK=${esc_skip_health}' 'ENABLE_SSH_GUARD=${esc_enable_ssh_guard}' 'ENABLE_HOST_SECURITY=${esc_enable_host_security}' 'RESET_USER_CPU_QUOTA_ON_INSTALL=${esc_reset_user_cpu_quota}' 'ENABLE_SYSTEM_CPU_RESERVE=${esc_enable_cpu_reserve}' 'SYSTEM_CPU_RESERVE_PERCENT=${esc_cpu_reserve_pct}' 'ENABLE_SYSTEM_MEMORY_RESERVE=${esc_enable_mem_reserve}' 'SYSTEM_MEMORY_RESERVE_GB=${esc_mem_reserve_gb}'"
+    "cd '${target_dir}' && sudo -n /bin/bash '${target_dir}/scripts/install_agent_local.sh' 'CONTROLLER_URL=${esc_controller_url}' 'AGENT_TOKEN=${esc_agent_token}' 'SSH_GUARD_EXCLUDE_USERS=${esc_exclude}' 'SKIP_CONTROLLER_HEALTHCHECK=${esc_skip_health}' 'ENABLE_SSH_GUARD=${esc_enable_ssh_guard}' 'ENABLE_HOST_SECURITY=${esc_enable_host_security}' 'RESET_USER_CPU_QUOTA_ON_INSTALL=${esc_reset_user_cpu_quota}' 'INSTALL_DEPS=${esc_install_deps}' 'ENABLE_SYSTEM_CPU_RESERVE=${esc_enable_cpu_reserve}' 'SYSTEM_CPU_RESERVE_PERCENT=${esc_cpu_reserve_pct}' 'ENABLE_SYSTEM_MEMORY_RESERVE=${esc_enable_mem_reserve}' 'SYSTEM_MEMORY_RESERVE_GB=${esc_mem_reserve_gb}'"
 }
 
 agent_service_ready() {
