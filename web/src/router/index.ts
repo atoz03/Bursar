@@ -29,6 +29,7 @@ const AdminPowerUsers = () => import("../views/pages/AdminPowerUsers.vue");
 const AdminHA = () => import("../views/pages/AdminHA.vue");
 const AdminPoints = () => import("../views/pages/AdminPoints.vue");
 const AdminProfile = () => import("../views/pages/AdminProfile.vue");
+const AdminDemo = () => import("../views/pages/AdminDemo.vue");
 
 function hasPointsAccess(): boolean {
   return !!(
@@ -86,6 +87,7 @@ export const router = createRouter({
         { path: "admin/ha", component: AdminHA },
         { path: "admin/change-password", redirect: "/user/change-password" },
         { path: "admin/profile", component: AdminProfile },
+        { path: "admin/demo", component: AdminDemo },
       ],
     },
   ],
