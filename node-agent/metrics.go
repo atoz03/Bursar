@@ -70,9 +70,13 @@ func (a *NodeAgent) CollectMetrics(ctx context.Context) (*MetricsData, error) {
 	metrics.NodeIP, metrics.NodeMAC = collectPrimaryNodeNetworkIdentity(ctx)
 	metrics.SecuritySignals = a.collectSecuritySignals(ctx)
 
-	gpuMap, err := a.getGPUUsageMap(ctx)
-	if err != nil {
-		return nil, err
+	// GPU 驱动异常不应阻断整台节点的 CPU、内存和在线状态上报。
+	// 保留空的进程映射继续采集；GPU 恢复后下一轮会自动带回明细。
+	gpuMap := make(map[int32][]GPUUsage)
+	if collected, err := a.getGPUUsageMap(ctx); err != nil {
+		a.logger.Printf("GPU 进程指标采集失败，降级继续上报主机状态：%v", err)
+	} else {
+		gpuMap = collected
 	}
 	if devices, err := a.getGPUDeviceStatuses(ctx); err == nil {
 		metrics.GPUDevices = applyGPUProcessCounts(devices, gpuMap)
