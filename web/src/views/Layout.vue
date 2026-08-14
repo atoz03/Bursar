@@ -8,14 +8,6 @@
           <div class="brand-title">GPU Ops</div>
           <div class="brand-sub">{{ t("GPU 运维平台", "GPU Operations Platform") }}</div>
         </div>
-        <el-tag
-          v-if="authState.role === 'admin'"
-          class="demo-entry-tag"
-          size="small"
-          effect="dark"
-          type="warning"
-          @click="openDemo"
-        >DEMO</el-tag>
       </div>
 
       <el-menu :default-active="activePath" :default-openeds="defaultOpeneds" router class="menu" @select="onMenuSelect">
@@ -59,6 +51,10 @@
             <el-menu-item index="/admin/guideline">{{ t("用户准则", "Guidelines") }}</el-menu-item>
             <el-menu-item index="/admin/notebook">{{ t("管理员记事本", "Notebook") }}</el-menu-item>
             <el-menu-item index="/admin/mail">{{ t("邮件设置", "Mail Settings") }}</el-menu-item>
+            <el-menu-item index="/admin/demo" class="demo-menu-item">
+              <span>{{ t("界面演示", "Interface Demo") }}</span>
+              <el-tag class="menu-demo-tag" size="small" effect="dark" type="warning">DEMO</el-tag>
+            </el-menu-item>
           </el-sub-menu>
         </template>
         <template v-else-if="authState.role === 'power_user'">
@@ -292,11 +288,6 @@ function onMenuSelect() {
   if (isMobile.value) {
     mobileMenuOpen.value = false;
   }
-}
-
-function openDemo() {
-  router.push("/admin/demo");
-  if (isMobile.value) mobileMenuOpen.value = false;
 }
 
 function clearReviewTodoTimer() {
@@ -662,19 +653,6 @@ onBeforeUnmount(() => {
   font-size: 12px;
   color: rgba(185, 204, 228, .72);
 }
-.demo-entry-tag {
-  flex: 0 0 auto;
-  height: 20px;
-  padding: 0 6px;
-  border-color: rgba(251, 191, 36, .28) !important;
-  color: #fde68a !important;
-  background: rgba(180, 83, 9, .34) !important;
-  font-size: 9px;
-  font-weight: 850;
-  letter-spacing: .08em;
-  cursor: pointer;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1);
-}
 .menu {
   position: relative;
   z-index: 1;
@@ -782,6 +760,20 @@ onBeforeUnmount(() => {
 .menu :deep(.el-sub-menu .el-menu-item.is-active::before) {
   background: #67e8f9;
   box-shadow: 0 0 0 4px rgba(34, 211, 238, .12);
+}
+.menu :deep(.demo-menu-item) {
+  justify-content: flex-start;
+}
+.menu :deep(.menu-demo-tag) {
+  height: 18px;
+  margin-left: auto;
+  padding: 0 5px;
+  border-color: rgba(251, 191, 36, .24) !important;
+  color: #fde68a !important;
+  background: rgba(180, 83, 9, .32) !important;
+  font-size: 8px;
+  font-weight: 850;
+  letter-spacing: .06em;
 }
 .menu :deep(.el-badge__content.is-fixed) {
   top: 7px;
