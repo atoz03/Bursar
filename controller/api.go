@@ -1156,6 +1156,7 @@ func (s *Server) RouterWeb() *gin.Engine {
 	admin.GET("/prices", s.requireSuperAdmin(), s.handleAdminPrices)
 	admin.POST("/prices", s.requireSuperAdmin(), s.handleAdminSetPrice)
 	admin.GET("/requests", s.requireReviewPermission(), s.handleAdminRequestsList)
+	admin.GET("/navigation-summary", s.requireReviewPermission(), s.handleAdminNavigationSummary)
 	admin.GET("/registration-requests/overview", s.requireReviewPermission(), s.handleAdminRegistrationRequestsOverview)
 	admin.POST("/registration-requests/:id/approve", s.requireReviewPermission(), s.handleAdminRegistrationRequestApprove)
 	admin.POST("/registration-requests/:id/reject", s.requireReviewPermission(), s.handleAdminRegistrationRequestReject)
@@ -1292,6 +1293,25 @@ func (s *Server) RouterWeb() *gin.Engine {
 
 	s.maybeServeWeb(r)
 	return r
+}
+
+func (s *Server) handleAdminNavigationSummary(c *gin.Context) {
+	ctx := c.Request.Context()
+	registrationPending := s.queryCount(ctx, `SELECT COUNT(1) FROM registration_requests WHERE status='pending'`)
+	profilePending := s.queryCount(ctx, `SELECT COUNT(1) FROM profile_change_requests WHERE status='pending'`)
+	openPending := int64(0)
+	unbindPending := int64(0)
+	if strings.TrimSpace(c.GetString("auth_role")) == "admin" {
+		openPending = s.queryCount(ctx, `SELECT COUNT(1) FROM user_requests WHERE status='pending' AND request_type='open'`)
+		unbindPending = s.queryCount(ctx, `SELECT COUNT(1) FROM user_requests WHERE status='pending' AND request_type='unbind'`)
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"review_pending":       registrationPending + profilePending,
+		"registration_pending": registrationPending,
+		"profile_pending":      profilePending,
+		"open_pending":         openPending,
+		"unbind_pending":       unbindPending,
+	})
 }
 
 func (s *Server) RouterInternal() *gin.Engine {

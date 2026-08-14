@@ -7,10 +7,10 @@
           <div>
           <div class="title">
             <el-badge :is-dot="registrationTodoCount + profilePendingCount > 0" type="danger">
-              <span>平台账号注册审核</span>
+              <span>注册与资料审核</span>
             </el-badge>
           </div>
-          <div class="sub">注册申请需审核通过后才创建平台账号</div>
+          <div class="sub">集中处理账号注册、资料变更与注册安全。</div>
           </div>
         </div>
         <el-button :loading="loading" type="primary" @click="reloadAll">刷新全部</el-button>
@@ -19,11 +19,6 @@
 
     <div class="content-stack">
       <el-alert v-if="error" :title="error" type="error" show-icon />
-      <el-alert
-        :title="`待处理平台账号注册审核：${registrationPendingRows.length + registrationConflictRows.length} 人`"
-        type="info"
-        :closable="false"
-      />
       <el-form inline class="compact-form">
         <el-form-item label="字段筛选">
           <el-select v-model="registrationFilterField" style="width: 160px" @change="reloadRegistration">
@@ -551,7 +546,7 @@ function diffNewTokens(oldValue: unknown, newValue: unknown): DiffToken[] {
 async function reloadRegistration() {
   const load = async () => {
     const r = await client().adminRegistrationRequestsOverview({
-      limit: 50000,
+      limit: 2000,
       field: registrationFilterField.value,
       keyword: registrationKeyword.value,
     });
@@ -566,7 +561,7 @@ async function reloadRegistration() {
       registrationPendingRows.value = [];
       registrationConflictRows.value = [];
       registrationRejectedRows.value = [];
-      error.value = "平台账号注册审核接口不可用：请确认控制器已更新到最新版本并重启。";
+      error.value = "注册审核服务不可用，请更新并重启 Controller。";
       return;
     }
     throw e;
@@ -598,7 +593,7 @@ async function reloadRegisterSecurityEvents() {
       field: registerSecurityField.value,
       action: registerSecurityAction.value,
       decision: registerSecurityDecision.value,
-      limit: 1000,
+      limit: 200,
     });
     registerSecurityEvents.value = r.events ?? [];
   } catch (e: any) {
@@ -617,7 +612,7 @@ async function reloadDisposableDomains() {
   try {
     const r = await client().adminDisposableEmailDomains({
       keyword: disposableDomainKeyword.value,
-      limit: 2000,
+      limit: 500,
     });
     disposableDomains.value = r.domains ?? [];
   } catch (e: any) {
@@ -815,11 +810,13 @@ async function reloadAll() {
   loading.value = true;
   error.value = "";
   try {
-    await reloadRegistration();
-    await reloadRegisterSecurityPolicy();
-    await reloadRegisterSecurityEvents();
-    await reloadDisposableDomains();
-    await reloadProfileChanges();
+    await Promise.all([
+      reloadRegistration(),
+      reloadRegisterSecurityPolicy(),
+      reloadRegisterSecurityEvents(),
+      reloadDisposableDomains(),
+      reloadProfileChanges(),
+    ]);
   } catch (e: any) {
     error.value = e?.message ?? String(e);
   } finally {

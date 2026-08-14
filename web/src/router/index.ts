@@ -2,7 +2,6 @@ import { createRouter, createWebHistory } from "vue-router";
 import { authState, refreshAuth } from "../lib/authStore";
 
 const Layout = () => import("../views/Layout.vue");
-const Dashboard = () => import("../views/pages/Dashboard.vue");
 const Login = () => import("../views/pages/Login.vue");
 const UserBalance = () => import("../views/pages/UserBalance.vue");
 const UserUsage = () => import("../views/pages/UserUsage.vue");
@@ -62,7 +61,7 @@ export const router = createRouter({
       component: Layout,
       meta: { requiresAuth: true },
       children: [
-        { path: "", component: Dashboard },
+        { path: "", redirect: "/user/balance" },
         { path: "user/balance", component: UserBalance },
         { path: "user/profile", component: UserProfile },
         { path: "user/usage", component: UserUsage },
@@ -85,7 +84,7 @@ export const router = createRouter({
         { path: "admin/requests", component: AdminRequests },
         { path: "admin/mail", component: AdminMailSettings },
         { path: "admin/ha", component: AdminHA },
-        { path: "admin/change-password", component: ChangePassword },
+        { path: "admin/change-password", redirect: "/user/change-password" },
         { path: "admin/profile", component: AdminProfile },
       ],
     },

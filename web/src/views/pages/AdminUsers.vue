@@ -28,7 +28,7 @@
             平台账号列表
             <el-tag size="small" type="info" style="margin-left: 8px">当前注册 {{ registeredCount }} 人</el-tag>
           </div>
-          <div class="sub">支持字段筛选、排序、改分、拉黑/解黑、删除和重复身份排查。</div>
+          <div class="sub">集中查看用户状态、身份冲突与账号操作。</div>
         </div>
       </div>
       <el-form inline>
@@ -118,10 +118,10 @@
         <el-table-column prop="created_at" label="开通时间" width="180" sortable="custom">
           <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="420" fixed="right">
+        <el-table-column label="操作" width="390" fixed="right">
           <template #default="{ row }">
             <el-space>
-              <el-button size="small" :disabled="row.role !== 'user'" @click="openRecharge(row)">改分</el-button>
+              <el-button v-if="authState.role === 'admin' || authState.canPointsUsers" size="small" :disabled="row.role !== 'user'" @click="goPoints(row)">积分</el-button>
               <el-button v-if="!isBlack(row)" size="small" type="danger" :disabled="row.role !== 'user'" @click="blockUser(row)">拉黑</el-button>
               <el-button v-else size="small" type="success" :disabled="row.role !== 'user'" @click="unblockUser(row)">解黑</el-button>
               <el-button size="small" type="warning" :disabled="row.role !== 'user'" @click="deleteUser(row)">删除</el-button>
@@ -207,35 +207,6 @@
         </el-table-column>
       </el-table>
     </div>
-
-    <el-dialog v-model="rechargeVisible" title="积分调整" width="500px">
-      <el-form label-width="90px">
-        <el-form-item label="用户名">
-          <el-input v-model="rechargeUser" disabled />
-        </el-form-item>
-        <el-form-item label="当前积分">
-          <div class="recharge-balance-wrap">
-            <el-tag type="success" effect="plain">通用 {{ fmt2(rechargeGeneralBalance) }}</el-tag>
-            <el-tag type="info" effect="plain">结转 {{ fmt2(rechargeCarryoverBalance) }}</el-tag>
-            <el-tag type="warning" effect="plain">专属 {{ fmt2(rechargeExclusiveBalance) }}</el-tag>
-            <el-tag type="primary" effect="plain">总计 {{ fmt2(rechargeTotalBalance) }}</el-tag>
-          </div>
-          <div v-if="rechargeBalanceLoading" class="sub">正在同步最新积分...</div>
-          <div v-if="rechargeBalanceError" class="sub recharge-balance-error">{{ rechargeBalanceError }}</div>
-        </el-form-item>
-        <el-form-item label="调整值">
-          <el-input-number v-model="rechargeAmount" :min="-100000" :max="100000" :step="10" />
-          <div class="sub">正数表示加分，负数表示扣分</div>
-        </el-form-item>
-        <el-form-item label="方式">
-          <el-input v-model="rechargeMethod" placeholder="admin/wechat/alipay" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="rechargeVisible = false">取消</el-button>
-        <el-button :loading="rechargeLoading" type="primary" @click="doRecharge">确认</el-button>
-      </template>
-    </el-dialog>
 
     <el-dialog v-model="profileVisible" width="680px">
       <template #header>
@@ -411,6 +382,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { ApiClient, type AdminUserDetail, type DeletedUserAccount, type GraduationDueUser, type UserNodeAccount, type UserNodeUnbindRecord, type UserProfile } from "../../lib/api";
 import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
+import { useRouter } from "vue-router";
 import { formatServerDateTime } from "../../lib/time";
 import { Bell, Check, Connection, Delete, List, UserFilled, WarningFilled } from "@element-plus/icons-vue";
 
@@ -419,6 +391,7 @@ const exportLoading = ref(false);
 const importLoading = ref(false);
 const error = ref("");
 const success = ref("");
+const router = useRouter();
 const rows = ref<AdminUserDetail[]>([]);
 const registeredCount = ref(0);
 const deletedRows = ref<DeletedUserAccount[]>([]);
@@ -466,17 +439,6 @@ const filteredRows = computed(() => {
   ];
 });
 
-const rechargeVisible = ref(false);
-const rechargeLoading = ref(false);
-const rechargeUser = ref("");
-const rechargeAmount = ref(100);
-const rechargeMethod = ref("admin");
-const rechargeGeneralBalance = ref(0);
-const rechargeCarryoverBalance = ref(0);
-const rechargeExclusiveBalance = ref(0);
-const rechargeTotalBalance = ref(0);
-const rechargeBalanceLoading = ref(false);
-const rechargeBalanceError = ref("");
 const dueLoading = ref(false);
 const sendLoading = ref(false);
 const dueDeleteLoading = ref(false);
@@ -599,16 +561,6 @@ function sortAdminUsers(items: AdminUserDetail[], key: UserSortKey | "", order: 
       return left.index - right.index;
     })
     .map((entry) => entry.row);
-}
-
-function setRechargeBalances(generalBalance: number, carryoverBalance: number, exclusiveBalance: number, totalBalance?: number) {
-  const g = Number(generalBalance || 0);
-  const c = Number(carryoverBalance || 0);
-  const e = Number(exclusiveBalance || 0);
-  rechargeGeneralBalance.value = g;
-  rechargeCarryoverBalance.value = c;
-  rechargeExclusiveBalance.value = e;
-  rechargeTotalBalance.value = Number(totalBalance ?? (g + c + e));
 }
 
 function roleText(role: string): string {
@@ -834,43 +786,10 @@ async function exportUsersCSV() {
   }
 }
 
-async function syncRechargeCurrentBalance(username: string) {
-  const u = String(username || "").trim();
-  if (!u) return;
-  rechargeBalanceLoading.value = true;
-  rechargeBalanceError.value = "";
-  try {
-    const r = await client().adminPlatformUserDetail(u);
-    if (String(rechargeUser.value || "").trim() !== u) return;
-    const user = r.user;
-    const general = Number(user.general_balance ?? user.balance ?? 0);
-    const carryover = Number(user.carryover_balance ?? 0);
-    const exclusive = Number(user.exclusive_balance ?? 0);
-    const total = Number(user.total_balance ?? (general + carryover + exclusive));
-    setRechargeBalances(general, carryover, exclusive, total);
-  } catch (e: any) {
-    if (String(rechargeUser.value || "").trim() !== u) return;
-    rechargeBalanceError.value = `同步当前积分失败：${e?.message ?? String(e)}`;
-  } finally {
-    if (String(rechargeUser.value || "").trim() === u) {
-      rechargeBalanceLoading.value = false;
-    }
-  }
-}
-
-function openRecharge(row: AdminUserDetail) {
-  rechargeUser.value = String(row.username || "").trim();
-  rechargeAmount.value = 100;
-  rechargeMethod.value = "admin";
-  rechargeBalanceError.value = "";
-  rechargeBalanceLoading.value = false;
-  const general = Number(row.balance ?? 0);
-  const carryover = Number(row.carryover_balance ?? 0);
-  const exclusive = Number(row.exclusive_balance ?? 0);
-  const total = Number(row.total_balance ?? (general + carryover + exclusive));
-  setRechargeBalances(general, carryover, exclusive, total);
-  rechargeVisible.value = true;
-  void syncRechargeCurrentBalance(rechargeUser.value);
+function goPoints(row: AdminUserDetail) {
+  const username = String(row.username || "").trim();
+  if (!username) return;
+  void router.push({ path: "/admin/points", query: { username } });
 }
 
 async function openProfile(username: string) {
@@ -1233,31 +1152,6 @@ async function queryDuplicates(row: AdminUserDetail) {
   }
 }
 
-async function doRecharge() {
-  if (!rechargeAmount.value) {
-    error.value = "调整值不能为 0";
-    return;
-  }
-  rechargeLoading.value = true;
-  error.value = "";
-  success.value = "";
-  try {
-    const r = await client().adminRecharge(rechargeUser.value, rechargeAmount.value, rechargeMethod.value);
-    const general = Number(r.general_balance ?? r.balance ?? rechargeGeneralBalance.value);
-    const carryover = Number(r.carryover_balance ?? rechargeCarryoverBalance.value);
-    const exclusive = Number(r.exclusive_balance ?? rechargeExclusiveBalance.value);
-    const total = Number(r.total_balance ?? (general + carryover + exclusive));
-    setRechargeBalances(general, carryover, exclusive, total);
-    rechargeVisible.value = false;
-    success.value = `积分调整成功，当前通用积分 ${fmt2(general)}、结转积分 ${fmt2(carryover)}，总积分 ${fmt2(total)}`;
-    await reload();
-  } catch (e: any) {
-    error.value = e?.message ?? String(e);
-  } finally {
-    rechargeLoading.value = false;
-  }
-}
-
 async function loadGraduationDueUsers() {
   dueLoading.value = true;
   error.value = "";
@@ -1451,15 +1345,6 @@ reload();
   margin-top: 4px;
   font-size: 12px;
   color: #6b7280;
-}
-.recharge-balance-wrap {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.recharge-balance-error {
-  color: var(--error-color);
 }
 .expand-wrap {
   padding: 8px 12px;
