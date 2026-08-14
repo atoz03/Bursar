@@ -1,44 +1,49 @@
 <template>
   <div class="monitor-page">
-    <header class="page-head">
-      <div>
-        <div class="title-line">
-          <h1>集群状态</h1>
-          <span class="live-badge"><i />实时</span>
+    <section class="ops-page-hero">
+      <div class="ops-hero-copy">
+        <span class="ops-eyebrow">CLUSTER OVERVIEW</span>
+        <div class="ops-title-row">
+          <span class="ops-hero-icon"><el-icon><Monitor /></el-icon></span>
+          <div>
+            <h1>集群总览</h1>
+            <p>优先展示 CPU 与逐卡 GPU 状态，异常节点自动排在前面。</p>
+          </div>
         </div>
-        <p>优先展示 CPU 与逐卡 GPU 状态，异常节点会自动排在前面。</p>
       </div>
-      <div class="head-actions">
-        <span>{{ AUTO_REFRESH_SECONDS }} 秒自动刷新 · {{ lastRefreshText }}</span>
-        <el-button circle :loading="loading" aria-label="立即刷新" @click="loadMonitor">
+      <div class="ops-hero-actions">
+        <span class="live-badge"><i />实时</span>
+        <span class="ops-sync-meta">{{ AUTO_REFRESH_SECONDS }} 秒自动刷新 · {{ lastRefreshText }}</span>
+        <el-button :loading="loading" type="primary" @click="loadMonitor">
           <el-icon><Refresh /></el-icon>
+          立即刷新
         </el-button>
       </div>
-    </header>
+    </section>
 
     <el-alert v-if="error" class="monitor-error" type="error" show-icon :closable="false" :title="error" />
 
-    <section class="summary-bar">
-      <div class="summary-item">
+    <section class="ops-metric-grid monitor-summary-grid">
+      <article class="ops-metric-card ops-tone-green">
         <span>在线节点</span>
         <strong>{{ onlineCount }}<small>/ {{ nodes.length }}</small></strong>
-        <i class="summary-mark mark-green" />
-      </div>
-      <div class="summary-item">
+        <small>当前可正常上报的节点</small>
+      </article>
+      <article class="ops-metric-card ops-tone-violet">
         <span>活跃 GPU</span>
         <strong>{{ busyGPUCount }}<small>/ {{ totalGPUCount }}</small></strong>
-        <i class="summary-mark mark-violet" />
-      </div>
-      <div class="summary-item">
+        <small>逐卡统计当前活跃设备</small>
+      </article>
+      <article class="ops-metric-card ops-tone-blue">
         <span>平均 CPU</span>
         <strong>{{ averageCPUText }}</strong>
-        <i class="summary-mark mark-blue" />
-      </div>
-      <div class="summary-item" :class="{ attention: warningCount }">
+        <small>在线节点平均占用率</small>
+      </article>
+      <article class="ops-metric-card ops-tone-amber">
         <span>需关注</span>
         <strong>{{ warningCount }}<small> 台</small></strong>
-        <i class="summary-mark mark-amber" />
-      </div>
+        <small>资源或服务状态异常</small>
+      </article>
     </section>
 
     <section class="monitor-toolbar">
@@ -149,7 +154,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { Refresh, Search } from "@element-plus/icons-vue";
+import { Monitor, Refresh, Search } from "@element-plus/icons-vue";
 import { ApiClient, type GPUDeviceStatus, type NodeMonitorStatus } from "../../lib/api";
 import { authState } from "../../lib/authStore";
 import { settingsState } from "../../lib/settingsStore";
@@ -394,54 +399,7 @@ onBeforeUnmount(() => {
   color: #102033;
 }
 
-.monitor-hero {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-  overflow: hidden;
-  padding: 30px 34px;
-  border: 1px solid rgba(148, 163, 184, 0.28);
-  border-radius: 24px;
-  background:
-    radial-gradient(circle at 78% 20%, rgba(16, 185, 129, 0.17), transparent 28%),
-    radial-gradient(circle at 94% 100%, rgba(14, 165, 233, 0.18), transparent 34%),
-    linear-gradient(135deg, rgba(248, 252, 255, 0.97), rgba(231, 242, 249, 0.92));
-  box-shadow: 0 18px 46px rgba(30, 64, 92, 0.1);
-}
-
-.monitor-hero::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  opacity: 0.35;
-  background-image:
-    linear-gradient(rgba(76, 112, 138, 0.1) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(76, 112, 138, 0.1) 1px, transparent 1px);
-  background-size: 56px 56px;
-  mask-image: linear-gradient(90deg, transparent, #000 42%, #000);
-}
-
-.hero-copy, .hero-actions { position: relative; z-index: 1; }
-.eyebrow { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; color: #059669; font-size: 12px; font-weight: 800; letter-spacing: 0.16em; }
-.live-pulse { width: 9px; height: 9px; border-radius: 50%; background: #10b981; box-shadow: 0 0 0 6px rgba(16, 185, 129, 0.12); animation: breathe 1.8s ease-in-out infinite; }
-.hero-copy h1 { margin: 0; font-size: clamp(28px, 3vw, 40px); letter-spacing: -0.04em; }
-.hero-copy p { margin: 10px 0 0; color: #607086; font-size: 15px; }
-.hero-actions { display: flex; align-items: center; gap: 18px; }
-.refresh-meta { display: grid; gap: 4px; text-align: right; color: #7a899a; font-size: 12px; }
-.refresh-meta strong { color: #203248; font-size: 14px; }
-
 .monitor-error { margin-top: 16px; }
-.summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin: 18px 0; }
-.summary-card { display: flex; align-items: center; gap: 15px; min-height: 104px; padding: 18px 20px; border: 1px solid rgba(148, 163, 184, 0.25); border-radius: 18px; background: rgba(255,255,255,0.82); box-shadow: 0 12px 30px rgba(35, 57, 82, 0.07); backdrop-filter: blur(16px); }
-.summary-icon { display: grid; place-items: center; width: 48px; height: 48px; flex: 0 0 48px; border-radius: 15px; color: var(--tone); background: color-mix(in srgb, var(--tone) 12%, white); font-size: 23px; }
-.summary-card div { display: grid; gap: 3px; }
-.summary-card strong { color: #15263a; font-size: 27px; line-height: 1; }
-.summary-card strong small { margin-left: 4px; color: #8794a5; font-size: 14px; font-weight: 600; }
-.summary-card div span { color: #718096; font-size: 13px; }
-.tone-green { --tone: #10b981; } .tone-violet { --tone: #7c3aed; } .tone-blue { --tone: #0284c7; } .tone-amber { --tone: #f59e0b; } .tone-cyan { --tone: #0891b2; }
 
 .monitor-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 18px 0; padding: 10px; border: 1px solid rgba(148,163,184,.25); border-radius: 16px; background: rgba(255,255,255,.7); }
 .filter-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -496,78 +454,31 @@ onBeforeUnmount(() => {
 .node-footer i { color: #8a98a9; font-style: normal; }
 .node-footer .heartbeat { justify-self: end; }
 
-@keyframes breathe { 50% { box-shadow: 0 0 0 9px rgba(16,185,129,.04); } }
-
-@media (max-width: 1150px) {
-  .summary-grid { grid-template-columns: repeat(2, 1fr); }
-}
-
 @media (max-width: 760px) {
-  .monitor-hero, .monitor-toolbar { align-items: stretch; flex-direction: column; }
-  .monitor-hero { padding: 24px 20px; }
-  .hero-actions { justify-content: space-between; }
-  .summary-grid { grid-template-columns: 1fr 1fr; }
-  .summary-card { min-height: 86px; padding: 14px; }
+  .monitor-toolbar { align-items: stretch; flex-direction: column; }
   .node-grid, .skeleton-grid { grid-template-columns: minmax(0, 1fr); }
   .node-search { width: 100%; }
 }
 
 @media (max-width: 500px) {
-  .summary-grid, .primary-metrics, .gpu-grid { grid-template-columns: 1fr; }
-  .summary-grid { gap: 9px; }
-  .summary-card { min-height: 76px; }
+  .primary-metrics, .gpu-grid { grid-template-columns: 1fr; }
   .node-card { padding: 16px; }
   .node-footer { grid-template-columns: repeat(2, 1fr); }
   .node-footer .heartbeat { justify-self: start; }
-  .refresh-meta { display: none; }
 }
-</style>
-
-<style scoped>
 /* 轻量监控主题：减少嵌套容器和装饰，让节点与 GPU 数据成为视觉主体。 */
 .monitor-page {
   min-height: calc(100vh - 96px);
   padding: 4px 2px 28px;
   color: #172235;
 }
-
-.page-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-  padding: 8px 2px 18px;
-}
-
-.title-line { display: flex; align-items: center; gap: 12px; }
-.title-line h1 { margin: 0; font-size: 27px; letter-spacing: -.035em; }
-.page-head p { margin: 7px 0 0; color: #7b8798; font-size: 13px; }
+.monitor-summary-grid { margin: 14px 0; }
 .live-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border-radius: 999px; color: #07885f; background: #e9f9f2; font-size: 11px; font-weight: 700; }
-.live-badge i { width: 6px; height: 6px; border-radius: 50%; background: #10b981; box-shadow: 0 0 0 4px rgba(16,185,129,.12); }
-.head-actions { display: flex; align-items: center; gap: 12px; color: #8a96a6; font-size: 12px; }
-.head-actions :deep(.el-button) { width: 36px; height: 36px; border-color: #dce4eb; color: #486078; background: #fff; }
-
-.summary-bar {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  margin-bottom: 14px;
-  border: 1px solid #e1e7ed;
-  border-radius: 16px;
-  background: #fff;
-  box-shadow: 0 7px 24px rgba(39, 57, 77, .055);
+.live-badge i { width: 6px; height: 6px; border-radius: 50%; background: #10b981; box-shadow: 0 0 0 4px rgba(16,185,129,.12); animation: statusLivePulse 1.8s ease-in-out infinite; }
+@keyframes statusLivePulse {
+  0%, 100% { opacity: .72; transform: scale(.88); }
+  50% { opacity: 1; transform: scale(1.12); }
 }
-
-.summary-item { position: relative; display: grid; gap: 5px; min-height: 84px; padding: 17px 22px; border-right: 1px solid #edf1f4; }
-.summary-item:last-child { border-right: 0; }
-.summary-item > span { color: #7e8a99; font-size: 12px; }
-.summary-item strong { color: #18283a; font-size: 25px; line-height: 1; letter-spacing: -.03em; }
-.summary-item strong small { margin-left: 3px; color: #9aa5b2; font-size: 12px; font-weight: 550; }
-.summary-mark { position: absolute; top: 20px; right: 20px; width: 8px; height: 8px; border-radius: 50%; }
-.mark-green { background: #10b981; box-shadow: 0 0 0 5px #e9f9f2; }
-.mark-violet { background: #8b5cf6; box-shadow: 0 0 0 5px #f2edff; }
-.mark-blue { background: #3b82f6; box-shadow: 0 0 0 5px #eaf2ff; }
-.mark-amber { background: #cbd5e1; box-shadow: 0 0 0 5px #f1f5f9; }
-.summary-item.attention .mark-amber { background: #f59e0b; box-shadow: 0 0 0 5px #fff6df; }
 
 .monitor-toolbar { margin: 0 0 14px; padding: 4px 2px; border: 0; border-radius: 0; background: transparent; }
 .filter-tabs { gap: 4px; padding: 3px; border-radius: 11px; background: #eef2f5; }
@@ -648,29 +559,21 @@ onBeforeUnmount(() => {
 .node-footer .heartbeat { justify-self: stretch; }
 
 @media (max-width: 950px) {
-  .summary-bar { grid-template-columns: repeat(2, 1fr); }
-  .summary-item:nth-child(2) { border-right: 0; }
-  .summary-item:nth-child(-n+2) { border-bottom: 1px solid #edf1f4; }
+  .monitor-summary-grid { grid-template-columns: repeat(2, 1fr); }
 }
 
 @media (max-width: 760px) {
-  .page-head, .monitor-toolbar { align-items: stretch; flex-direction: column; }
-  .page-head { gap: 13px; }
-  .head-actions { justify-content: space-between; }
+  .monitor-toolbar { align-items: stretch; flex-direction: column; }
   .node-grid, .skeleton-grid { grid-template-columns: minmax(0, 1fr); }
   .node-grid { grid-auto-rows: 485px; }
   .node-search { width: 100%; }
 }
 
 @media (max-width: 500px) {
-  .summary-bar { grid-template-columns: 1fr 1fr; }
-  .summary-item { min-height: 76px; padding: 15px; }
-  .summary-item strong { font-size: 22px; }
-  .summary-mark { top: 18px; right: 15px; }
+  .monitor-summary-grid { grid-template-columns: 1fr; }
   .primary-metrics, .gpu-grid { grid-template-columns: 1fr; }
   .node-grid { grid-auto-rows: 535px; }
   .gpu-grid { max-height: none; }
   .node-card { padding: 15px; }
-  .head-actions > span { font-size: 10px; }
 }
 </style>

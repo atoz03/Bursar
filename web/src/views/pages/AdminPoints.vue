@@ -1,16 +1,31 @@
 <template>
   <div class="content-stack">
+    <section class="ops-page-hero">
+      <div class="ops-hero-copy">
+        <span class="ops-eyebrow">POINTS OPERATIONS</span>
+        <div class="ops-title-row">
+          <span class="ops-hero-icon"><el-icon><Coin /></el-icon></span>
+          <div>
+            <h1>积分管理</h1>
+            <p>统一管理用户积分、批量规则、月度结转和操作记录。</p>
+          </div>
+        </div>
+      </div>
+      <div class="ops-hero-actions">
+        <el-button :loading="loading" type="primary" @click="reloadAll">刷新数据</el-button>
+      </div>
+    </section>
+
     <el-card v-if="allowPointsUsers" class="section-card">
       <template #header>
         <div class="section-head">
           <div class="section-title-wrap">
             <span class="section-icon tone-points"><el-icon><Coin /></el-icon></span>
             <div class="section-title-content">
-              <div class="title">积分管理</div>
-              <div class="sub">统一管理用户积分、月度规则和操作记录</div>
+              <div class="title">用户积分</div>
+              <div class="sub">查询单个用户并调整积分</div>
             </div>
           </div>
-          <el-button :loading="loading" type="primary" @click="reloadAll">刷新</el-button>
         </div>
       </template>
 
@@ -351,8 +366,8 @@
       </el-table>
     </el-card>
 
-    <el-dialog v-model="adjustVisible" title="积分调整" width="540px">
-      <el-form label-width="100px">
+    <el-dialog v-model="adjustVisible" title="积分调整" width="600px" class="points-adjust-dialog">
+      <el-form label-width="104px" class="points-adjust-form">
         <el-form-item label="用户名">
           <el-input v-model="adjustUsername" disabled />
         </el-form-item>
@@ -371,8 +386,10 @@
           <div v-if="adjustBalanceError" class="sub adjust-balance-error">{{ adjustBalanceError }}</div>
         </el-form-item>
         <el-form-item label="调整值">
-          <el-input-number v-model="adjustDelta" :step="10" :min="-1000000" :max="1000000" />
-          <div class="sub">正数表示增加，负数表示减少</div>
+          <div class="adjust-field-stack">
+            <el-input-number v-model="adjustDelta" class="adjust-number" :step="10" :min="-1000000" :max="1000000" />
+            <div class="sub">正数增加，负数减少</div>
+          </div>
         </el-form-item>
         <el-form-item label="积分类型">
           <el-radio-group v-model="adjustScope">
@@ -1511,6 +1528,33 @@ onBeforeUnmount(() => {
 }
 .adjust-balance-error {
   color: var(--error-color);
+}
+.points-adjust-form :deep(.el-form-item) {
+  align-items: flex-start;
+  margin-bottom: 20px;
+}
+.points-adjust-form :deep(.el-form-item__label) {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  line-height: 1.35;
+}
+.points-adjust-form :deep(.el-form-item__content) {
+  min-width: 0;
+  min-height: 40px;
+  align-items: center;
+}
+.adjust-field-stack {
+  width: 100%;
+  display: grid;
+  gap: 6px;
+}
+.adjust-number {
+  width: min(300px, 100%);
+}
+.adjust-field-stack .sub {
+  line-height: 1.4;
 }
 .delta-plus {
   color: #15803d;

@@ -1,34 +1,24 @@
 <template>
   <div class="page-container fade-in">
-    <div class="page-header">
-      <div class="header-content">
-        <div class="header-icon">
-          <el-icon :size="28"><Monitor /></el-icon>
-        </div>
-        <div>
-          <h1 class="page-title">节点状态监控</h1>
-          <p class="page-subtitle">查看节点运行状态、资源使用和安全事件</p>
+    <section class="ops-page-hero nodes-hero">
+      <div class="ops-hero-copy">
+        <span class="ops-eyebrow">NODE OPERATIONS</span>
+        <div class="ops-title-row">
+          <span class="ops-hero-icon"><el-icon><Monitor /></el-icon></span>
+          <div>
+            <h1>节点管理</h1>
+            <p>查看节点运行、安全与计费状态，并集中管理节点策略。</p>
+          </div>
         </div>
       </div>
-      <div class="header-actions">
-        <el-text type="info" size="small" class="refresh-time-text">上次刷新：{{ lastRefreshTimeText }}</el-text>
-        <el-tooltip content="立即同步" placement="top">
-          <el-button
-            link
-            class="icon-action-btn"
-            :disabled="!detailNodeId || !canManageNodes"
-            :loading="!!detailNodeId && syncingNodeId === detailNodeId"
-            @click="syncCurrentNode"
-          >
-            <el-icon :size="20"><Refresh /></el-icon>
-          </el-button>
-        </el-tooltip>
-        <el-button :loading="loading" type="primary" @click="reload" size="large" round>
+      <div class="ops-hero-actions">
+        <span class="ops-sync-meta">上次刷新：{{ lastRefreshTimeText }}</span>
+        <el-button :loading="loading" type="primary" @click="reload">
           <el-icon><Refresh /></el-icon>
-          刷新数据
+          立即刷新
         </el-button>
       </div>
-    </div>
+    </section>
 
     <el-alert v-if="error" :title="error" type="error" show-icon class="error-alert" />
     <el-alert
@@ -39,7 +29,7 @@
       class="risk-banner"
     >
       <template #title>
-        <span>🚨 安全提醒：近 7 天有 {{ riskyNodes.length }} 台节点出现安全事件或疑似恶意账号。</span>
+        <span>近 7 天有 {{ riskyNodes.length }} 台节点出现安全事件或疑似恶意账号</span>
       </template>
       <div class="risk-banner-list">
         <button
@@ -49,7 +39,6 @@
           class="risk-chip"
           @click="openNodeDetailById(node.node_id)"
         >
-          <span class="risk-chip-emoji">{{ node.emoji }}</span>
           <span>{{ node.node_id }}</span>
           <span class="risk-chip-meta">{{ node.summary }}</span>
         </button>
@@ -57,46 +46,27 @@
     </el-alert>
 
     <!-- 统计卡片 -->
-    <div class="stats-grid" v-if="rows.length > 0">
-      <div class="stat-card">
-        <div class="stat-icon" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%)">
-          <el-icon :size="24"><Monitor /></el-icon>
-        </div>
-        <div class="stat-content">
-          <div class="stat-value">{{ onlineNodeCount }} / {{ rows.length }}</div>
-          <div class="stat-label">在线节点 / 总节点</div>
-        </div>
-      </div>
-
-      <div class="stat-card">
-        <div class="stat-icon" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%)">
-          <el-icon :size="24"><Cpu /></el-icon>
-        </div>
-        <div class="stat-content">
-          <div class="stat-value">{{ totalGpuProcesses }}</div>
-          <div class="stat-label">GPU 进程总数</div>
-        </div>
-      </div>
-
-      <div class="stat-card">
-        <div class="stat-icon" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)">
-          <el-icon :size="24"><Cpu /></el-icon>
-        </div>
-        <div class="stat-content">
-          <div class="stat-value">{{ totalCpuProcesses }}</div>
-          <div class="stat-label">CPU 进程总数</div>
-        </div>
-      </div>
-
-      <div class="stat-card">
-        <div class="stat-icon" style="background: linear-gradient(135deg, #fa709a 0%, #fee140 100%)">
-          <el-icon :size="24"><Coin /></el-icon>
-        </div>
-        <div class="stat-content">
-          <div class="stat-value">{{ totalCost.toFixed(2) }}</div>
-          <div class="stat-label">总积分消耗</div>
-        </div>
-      </div>
+    <div v-if="rows.length > 0" class="ops-metric-grid nodes-metric-grid">
+      <article class="ops-metric-card ops-tone-green">
+        <span>在线节点</span>
+        <strong>{{ onlineNodeCount }}<small>/ {{ rows.length }}</small></strong>
+        <small>当前在线 / 全部节点</small>
+      </article>
+      <article class="ops-metric-card ops-tone-violet">
+        <span>GPU 进程</span>
+        <strong>{{ totalGpuProcesses }}</strong>
+        <small>全部节点 GPU 进程总数</small>
+      </article>
+      <article class="ops-metric-card ops-tone-cyan">
+        <span>CPU 进程</span>
+        <strong>{{ totalCpuProcesses }}</strong>
+        <small>全部节点 CPU 进程总数</small>
+      </article>
+      <article class="ops-metric-card ops-tone-amber">
+        <span>积分消耗</span>
+        <strong>{{ totalCost.toFixed(2) }}</strong>
+        <small>当前节点记录累计</small>
+      </article>
     </div>
 
     <!-- 节点列表 -->
@@ -1623,7 +1593,6 @@ const riskyNodes = computed(() => {
       const suspiciousCount = Number(node.suspicious_user_count_7d || 0);
       return {
         node_id: node.node_id,
-        emoji: nodeRiskEmoji(node),
         summary: `事件 ${eventCount} / 疑似账号 ${suspiciousCount}`,
       };
     });
@@ -3294,14 +3263,6 @@ async function syncNodeNow(nodeId: string) {
   }
 }
 
-async function syncCurrentNode() {
-  if (!detailNodeId.value) {
-    ElMessage.warning("请先点击节点 ID 进入详情，再执行立即同步");
-    return;
-  }
-  await syncNodeNow(detailNodeId.value);
-}
-
 async function refreshDetailNow() {
   if (!detailNodeId.value) return;
   await loadNodeDetail(detailNodeId.value, false);
@@ -3361,53 +3322,8 @@ onBeforeUnmount(() => {
   padding: 0 8px;
 }
 
-.page-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 24px;
-  padding: 24px;
-  background: var(--bg-card);
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--border-color);
-  box-shadow: var(--shadow-md);
-}
-
-.header-content {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-}
-
-.header-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 56px;
-  height: 56px;
-  border-radius: 12px;
-  background: var(--primary-gradient);
-  box-shadow: var(--shadow-md);
-}
-
-.page-title {
-  font-size: 24px;
-  font-weight: 700;
-  color: var(--text-primary);
-  margin: 0;
-}
-
-.page-subtitle {
-  font-size: 14px;
-  color: var(--text-tertiary);
-  margin: 4px 0 0 0;
-}
-
-.header-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
+.nodes-hero { margin-bottom: 18px; }
+.nodes-metric-grid { margin-bottom: 24px; }
 
 .icon-action-btn {
   color: var(--primary-color) !important;
@@ -3457,10 +3373,6 @@ onBeforeUnmount(() => {
   background: #fef3c7;
 }
 
-.risk-chip-emoji {
-  font-size: 14px;
-}
-
 .risk-chip-meta {
   color: #b45309;
 }
@@ -3498,59 +3410,6 @@ onBeforeUnmount(() => {
   margin-top: 4px;
   font-size: 13px;
   line-height: 1.5;
-}
-
-.stats-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 20px;
-  margin-bottom: 24px;
-}
-
-.stat-card {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 20px;
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-md);
-  transition: all 0.3s ease;
-}
-
-.stat-card:hover {
-  transform: translateY(-4px);
-  box-shadow: var(--shadow-lg);
-  border-color: var(--primary-color);
-}
-
-.stat-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 56px;
-  height: 56px;
-  border-radius: 12px;
-  color: white;
-  box-shadow: var(--shadow-md);
-}
-
-.stat-content {
-  flex: 1;
-}
-
-.stat-value {
-  font-size: 28px;
-  font-weight: 700;
-  color: var(--text-primary);
-  line-height: 1;
-}
-
-.stat-label {
-  font-size: 13px;
-  color: var(--text-tertiary);
-  margin-top: 6px;
 }
 
 .table-card {
