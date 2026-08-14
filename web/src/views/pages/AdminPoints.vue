@@ -128,7 +128,7 @@
           </el-select>
         </el-form-item>
         <el-form-item v-if="filteredBatchScope === 'node_exclusive'" label="节点编号">
-          <el-input v-model="filteredBatchNodeId" placeholder="例如 60020" style="width: 160px" />
+          <el-input v-model="filteredBatchNodeId" placeholder="例如 node-01" style="width: 160px" />
         </el-form-item>
         <el-form-item label="调整积分">
           <el-input-number v-model="filteredBatchAmount" :min="-1000000" :max="1000000" :step="10" />
@@ -181,7 +181,7 @@
           </el-select>
         </el-form-item>
         <el-form-item v-if="batchScope === 'node_exclusive'" label="节点编号">
-          <el-input v-model="batchNodeId" placeholder="例如 60020" style="width: 160px" />
+          <el-input v-model="batchNodeId" placeholder="例如 node-01" style="width: 160px" />
         </el-form-item>
         <el-form-item label="调整积分">
           <el-input-number v-model="batchAmount" :min="-1000000" :max="1000000" :step="10" />
@@ -399,7 +399,7 @@
           </el-radio-group>
         </el-form-item>
         <el-form-item v-if="adjustScope === 'node_exclusive'" label="节点编号">
-          <el-input v-model="adjustNodeId" placeholder="例如 60020" />
+          <el-input v-model="adjustNodeId" placeholder="例如 node-01" />
         </el-form-item>
         <el-form-item label="备注">
           <el-input v-model="adjustReason" placeholder="可选" />

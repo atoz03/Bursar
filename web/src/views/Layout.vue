@@ -5,7 +5,7 @@
       <div class="brand">
         <span class="brand-mark"><el-icon :size="23"><Cpu /></el-icon></span>
         <div class="brand-copy">
-          <div class="brand-title">GPU Ops</div>
+          <div class="brand-title">{{ authState.platformName }}</div>
           <div class="brand-sub">{{ t("GPU 运维平台", "GPU Operations Platform") }}</div>
         </div>
       </div>
@@ -46,6 +46,7 @@
           </el-sub-menu>
           <el-sub-menu index="grp-system">
             <template #title><el-icon><Setting /></el-icon><span>{{ t("系统与容灾", "System") }}</span></template>
+            <el-menu-item index="/admin/setup">{{ t("系统设置", "System Setup") }}</el-menu-item>
             <el-menu-item index="/admin/ha">{{ t("容灾同步", "HA Sync") }}</el-menu-item>
             <el-menu-item index="/admin/announcements">{{ t("公告管理", "Announcements") }}</el-menu-item>
             <el-menu-item index="/admin/guideline">{{ t("用户准则", "Guidelines") }}</el-menu-item>

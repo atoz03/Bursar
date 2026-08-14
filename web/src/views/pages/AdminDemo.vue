@@ -103,8 +103,8 @@
                   <section class="register-section account-section">
                     <header><i /><div><h3>账号信息</h3><p>用于登录平台并接收验证邮件</p></div></header>
                     <el-form-item label="校园邮箱" required>
-                      <el-input v-model="mockForm.email" placeholder="26B123456@example.org" />
-                      <small>仅允许 @example.org 或 @students.example.org</small>
+                      <el-input v-model="mockForm.email" placeholder="user@example.org" />
+                      <small>邮箱域名由管理员在系统设置中配置</small>
                     </el-form-item>
                     <el-form-item label="用户名" required>
                       <el-input v-model="mockForm.usernamePrefix" placeholder="姓名拼音首字母">
@@ -338,7 +338,7 @@ const mockForm = reactive({
 });
 
 const mockRows = [
-  { name: "示例记录 A", identity: "60020 / demo-a", resource: "GPU 2 · 468.20", status: "正常", updated: "2026-08-14 15:20" },
+  { name: "示例记录 A", identity: "node-01 / demo-a", resource: "GPU 2 · 468.20", status: "正常", updated: "2026-08-14 15:20" },
   { name: "示例记录 B", identity: "60021 / demo-b", resource: "CPU 64 · 320.00", status: "待处理", updated: "2026-08-14 15:16" },
   { name: "示例记录 C", identity: "60022 / demo-c", resource: "GPU 4 · 126.50", status: "正常", updated: "2026-08-14 15:08" },
   { name: "示例记录 D", identity: "60018 / demo-d", resource: "CPU 192 · 80.00", status: "正常", updated: "2026-08-14 14:57" },
@@ -350,7 +350,7 @@ const filteredRows = computed(() => {
 });
 
 const mockNodes = [
-  { id: "60020", online: true, state: "good", cpu: "Intel Xeon 64C", cpuUse: 31, gpus: [{ name: "GPU 0", use: 72 }, { name: "GPU 1", use: 18 }, { name: "GPU 2", use: 0 }, { name: "GPU 3", use: 44 }] },
+  { id: "node-01", online: true, state: "good", cpu: "Intel Xeon 64C", cpuUse: 31, gpus: [{ name: "GPU 0", use: 72 }, { name: "GPU 1", use: 18 }, { name: "GPU 2", use: 0 }, { name: "GPU 3", use: 44 }] },
   { id: "60021", online: true, state: "warn", cpu: "AMD EPYC 96C", cpuUse: 68, gpus: [{ name: "GPU 0", use: 91 }, { name: "GPU 1", use: 87 }] },
   { id: "60022", online: false, state: "muted", cpu: "AMD EPYC 64C", cpuUse: 0, gpus: [{ name: "GPU 0", use: 0 }, { name: "GPU 1", use: 0 }] },
 ];

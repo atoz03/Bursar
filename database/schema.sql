@@ -814,9 +814,6 @@ CREATE TABLE IF NOT EXISTS ssh_exemptions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_ssh_exemptions_user ON ssh_exemptions(local_username);
-INSERT INTO ssh_exemptions(node_id, local_username, created_by)
-VALUES('*', 'gpuops', 'system')
-ON CONFLICT (node_id, local_username) DO NOTHING;
 
 -- SSH 名单来源元信息（记录是按节点账号添加还是按平台账号添加）
 CREATE TABLE IF NOT EXISTS ssh_list_sources (

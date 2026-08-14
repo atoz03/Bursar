@@ -1098,6 +1098,7 @@ func (s *Server) RouterWeb() *gin.Engine {
 	})
 
 	api := r.Group("/api")
+	api.GET("/public/settings", s.handlePublicSettings)
 	api.GET("/auth/me", s.handleAuthMe)
 	api.GET("/auth/login/captcha", s.handleAuthLoginCaptcha)
 	api.POST("/auth/login", s.handleAuthLogin)
@@ -1142,6 +1143,8 @@ func (s *Server) RouterWeb() *gin.Engine {
 
 	admin := api.Group("/admin")
 	admin.Use(s.authAdmin())
+	admin.GET("/setup", s.requireSuperAdmin(), s.handleAdminSetupGet)
+	admin.POST("/setup", s.requireSuperAdmin(), s.handleAdminSetupSave)
 	admin.POST("/bootstrap", s.requireSuperAdmin(), s.handleAdminBootstrap)
 	admin.GET("/users", s.requirePlatformUsersPermission(), s.handleAdminUsers)
 	admin.GET("/users/details", s.requirePlatformUsersPermission(), s.handleAdminUserDetails)
@@ -2956,6 +2959,7 @@ func (s *Server) handleAdminGraduationRemindersSend(c *gin.Context) {
 		return
 	}
 	monthStart := time.Now().Format("2006-01")
+	platformName := s.platformName(c.Request.Context())
 	results := make([]graduationReminderSendResult, 0, len(req.Usernames))
 	okCount := 0
 	for _, raw := range req.Usernames {
@@ -2978,11 +2982,12 @@ func (s *Server) handleAdminGraduationRemindersSend(c *gin.Context) {
 			continue
 		}
 		r.Email = email
-		subject := "GPU Ops 数据备份提醒（毕业到期）"
+		subject := platformName + " 数据备份提醒（毕业到期）"
 		body := fmt.Sprintf(
-			"你好 %s，\n\n系统检测到你已达到预计毕业时间（%s）。\n请尽快备份个人数据，平台将在两个月内进行数据清理。\n如需延期，请尽快联系管理员。\n\nGPU Ops 团队",
+			"你好 %s，\n\n系统检测到你已达到预计毕业时间（%s）。\n请尽快备份个人数据，平台将在两个月内进行数据清理。\n如需延期，请尽快联系管理员。\n\n%s 团队",
 			username,
 			monthStart,
+			platformName,
 		)
 		if err := sendPlainTextMail(settings, email, subject, body); err != nil {
 			r.Success = false
@@ -5164,7 +5169,8 @@ func (s *Server) handleAdminAccountProvision(c *gin.Context) {
 	if err != nil {
 		mailErrMsg = "读取邮件配置失败: " + err.Error()
 	} else {
-		subject := fmt.Sprintf("【GPU Ops】节点账号已开通：%s@%s", req.LocalUsername, req.NodeID)
+		platformName := s.platformName(c.Request.Context())
+		subject := fmt.Sprintf("【%s】节点账号已开通：%s@%s", platformName, req.LocalUsername, req.NodeID)
 		body := strings.Join([]string{
 			fmt.Sprintf("你好 %s（%s）：", strings.TrimSpace(userAcc.RealName), req.BillingUsername),
 			"",
@@ -9479,8 +9485,9 @@ func (s *Server) handleAdminMailTest(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	subject := "GPU Ops 邮件配置测试"
-	body := fmt.Sprintf("你好 %s，\n\n这是一封测试邮件，表示管理员已成功配置 SMTP。\n时间：%s\n\nGPU Ops 团队", username, formatRFC3339InBeijing(time.Now()))
+	platformName := s.platformName(c.Request.Context())
+	subject := platformName + " 邮件配置测试"
+	body := fmt.Sprintf("你好 %s，\n\n这是一封测试邮件，表示管理员已成功配置 SMTP。\n时间：%s\n\n%s 团队", username, formatRFC3339InBeijing(time.Now()), platformName)
 	if err := sendResetPasswordMail(settings, email, subject, body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "发送失败: " + err.Error()})
 		return

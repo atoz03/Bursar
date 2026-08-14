@@ -78,7 +78,7 @@ func (a *NodeAgent) getSSHUsers(ctx context.Context) []string {
 	}
 
 	// 通道4：命令行模式匹配（补充 owner= root 的会话）
-	// 典型格式：sshd: gpuops@pts/2 / sshd: gpuops [priv]
+	// 典型格式：sshd: gpuuser@pts/2 / sshd: gpuuser [priv]
 	re := regexp.MustCompile(`sshd:\s*([a-zA-Z0-9._-]+)(?:@|\s+\[)`)
 	if out, err := exec.CommandContext(ctx, "ps", "-eo", "args=").Output(); err == nil {
 		lines := strings.Split(string(out), "\n")

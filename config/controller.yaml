@@ -1,7 +1,7 @@
 # 控制器配置示例（开发环境）
 listen_addr: "0.0.0.0:60039"
 # 内部接口监听（节点 Agent / SSH Guard / HA 内部状态查询）。
-# 为空表示不启用内部独立端口；建议生产配置为 192.0.2.x:60040 并启用 TLS。
+# 为空表示不启用内部独立端口；生产环境建议绑定内网地址并启用 TLS。
 internal_listen_addr: ""
 internal_tls_cert_file: ""
 internal_tls_key_file: ""
@@ -57,8 +57,7 @@ session_hours: 8
 # 内网用户通过 NAT 地址访问时，应填写浏览器地址栏里的 hostname，不是 Controller 后端网卡地址。
 turnstile_site_key: ""
 turnstile_secret_key: ""
-turnstile_expected_hostnames:
-  - "192.0.2.20"
+turnstile_expected_hostnames: []
 
 # 是否强制 cookie secure（HTTPS 下建议 true；HTTP 调试可 false）
 cookie_secure: false
@@ -69,7 +68,7 @@ smtp_port: 587
 smtp_user: ""
 smtp_pass: ""
 from_email: ""
-from_name: "GPU Ops 团队"
+from_name: "GPU Ops"
 
 # 默认余额（首次见到的新用户）
 default_balance: 100
@@ -84,7 +83,7 @@ migration_dir: ""
 web_dir: ""
 
 # 容灾（主备控制器）配置
-ha_enabled: true
+ha_enabled: false
 ha_node: "controller-primary"
 ha_role: "primary"
 ha_peer_url: "http://<standby-controller-ip>:60039"

@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# 从 primary 分发 60009 standby，并在远端交互执行一次 sudo 引导。
+# 从 primary 分发 standby，并在远端交互执行一次 sudo 引导。
 set -Eeuo pipefail
 umask 077
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PRIMARY_HOST="${PRIMARY_HOST:-192.0.2.10}"
+: "${PRIMARY_HOST:?请设置 PRIMARY_HOST}"
 PRIMARY_CONTROLLER_PORT="${PRIMARY_CONTROLLER_PORT:-60039}"
-DR_HOST="${DR_HOST:-192.0.2.10}"
-DR_SSH_USER="${DR_SSH_USER:-gpuops}"
+: "${DR_HOST:?请设置 DR_HOST}"
+: "${DR_SSH_USER:?请设置 DR_SSH_USER}"
 DR_SSH_PORT="${DR_SSH_PORT:-22}"
 DR_CONTROLLER_PORT="${DR_CONTROLLER_PORT:-60039}"
-DR_NODE_ID="${DR_NODE_ID:-60009}"
-DR_KEY_FILE="${DR_KEY_FILE:-${ROOT_DIR}/my_ssh_keys/node_60009.txt}"
+DR_NODE_ID="${DR_NODE_ID:-standby-1}"
+: "${DR_KEY_FILE:?请设置 DR_KEY_FILE}"
 REMOTE_PROJECT_DIR="${REMOTE_PROJECT_DIR:-/home/${DR_SSH_USER}/gpu-ops}"
 LOCAL_CONFIG_PATH="${LOCAL_CONFIG_PATH:-${ROOT_DIR}/config/controller.local.yaml}"
 LOCAL_BIN="${LOCAL_BIN:-/usr/local/bin/gpu-controller}"
@@ -55,7 +55,7 @@ if [[ "${TRANSFER_POSTGRES_IMAGE}" == "1" ]]; then
   scp -q "${scp_opts[@]}" "${image_archive}" "${remote}:${REMOTE_PROJECT_DIR}/.deploy/postgres-image.tar.gz"
 fi
 
-echo "[2/4] 在 60009 安装独立 PostgreSQL 与 standby 控制器"
+echo "[2/4] 在 standby 安装独立 PostgreSQL 与控制器"
 ssh -tt "${ssh_opts[@]}" "${remote}" \
   "sudo env PROJECT_DIR='${REMOTE_PROJECT_DIR}' PRIMARY_HOST='${PRIMARY_HOST}' PRIMARY_CONTROLLER_PORT='${PRIMARY_CONTROLLER_PORT}' DR_CONTROLLER_PORT='${DR_CONTROLLER_PORT}' DR_HA_NODE='controller-${DR_NODE_ID}' bash '${REMOTE_PROJECT_DIR}/scripts/bootstrap_dr_standby_local.sh'"
 

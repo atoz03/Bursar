@@ -104,21 +104,21 @@ func defaultHASyncConfig(cfg Config) HASyncConfig {
 		defaultPrimaryPort = 60039
 	)
 	return HASyncConfig{
-		Enabled:               true,
+		Enabled:               false,
 		IntervalDays:          1,
 		StartHour:             3,
-		DRNodeID:              "60019",
-		DRHost:                "192.0.2.10",
+		DRNodeID:              "",
+		DRHost:                "",
 		DRSSHPort:             22,
-		DRSSHUser:             "gpuops",
-		DRKeyFile:             "/home/gpuops/gpu-ops/my_ssh_keys/node_60019.txt",
-		DRControllerPort:      60019,
+		DRSSHUser:             "",
+		DRKeyFile:             "",
+		DRControllerPort:      defaultPrimaryPort,
 		PrimaryHost:           parseListenHost(cfg.ListenAddr, "127.0.0.1"),
 		PrimaryControllerPort: parseListenPort(cfg.ListenAddr, defaultPrimaryPort),
-		ScriptPath:            "/home/gpuops/gpu-ops/scripts/ha_sync_worker.sh",
+		ScriptPath:            "/opt/gpu-ops/scripts/ha_sync_worker.sh",
 		SyncWebDist:           true,
 		SyncDatabase:          true,
-		AutoFailover:          true,
+		AutoFailover:          false,
 	}
 }
 
@@ -149,34 +149,22 @@ func normalizeHASyncConfig(cfg HASyncConfig) HASyncConfig {
 		cfg.DRSSHPort = 22
 	}
 	if cfg.DRControllerPort <= 0 || cfg.DRControllerPort > 65535 {
-		cfg.DRControllerPort = 60019
+		cfg.DRControllerPort = 60039
 	}
 	if cfg.PrimaryControllerPort <= 0 || cfg.PrimaryControllerPort > 65535 {
 		cfg.PrimaryControllerPort = 60039
 	}
 	cfg.DRNodeID = strings.TrimSpace(cfg.DRNodeID)
-	if cfg.DRNodeID == "" {
-		cfg.DRNodeID = "60019"
-	}
 	cfg.DRHost = strings.TrimSpace(cfg.DRHost)
-	if cfg.DRHost == "" {
-		cfg.DRHost = "192.0.2.10"
-	}
 	cfg.DRSSHUser = strings.TrimSpace(cfg.DRSSHUser)
-	if cfg.DRSSHUser == "" {
-		cfg.DRSSHUser = "gpuops"
-	}
 	cfg.DRKeyFile = strings.TrimSpace(cfg.DRKeyFile)
-	if cfg.DRKeyFile == "" {
-		cfg.DRKeyFile = "/home/gpuops/gpu-ops/my_ssh_keys/node_60019.txt"
-	}
 	cfg.PrimaryHost = strings.TrimSpace(cfg.PrimaryHost)
 	if cfg.PrimaryHost == "" {
 		cfg.PrimaryHost = "127.0.0.1"
 	}
 	cfg.ScriptPath = strings.TrimSpace(cfg.ScriptPath)
 	if cfg.ScriptPath == "" {
-		cfg.ScriptPath = "/home/gpuops/gpu-ops/scripts/ha_sync_worker.sh"
+		cfg.ScriptPath = "/opt/gpu-ops/scripts/ha_sync_worker.sh"
 	}
 	return cfg
 }

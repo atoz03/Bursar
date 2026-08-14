@@ -19,11 +19,11 @@
 
     <el-form label-position="top">
       <el-row :gutter="12">
-        <el-col :span="12"><el-form-item label="SMTP 主机 *" required><el-input v-model="form.smtp_host" placeholder="smtp.163.com" /></el-form-item></el-col>
+        <el-col :span="12"><el-form-item label="SMTP 主机 *" required><el-input v-model="form.smtp_host" placeholder="smtp.example.org" /></el-form-item></el-col>
         <el-col :span="12"><el-form-item label="SMTP 端口 *" required><el-input-number v-model="form.smtp_port" :min="1" :max="65535" style="width: 100%" /></el-form-item></el-col>
       </el-row>
       <el-row :gutter="12">
-        <el-col :span="12"><el-form-item label="SMTP 用户名 *" required><el-input v-model="form.smtp_user" placeholder="xxx@163.com" /></el-form-item></el-col>
+        <el-col :span="12"><el-form-item label="SMTP 用户名 *" required><el-input v-model="form.smtp_user" placeholder="mailer@example.org" /></el-form-item></el-col>
         <el-col :span="12"><el-form-item label="SMTP 密码"><el-input v-model="smtpPass" type="password" show-password placeholder="留空表示不修改" /></el-form-item></el-col>
       </el-row>
       <el-row :gutter="12">
@@ -139,15 +139,15 @@ const smtpPasswordSet = ref(false);
 const sendingBulk = ref(false);
 const mailAllUsers = ref(false);
 const mailUsernames = ref<string[]>([]);
-const mailSubject = ref("GPU Ops 平台通知");
-const mailBody = ref("你好 {{real_name}}（{{username}}）：\n\n这里是平台通知内容。\n\nGPU Ops 团队");
+const mailSubject = ref(`${authState.platformName} 平台通知`);
+const mailBody = ref(`你好 {{real_name}}（{{username}}）：\n\n这里是平台通知内容。\n\n${authState.platformName} 团队`);
 
 const form = reactive({
-  smtp_host: "smtp.163.com",
-  smtp_port: 465,
+  smtp_host: "",
+  smtp_port: 587,
   smtp_user: "",
   from_email: "",
-  from_name: "GPU Ops 团队",
+  from_name: authState.platformName,
 });
 
 const visibleUserOptions = computed(() => {
@@ -179,12 +179,12 @@ function roleText(role: string): string {
 async function load() {
   const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
   const mail = await client.adminGetMailSettings();
-  form.smtp_host = mail.smtp_host || "smtp.163.com";
-  form.smtp_port = mail.smtp_port || 465;
+	form.smtp_host = mail.smtp_host || "";
+	form.smtp_port = mail.smtp_port || 587;
   form.smtp_user = mail.smtp_user ?? "";
   smtpPasswordSet.value = !!mail.smtp_password_set;
   form.from_email = mail.from_email || form.smtp_user;
-  form.from_name = mail.from_name ?? "GPU Ops 团队";
+	form.from_name = mail.from_name || authState.platformName;
   try {
     usersLoading.value = true;
     const users = await client.adminUsersDetails(2000);

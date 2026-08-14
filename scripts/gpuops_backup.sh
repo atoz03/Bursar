@@ -18,8 +18,9 @@ BACKUP_STATUS_FILE="${BACKUP_STATUS_FILE:-/var/lib/gpu-controller/backup-status.
 BACKUP_STAGING_ROOT="${BACKUP_STAGING_ROOT:-/var/lib/gpu-controller/backup-staging}"
 # 默认只保护平台自身。用户科研数据由存储系统独立负责；确有需要时再显式配置。
 BACKUP_DATA_PATHS="${BACKUP_DATA_PATHS:-}"
-CONTROLLER_CONFIG_PATH="${CONTROLLER_CONFIG_PATH:-/home/gpuops/gpu-ops/config/controller.local.yaml}"
-WEB_DIST_PATH="${WEB_DIST_PATH:-/home/gpuops/gpu-ops/web/dist}"
+PROJECT_DIR="${PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+CONTROLLER_CONFIG_PATH="${CONTROLLER_CONFIG_PATH:-${PROJECT_DIR}/config/controller.local.yaml}"
+WEB_DIST_PATH="${WEB_DIST_PATH:-${PROJECT_DIR}/web/dist}"
 POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-}"
 POSTGRES_PUBLISHED_PORT="${POSTGRES_PUBLISHED_PORT:-5432}"
 POSTGRES_DATABASE="${POSTGRES_DATABASE:-gpuops}"
@@ -113,7 +114,7 @@ write_status() {
     '{state:$state,started_at:$started_at,finished_at:$finished_at,snapshot_id:$snapshot_id,database_bytes:$database_bytes,included_paths:$included_paths,message:$message,last_success_at:$last_success_at,last_snapshot_id:$last_snapshot_id}' \
     >"${tmp_status}"
   chmod 0640 "${tmp_status}"
-  chgrp "${BACKUP_STATUS_GROUP:-gpuops}" "${tmp_status}" 2>/dev/null || true
+  [[ -z "${BACKUP_STATUS_GROUP:-}" ]] || chgrp "${BACKUP_STATUS_GROUP}" "${tmp_status}" 2>/dev/null || true
   mv -f "${tmp_status}" "${BACKUP_STATUS_FILE}"
 }
 

@@ -30,6 +30,7 @@ const AdminHA = () => import("../views/pages/AdminHA.vue");
 const AdminPoints = () => import("../views/pages/AdminPoints.vue");
 const AdminProfile = () => import("../views/pages/AdminProfile.vue");
 const AdminDemo = () => import("../views/pages/AdminDemo.vue");
+const AdminSetup = () => import("../views/pages/AdminSetup.vue");
 
 function hasPointsAccess(): boolean {
   return !!(
@@ -88,6 +89,7 @@ export const router = createRouter({
         { path: "admin/change-password", redirect: "/user/change-password" },
         { path: "admin/profile", component: AdminProfile },
         { path: "admin/demo", component: AdminDemo },
+        { path: "admin/setup", component: AdminSetup },
       ],
     },
   ],
@@ -106,6 +108,10 @@ router.beforeEach(async (to) => {
   const publicPaths = new Set(["/login", "/register", "/forgot-password", "/reset-password", "/key-decryptor"]);
   const isPublic = publicPaths.has(to.path);
   const isAdminRoute = to.path.startsWith("/admin");
+
+  if (authState.authenticated && authState.role === "admin" && !authState.setupCompleted && to.path !== "/admin/setup") {
+    return { path: "/admin/setup" };
+  }
 
   if (to.path === "/") {
     if (!authState.authenticated) return { path: "/login" };

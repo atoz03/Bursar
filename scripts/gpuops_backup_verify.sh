@@ -54,7 +54,7 @@ write_status() {
     '{state:$state,started_at:$started_at,finished_at:$finished_at,snapshot_id:$snapshot_id,last_success_at:(if $state=="success" then $finished_at else $previous_success end),last_snapshot_id:(if $state=="success" then $snapshot_id else $previous_snapshot end),message:$message}' \
     >"${tmp_status}"
   chmod 0640 "${tmp_status}"
-  chgrp "${BACKUP_STATUS_GROUP:-gpuops}" "${tmp_status}" 2>/dev/null || true
+  [[ -z "${BACKUP_STATUS_GROUP:-}" ]] || chgrp "${BACKUP_STATUS_GROUP}" "${tmp_status}" 2>/dev/null || true
   mv -f "${tmp_status}" "${BACKUP_VERIFY_STATUS_FILE}"
 }
 

@@ -73,7 +73,7 @@ SSH_FAIL2BAN_FINDTIME="${SSH_FAIL2BAN_FINDTIME:-5m}"
 SSH_FAIL2BAN_BANTIME="${SSH_FAIL2BAN_BANTIME:-12h}"
 SSH_FAIL2BAN_IGNOREIP="${SSH_FAIL2BAN_IGNOREIP:-}"
 ENABLE_SHARED_NFS="${ENABLE_SHARED_NFS:-0}"
-NFS_SERVER="${NFS_SERVER:-192.0.2.10}"
+NFS_SERVER="${NFS_SERVER:-}"
 NFS_NODE_EXPORT_ROOT="${NFS_NODE_EXPORT_ROOT:-/srv/gpu-ops/nodes}"
 NFS_CLUSTER_EXPORT="${NFS_CLUSTER_EXPORT:-/srv/gpu-ops/cluster}"
 NFS_NODE_MOUNT="${NFS_NODE_MOUNT:-/shared/node}"
@@ -441,8 +441,8 @@ usage() {
   cat <<USAGE
 用法：
   # 手动指定 NODE_ID
-  NODE_ID=60001 \\
-  CONTROLLER_URL=http://192.0.2.10:60039 \\
+  NODE_ID=node-01 \\
+  CONTROLLER_URL=https://controller.example.org:60040 \\
   AGENT_TOKEN=<agent_token> \\
   bash scripts/install_agent_local.sh
 
@@ -451,7 +451,7 @@ usage() {
     ENABLE_SYSTEM_MEMORY_RESERVE=1 SYSTEM_MEMORY_RESERVE_GB=70
 
   # 自动识别 NODE_ID（按本机 IP 匹配 my_ssh_keys/server_ssh_map.csv）
-  CONTROLLER_URL=http://192.0.2.10:60039 \\
+  CONTROLLER_URL=https://controller.example.org:60040 \\
   AGENT_TOKEN=<agent_token> \\
   bash scripts/install_agent_local.sh
 
@@ -490,7 +490,7 @@ usage() {
   ENABLE_SHARED_NFS=1|0            配置 /shared NFS（默认 0，需先完成服务端导出）
   NFS_SERVER=192.0.2.10         NFS 服务端地址
   NFS_NODE_EXPORT_ROOT=...         节点私有导出根目录（默认 /srv/gpu-ops/nodes）
-  NFS_CLUSTER_EXPORT=...           集群公共导出目录（默认 /srv/gpu-ops/cluster）
+	NFS_CLUSTER_EXPORT=...           集群公共导出目录（默认 /srv/gpu-ops/cluster）
   NFS_NODE_MOUNT=/shared/node      节点私有挂载点
   NFS_CLUSTER_MOUNT=/shared/cluster 集群公共挂载点
   NFS_MOUNT_OPTIONS=...            /etc/fstab NFS 参数

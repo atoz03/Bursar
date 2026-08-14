@@ -50,12 +50,8 @@ rm -rf -- \
   "\${target}/config" \
   "\${target}/my_ssh_keys" \
   "\${target}/.codex" \
-  "\${target}/使用手册" \
   "\${target}/README.md" \
-  "\${target}/GPU Ops使用手册.md" \
-  "\${target}/计算节点部署情况.txt" \
-  "\${target}/控制节点安全部署命令.md" \
-  "\${target}/计算节点首次安装交接.md" \
+  "\${target}/node-deployment-report.txt" \
   "\${target}/go.work.sum" \
   "\${target}/sudo" \
   "\${target}/mkdir" \
@@ -82,10 +78,10 @@ if [[ "${DRY_RUN}" != "1" && "${CONFIRM_DISTRIBUTE_WORKSPACE}" != "1" ]]; then
 拒绝执行：distribute_workspace.sh 会把当前工作区分发到计算节点。
 
 安全用法：
-  DRY_RUN=1 NODE_IDS="60020" bash scripts/distribute_workspace.sh
+  DRY_RUN=1 NODE_IDS="node-01" bash scripts/distribute_workspace.sh
 
 确认真的要分发时，必须显式加：
-  CONFIRM_DISTRIBUTE_WORKSPACE=1 NODE_IDS="60020" bash scripts/distribute_workspace.sh
+  CONFIRM_DISTRIBUTE_WORKSPACE=1 NODE_IDS="node-01" bash scripts/distribute_workspace.sh
 
 不要裸跑 bash scripts/distribute_workspace.sh。
 EOF
@@ -174,11 +170,7 @@ copy_one() {
     --exclude='.codex' \
     --exclude='config' \
     --exclude='README.md' \
-    --exclude='GPU Ops使用手册.md' \
-    --exclude='使用手册' \
-    --exclude='计算节点部署情况.txt' \
-    --exclude='控制节点安全部署命令.md' \
-    --exclude='计算节点首次安装交接.md' \
+    --exclude='node-deployment-report.txt' \
     --exclude='go.work.sum' \
     --exclude='my_ssh_keys' \
     --exclude='web/node_modules' \

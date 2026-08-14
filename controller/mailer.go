@@ -23,7 +23,7 @@ func sendPlainTextMail(settings MailSettings, toEmail string, subject string, bo
 		return fmt.Errorf("SMTP 配置不完整")
 	}
 	if fromName == "" {
-		fromName = "GPU Ops 团队"
+		fromName = defaultPlatformName
 	}
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 

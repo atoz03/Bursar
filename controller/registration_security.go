@@ -26,22 +26,22 @@ const (
 	registerUsernamePrefixMaxLen = 8
 )
 
-var (
-	allowedRegisterEmailDomains = map[string]struct{}{
-		"example.org":     {},
-		"students.example.org": {},
+func allowedRegisterEmailSuffixHint(domains []string) string {
+	if len(domains) == 0 {
+		return "任意有效邮箱域名"
 	}
-)
-
-func allowedRegisterEmailSuffixHint() string {
-	return "@example.org 或 @students.example.org"
+	parts := make([]string, 0, len(domains))
+	for _, domain := range domains {
+		parts = append(parts, "@"+domain)
+	}
+	return strings.Join(parts, "、")
 }
 
 func normalizeStudentID(raw string) string {
 	return strings.ToUpper(strings.TrimSpace(raw))
 }
 
-func normalizeRegisterEmail(rawEmail string) (string, string, string, error) {
+func normalizeRegisterEmail(rawEmail string, allowedDomains []string) (string, string, string, error) {
 	email := strings.TrimSpace(rawEmail)
 	if email == "" {
 		return "", "", "", errors.New("邮箱不能为空")
@@ -55,8 +55,17 @@ func normalizeRegisterEmail(rawEmail string) (string, string, string, error) {
 	if local == "" || domain == "" {
 		return "", "", "", errors.New("邮箱格式不合法")
 	}
-	if _, ok := allowedRegisterEmailDomains[domain]; !ok {
-		return "", "", "", fmt.Errorf("注册邮箱后缀仅支持 %s", allowedRegisterEmailSuffixHint())
+	if len(allowedDomains) > 0 {
+		allowed := false
+		for _, allowedDomain := range allowedDomains {
+			if domain == strings.ToLower(strings.TrimSpace(allowedDomain)) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return "", "", "", fmt.Errorf("注册邮箱后缀仅支持 %s", allowedRegisterEmailSuffixHint(allowedDomains))
+		}
 	}
 	normalized := local + "@" + domain
 	if _, err := mail.ParseAddress(normalized); err != nil {

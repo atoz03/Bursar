@@ -36,7 +36,7 @@ SSH_GUARD_ENFORCE_INTERVAL="${SSH_GUARD_ENFORCE_INTERVAL:-10s}"
 if [[ -z "${NODES}" ]]; then
   echo "请设置环境变量 NODES，例如：" >&2
   echo "  - 旧格式（不推荐）：NODES=\"node01 node02\"" >&2
-  echo "  - 推荐格式（机器编号:IP/主机名）：NODES=\"60000:192.0.2.10 60001:192.0.2.10\"" >&2
+  echo "  - 推荐格式（节点编号:IP/主机名）：NODES=\"node-01:192.0.2.11 node-02:192.0.2.12\"" >&2
   exit 2
 fi
 if [[ -z "${AGENT_TOKEN}" ]]; then

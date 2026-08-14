@@ -59,6 +59,17 @@ export type AuthMeResp = {
   server_now?: string;
   server_tz_name?: string;
   server_tz_offset_minutes?: number;
+  platform_name?: string;
+  registration_allowed_email_domains?: string[];
+  provision_ssh_host?: string;
+  setup_completed?: boolean;
+};
+
+export type PlatformSettings = {
+  platform_name: string;
+  registration_allowed_email_domains: string[];
+  provision_ssh_host: string;
+  setup_completed: boolean;
 };
 
 export type UserGuidelineResp = {
@@ -1125,6 +1136,40 @@ export type HASyncConfigResp = {
   next_run_at?: string;
 };
 
+export type SetupMailSettings = {
+  enabled: boolean;
+  smtp_host: string;
+  smtp_port: number;
+  smtp_user: string;
+  smtp_pass?: string;
+  smtp_password_set: boolean;
+  from_email: string;
+  from_name: string;
+};
+
+export type SetupStartupCheck = {
+  key: string;
+  label: string;
+  ok: boolean;
+  required: boolean;
+  message: string;
+};
+
+export type AdminSetupState = {
+  platform: PlatformSettings;
+  user_guideline: string;
+  prices: Array<{ Model?: string; Price?: number; model?: string; price?: number }>;
+  mail: SetupMailSettings;
+  ha: HASyncConfig;
+  startup: {
+    listen_addr: string;
+    internal_listen_addr: string;
+    shared_node_root: string;
+    shared_cluster_root: string;
+  };
+  checks: SetupStartupCheck[];
+};
+
 export type BackupJobStatus = {
   state: "not_configured" | "running" | "success" | "failed" | "invalid" | "unreadable" | string;
   started_at?: string;
@@ -1280,6 +1325,10 @@ export class ApiClient {
 
   async authMe(): Promise<AuthMeResp> {
     return await this.getJson("/api/auth/me");
+  }
+
+  async publicSettings(): Promise<PlatformSettings> {
+    return await this.getJson("/api/public/settings");
   }
 
   async authLogin(username: string, password: string, captchaID: string, captchaOption: number, totpCode = "", captchaToken = ""): Promise<{ ok: boolean }> {
@@ -3178,6 +3227,20 @@ export class ApiClient {
 
   async adminHAStatus(): Promise<HAStatusResp> {
     return await this.getJson("/api/admin/ha/status", this.adminHeaders());
+  }
+
+  async adminSetup(): Promise<AdminSetupState> {
+    return await this.getJson("/api/admin/setup", this.adminHeaders());
+  }
+
+  async adminSaveSetup(payload: {
+    platform: PlatformSettings;
+    user_guideline: string;
+    prices: Array<{ Model: string; Price: number }>;
+    mail: SetupMailSettings;
+    ha: HASyncConfig;
+  }): Promise<{ ok: boolean; setup: AdminSetupState }> {
+    return await this.postJson("/api/admin/setup", payload, this.adminHeaders());
   }
 
   async adminBackupStatus(): Promise<BackupStatusResp> {

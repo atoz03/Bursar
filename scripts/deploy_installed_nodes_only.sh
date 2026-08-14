@@ -12,7 +12,7 @@ PROJECT_DIR_NAME="${PROJECT_DIR_NAME:-$(basename "${ROOT_DIR}")}"
 TARGET_BASE="${TARGET_BASE:-/home}"
 SSH_TIMEOUT="${SSH_TIMEOUT:-10}"
 PARALLEL="${PARALLEL:-6}"
-REPORT_FILE="${REPORT_FILE:-$(pwd)/计算节点部署情况.txt}"
+REPORT_FILE="${REPORT_FILE:-$(pwd)/node-deployment-report.txt}"
 NODE_IDS_RAW="${NODE_IDS:-}"
 NODE_IDS_CANON=""
 NODE_IDS_DISPLAY=""
@@ -202,12 +202,8 @@ rm -rf -- \
   "\${target}/config" \
   "\${target}/my_ssh_keys" \
   "\${target}/.codex" \
-  "\${target}/使用手册" \
   "\${target}/README.md" \
-  "\${target}/GPU Ops使用手册.md" \
-  "\${target}/计算节点部署情况.txt" \
-  "\${target}/控制节点安全部署命令.md" \
-  "\${target}/计算节点首次安装交接.md" \
+  "\${target}/node-deployment-report.txt" \
   "\${target}/go.work.sum" \
   "\${target}/sudo" \
   "\${target}/mkdir" \
@@ -233,11 +229,7 @@ copy_workspace() {
     --exclude='.netcatty-paste-images' \
     --exclude='config' \
     --exclude='README.md' \
-    --exclude='GPU Ops使用手册.md' \
-    --exclude='使用手册' \
-    --exclude='计算节点部署情况.txt' \
-    --exclude='控制节点安全部署命令.md' \
-    --exclude='计算节点首次安装交接.md' \
+    --exclude='node-deployment-report.txt' \
     --exclude='go.work.sum' \
     --exclude='my_ssh_keys' \
     --exclude='web/node_modules' \
@@ -441,7 +433,7 @@ done
 
 report_time="$(date '+%F %T')"
 {
-  echo "计算节点部署情况报告"
+  echo "节点部署报告"
   echo "生成时间: ${report_time}"
   echo "映射表: ${MAP_FILE}"
   echo "并发数: ${PARALLEL}"

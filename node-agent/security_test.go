@@ -12,7 +12,7 @@ func TestDetectPortScanIgnoresOutboundSynSent(t *testing.T) {
 	for i := 0; i < 64; i++ {
 		peer := publicResolvers[i%len(publicResolvers)]
 		lines = append(lines, fmt.Sprintf(
-			"SYN-SENT 0 1 192.0.2.10:%d %s:443",
+			"SYN-SENT 0 1 192.0.2.251:%d %s:443",
 			33000+i*2,
 			peer,
 		))
@@ -27,7 +27,7 @@ func TestDetectPortScanDetectsInboundDistinctPorts(t *testing.T) {
 	var lines []string
 	for i := 0; i < portScanDistinctPortThreshold; i++ {
 		lines = append(lines, fmt.Sprintf(
-			"SYN-RECV 0 0 192.0.2.10:%d 203.0.113.10:%d",
+			"SYN-RECV 0 0 192.0.2.251:%d 203.0.113.10:%d",
 			2200+i,
 			42000+i,
 		))
@@ -48,7 +48,7 @@ func TestDetectPortScanDetectsInboundConnectionFlood(t *testing.T) {
 	var lines []string
 	for i := 0; i < portScanConnThreshold; i++ {
 		lines = append(lines, fmt.Sprintf(
-			"SYN-RECV 0 0 192.0.2.10:22 198.51.100.20:%d",
+			"SYN-RECV 0 0 192.0.2.251:22 198.51.100.20:%d",
 			43000+i,
 		))
 	}

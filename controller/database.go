@@ -74,7 +74,6 @@ var (
 		65535: {},
 	}
 	platformUIDInventoryFiles = []string{
-		"/home/gpuops/gpu-ops/my_ssh_keys/node_uid_gid_used_ids.txt",
 		"my_ssh_keys/node_uid_gid_used_ids.txt",
 	}
 )
@@ -12506,17 +12505,14 @@ func (s *Store) GetMailSettings(ctx context.Context, cfg Config) (MailSettings, 
 		FromEmail: strings.TrimSpace(cfg.FromEmail),
 		FromName:  strings.TrimSpace(cfg.FromName),
 	}
-	if out.SMTPHost == "" {
-		out.SMTPHost = "smtp.163.com"
-	}
 	if out.SMTPPort == 0 {
-		out.SMTPPort = 465
+		out.SMTPPort = 587
 	}
 	if out.FromEmail == "" {
 		out.FromEmail = out.SMTPUser
 	}
 	if out.FromName == "" {
-		out.FromName = "GPU Ops 团队"
+		out.FromName = defaultPlatformName
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT key, value FROM app_settings WHERE key = ANY($1)`, pq.Array([]string{
 		appSettingSMTPHost, appSettingSMTPPort, appSettingSMTPUser, appSettingSMTPPass, appSettingFromEmail, appSettingFromName,
@@ -12550,17 +12546,14 @@ func (s *Store) GetMailSettings(ctx context.Context, cfg Config) (MailSettings, 
 	if err := rows.Err(); err != nil {
 		return out, err
 	}
-	if out.SMTPHost == "" {
-		out.SMTPHost = "smtp.163.com"
-	}
 	if out.SMTPPort == 0 {
-		out.SMTPPort = 465
+		out.SMTPPort = 587
 	}
 	if out.FromEmail == "" {
 		out.FromEmail = out.SMTPUser
 	}
 	if out.FromName == "" {
-		out.FromName = "GPU Ops 团队"
+		out.FromName = defaultPlatformName
 	}
 	return out, nil
 }
@@ -12569,7 +12562,7 @@ func (s *Store) GetUserGuideline(ctx context.Context) (content string, updatedBy
 	content = strings.TrimSpace(`
 ## 平台用户使用准则
 1. 平台账号、学号、邮箱均需真实且唯一，不得共享账号。
-2. 节点使用须遵守学校与课题组安全规范，不得执行违法违规任务。
+2. 节点使用须遵守部署组织的安全规范及所在地法律法规。
 3. 请及时维护“节点账号映射”，确保计费与审计准确。
 4. 收到管理员通知后请及时处理，若长期不处理可能被限制使用。
 5. 每月 1 号系统会发放当月通用积分，并按“月结转上限”结转上月未用完的通用积分（该上限是结转池累计上限，不是每月新增上限）。
@@ -12651,7 +12644,7 @@ func (s *Store) UpsertMailSettings(ctx context.Context, settings MailSettings, u
 		return errors.New("发件邮箱不能为空")
 	}
 	if settings.FromName == "" {
-		settings.FromName = "GPU Ops 团队"
+		settings.FromName = defaultPlatformName
 	}
 	if updatePassword && settings.SMTPPass == "" {
 		return errors.New("SMTP 密码不能为空")

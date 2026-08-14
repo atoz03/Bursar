@@ -978,11 +978,13 @@ func (s *Server) handleAdminRegistrationRequestApprove(c *gin.Context) {
 			if baseURL != "" {
 				loginURL = baseURL + "/login"
 			}
-			subject := "GPU Ops 注册申请已通过"
+			platformName := s.platformName(c.Request.Context())
+			subject := platformName + " 注册申请已通过"
 			body := fmt.Sprintf(
-				"你好 %s，\n\n你的平台账号注册申请已通过管理员审核，现在可以登录平台。\n登录地址：%s\n\n建议你登录后尽快在“节点账号”页面填写你已有的计算节点账号映射，以便系统准确识别。\n\nGPU Ops 团队",
+				"你好 %s，\n\n你的平台账号注册申请已通过管理员审核，现在可以登录平台。\n登录地址：%s\n\n建议你登录后尽快在“节点账号”页面填写你已有的计算节点账号映射，以便系统准确识别。\n\n%s 团队",
 				strings.TrimSpace(updated.Username),
 				loginURL,
+				platformName,
 			)
 			if err := sendPlainTextMail(settings, toEmail, subject, body); err != nil {
 				mailErr = "发送通知邮件失败: " + err.Error()
@@ -1049,11 +1051,13 @@ func (s *Server) handleAdminRegistrationRequestReject(c *gin.Context) {
 			if reasonText == "" {
 				reasonText = "（未填写）"
 			}
-			subject := "GPU Ops 注册申请退回通知"
+			platformName := s.platformName(c.Request.Context())
+			subject := platformName + " 注册申请退回通知"
 			body := fmt.Sprintf(
-				"你好 %s，\n\n你的平台账号注册申请已被管理员退回。\n退回理由：%s\n\n请修改后重新提交注册申请。\n\nGPU Ops 团队",
+				"你好 %s，\n\n你的平台账号注册申请已被管理员退回。\n退回理由：%s\n\n请修改后重新提交注册申请。\n\n%s 团队",
 				strings.TrimSpace(updated.Username),
 				reasonText,
+				platformName,
 			)
 			if err := sendPlainTextMail(settings, toEmail, subject, body); err != nil {
 				mailErr = "发送通知邮件失败: " + err.Error()
