@@ -10937,49 +10937,67 @@ func (s *Server) recordNodeSecuritySignalsTx(ctx context.Context, tx *sql.Tx, da
 		s.shouldEmitSecuritySignalEvent(data.NodeID, "abnormal_port_scan", false, reportTS, signalClearHold)
 	}
 
-	riskyMounts := collectRiskyDiskMounts(data)
-	if len(riskyMounts) == 0 {
-		return nil
+	// 磁盘满是一次性容量通知，不属于实时看板的持续告警。
+	// 状态按节点/挂载点持久化：危险期只记录一次；低于 95% 且持续 30 分钟后才重新布防。
+	const diskAlertRearmHold = 30 * time.Minute
+	for _, m := range collectDiskMountUsages(data) {
+		atRisk := m.UsedPercent >= 98.0 || m.FreeGB <= 1.0
+		safeForRearm := m.UsedPercent < 95.0 && m.FreeGB > 1.0
+		emit, err := s.store.AdvanceNodeDiskAlertStateTx(
+			ctx, tx, data.NodeID, m.Name, atRisk, safeForRearm, reportTS, diskAlertRearmHold,
+		)
+		if err != nil {
+			return err
+		}
+		if !emit {
+			continue
+		}
+		homeHeavyUsers := []string(nil)
+		if m.Name == "/home" {
+			homeHeavyUsers = topHomeHeavyUsers(data.LocalUsers, 10)
+		}
+		reason := fmt.Sprintf("检测到磁盘打满风险：%s 使用率 %.2f%%（剩余 %.2fGB）", m.Name, m.UsedPercent, m.FreeGB)
+		if _, err := s.store.InsertNodeSecurityEventTx(
+			ctx,
+			tx,
+			data.ReportID,
+			data.NodeID,
+			"disk_full_risk",
+			"critical",
+			reason,
+			nil,
+			map[string]any{
+				"node_id":      data.NodeID,
+				"report_ts":    formatRFC3339InBeijing(reportTS),
+				"mountpoint":   m.Name,
+				"total_gb":     round4(m.TotalGB),
+				"used_gb":      round4(m.UsedGB),
+				"free_gb":      round4(m.FreeGB),
+				"used_percent": round4(m.UsedPercent),
+				"risk_mounts": []map[string]any{{
+					"name":         m.Name,
+					"total_gb":     round4(m.TotalGB),
+					"used_gb":      round4(m.UsedGB),
+					"free_gb":      round4(m.FreeGB),
+					"used_percent": round4(m.UsedPercent),
+				}},
+				"home_heavy_users":      homeHeavyUsers,
+				"threshold_percent":     98.0,
+				"threshold_free_gb":     1.0,
+				"rearm_percent":         95.0,
+				"rearm_hold_minutes":    30,
+				"judgement":             "磁盘打满风险",
+				"security_signal_input": "node_storage_usage",
+			},
+			0,
+		); err != nil {
+			return err
+		}
 	}
-	reasonParts := make([]string, 0, len(riskyMounts))
-	detailsMounts := make([]map[string]any, 0, len(riskyMounts))
-	for _, m := range riskyMounts {
-		reasonParts = append(reasonParts, fmt.Sprintf("%s 使用率 %.2f%%（剩余 %.2fGB）", m.Name, m.UsedPercent, m.FreeGB))
-		detailsMounts = append(detailsMounts, map[string]any{
-			"name":         m.Name,
-			"total_gb":     round4(m.TotalGB),
-			"used_gb":      round4(m.UsedGB),
-			"free_gb":      round4(m.FreeGB),
-			"used_percent": round4(m.UsedPercent),
-		})
-	}
-	relatedUsers := topHomeHeavyUsers(data.LocalUsers, 10)
-	reason := "检测到磁盘打满风险：" + strings.Join(reasonParts, "；")
-	_, err := s.store.InsertNodeSecurityEventTx(
-		ctx,
-		tx,
-		data.ReportID,
-		data.NodeID,
-		"disk_full_risk",
-		"critical",
-		reason,
-		relatedUsers,
-		map[string]any{
-			"node_id":               data.NodeID,
-			"report_ts":             formatRFC3339InBeijing(reportTS),
-			"risk_mounts":           detailsMounts,
-			"related_usernames":     relatedUsers,
-			"threshold_percent":     98.0,
-			"threshold_free_gb":     1.0,
-			"judgement":             "磁盘打满风险",
-			"security_signal_input": "node_storage_usage",
-		},
-		10*time.Minute,
-	)
-	return err
+	return nil
 }
 
-type diskMountRisk struct {
+type diskMountUsage struct {
 	Name        string
 	TotalGB     float64
 	UsedGB      float64
@@ -10987,7 +11005,7 @@ type diskMountRisk struct {
 	UsedPercent float64
 }
 
-func collectRiskyDiskMounts(data MetricsData) []diskMountRisk {
+func collectDiskMountUsages(data MetricsData) []diskMountUsage {
 	checks := []struct {
 		name  string
 		total float64
@@ -10997,7 +11015,7 @@ func collectRiskyDiskMounts(data MetricsData) []diskMountRisk {
 		{name: "/home", total: data.HomeTotalGB, used: data.HomeUsedGB},
 		{name: "/mnt", total: data.MntTotalGB, used: data.MntUsedGB},
 	}
-	out := make([]diskMountRisk, 0, len(checks))
+	out := make([]diskMountUsage, 0, len(checks))
 	for _, x := range checks {
 		if x.total <= 0 {
 			continue

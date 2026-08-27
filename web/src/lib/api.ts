@@ -250,6 +250,7 @@ export type NodeStatus = {
   node_price_per_minute?: number | null;
   node_model_price_overrides?: Record<string, number>;
   security_event_count_7d?: number;
+  security_non_disk_event_count_7d?: number;
   suspicious_user_count_7d?: number;
   cost_total: number;
   updated_at: string;

@@ -259,6 +259,19 @@ CREATE INDEX IF NOT EXISTS idx_node_security_events_type_time
 CREATE INDEX IF NOT EXISTS idx_node_security_events_users
     ON node_security_events USING GIN (related_usernames);
 
+CREATE TABLE IF NOT EXISTS node_disk_alert_states (
+    node_id VARCHAR(50) NOT NULL,
+    mountpoint TEXT NOT NULL,
+    active BOOLEAN NOT NULL DEFAULT FALSE,
+    below_rearm_since TIMESTAMP NULL,
+    last_alerted_at TIMESTAMP NULL,
+    last_observed_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (node_id, mountpoint)
+);
+CREATE INDEX IF NOT EXISTS idx_node_disk_alert_states_active
+    ON node_disk_alert_states(active, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS node_policies (
     node_id VARCHAR(50) PRIMARY KEY,
     ssh_guard_enabled BOOLEAN NOT NULL DEFAULT FALSE,

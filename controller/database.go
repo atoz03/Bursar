@@ -5946,6 +5946,7 @@ SELECT n.node_id, n.last_seen_at, n.last_report_id, n.last_report_ts, n.interval
        np.node_price_per_minute,
        COALESCE(np.node_model_price_overrides, '{}'::jsonb) AS node_model_price_overrides,
        COALESCE(se.security_event_count_7d, 0) AS security_event_count_7d,
+       COALESCE(sne.security_non_disk_event_count_7d, 0) AS security_non_disk_event_count_7d,
        COALESCE(su.suspicious_user_count_7d, 0) AS suspicious_user_count_7d,
        n.cost_total, n.updated_at
 FROM nodes n
@@ -5957,12 +5958,20 @@ LEFT JOIN (
   GROUP BY node_id
 ) se ON se.node_id=n.node_id
 LEFT JOIN (
+  SELECT node_id, COUNT(1) AS security_non_disk_event_count_7d
+  FROM node_security_events
+  WHERE created_at >= NOW() - INTERVAL '7 days'
+    AND event_type <> 'disk_full_risk'
+  GROUP BY node_id
+) sne ON sne.node_id=n.node_id
+LEFT JOIN (
   SELECT t.node_id, COUNT(DISTINCT t.username) AS suspicious_user_count_7d
   FROM (
     SELECT e.node_id, NULLIF(TRIM(u.username), '') AS username
     FROM node_security_events e
     CROSS JOIN LATERAL unnest(e.related_usernames) AS u(username)
     WHERE e.created_at >= NOW() - INTERVAL '7 days'
+      AND e.event_type <> 'disk_full_risk'
   ) t
   WHERE t.username IS NOT NULL
   GROUP BY t.node_id
@@ -6034,6 +6043,7 @@ LIMIT $1`, limit)
 			&nodePrice,
 			&nodeModelPricesRaw,
 			&n.SecurityEventCount7d,
+			&n.SecurityNonDiskEventCount7d,
 			&n.SuspiciousUserCount7d,
 			&n.CostTotal,
 			&n.UpdatedAt,
@@ -8437,6 +8447,107 @@ LIMIT ` + addArg(limit)
 	return out, rows.Err()
 }
 
+type diskFullAlertState struct {
+	Active          bool
+	BelowRearmSince *time.Time
+}
+
+func advanceDiskFullAlertState(
+	prev diskFullAlertState,
+	atRisk bool,
+	safeForRearm bool,
+	observedAt time.Time,
+	rearmHold time.Duration,
+) (diskFullAlertState, bool) {
+	next := prev
+	if atRisk {
+		emit := !prev.Active
+		next.Active = true
+		next.BelowRearmSince = nil
+		return next, emit
+	}
+	if !prev.Active {
+		next.BelowRearmSince = nil
+		return next, false
+	}
+	if !safeForRearm {
+		next.BelowRearmSince = nil
+		return next, false
+	}
+	if prev.BelowRearmSince == nil {
+		t := observedAt
+		next.BelowRearmSince = &t
+		return next, false
+	}
+	if rearmHold < 0 {
+		rearmHold = 0
+	}
+	if observedAt.Sub(*prev.BelowRearmSince) >= rearmHold {
+		next.Active = false
+		next.BelowRearmSince = nil
+	}
+	return next, false
+}
+
+// AdvanceNodeDiskAlertStateTx 持久化节点/挂载点的磁盘告警锁存状态。
+// 返回 true 仅表示本次跨过危险阈值且应生成一条新的审计事件。
+func (s *Store) AdvanceNodeDiskAlertStateTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	nodeID string,
+	mountpoint string,
+	atRisk bool,
+	safeForRearm bool,
+	observedAt time.Time,
+	rearmHold time.Duration,
+) (bool, error) {
+	if tx == nil {
+		return false, errors.New("tx 不能为空")
+	}
+	nodeID = strings.TrimSpace(nodeID)
+	mountpoint = strings.TrimSpace(mountpoint)
+	if nodeID == "" || mountpoint == "" {
+		return false, errors.New("node_id/mountpoint 不能为空")
+	}
+	if observedAt.IsZero() {
+		observedAt = nowInBeijing()
+	}
+	// 先确保状态行存在；并发上报会在唯一键处串行，随后由 FOR UPDATE 锁住同一挂载点。
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO node_disk_alert_states(node_id, mountpoint, active, last_observed_at, updated_at)
+VALUES($1,$2,FALSE,$3,NOW())
+ON CONFLICT (node_id, mountpoint) DO NOTHING`, nodeID, mountpoint, observedAt); err != nil {
+		return false, err
+	}
+	var prev diskFullAlertState
+	var below sql.NullTime
+	if err := tx.QueryRowContext(ctx, `
+SELECT active, below_rearm_since
+FROM node_disk_alert_states
+WHERE node_id=$1 AND mountpoint=$2
+FOR UPDATE`, nodeID, mountpoint).Scan(&prev.Active, &below); err != nil {
+		return false, err
+	}
+	if below.Valid {
+		t := below.Time
+		prev.BelowRearmSince = &t
+	}
+	next, emit := advanceDiskFullAlertState(prev, atRisk, safeForRearm, observedAt, rearmHold)
+	if _, err := tx.ExecContext(ctx, `
+UPDATE node_disk_alert_states
+SET active=$3,
+    below_rearm_since=$4,
+    last_alerted_at=CASE WHEN $5 THEN $6 ELSE last_alerted_at END,
+    last_observed_at=$6,
+    updated_at=NOW()
+WHERE node_id=$1 AND mountpoint=$2`,
+		nodeID, mountpoint, next.Active, next.BelowRearmSince, emit, observedAt,
+	); err != nil {
+		return false, err
+	}
+	return emit, nil
+}
+
 func (s *Store) InsertNodeSecurityEventTx(
 	ctx context.Context,
 	tx *sql.Tx,
@@ -8646,6 +8757,7 @@ WITH expanded AS (
   FROM node_security_events
   WHERE node_id=$1
     AND created_at >= NOW() - ($2::text || ' days')::interval
+    AND event_type <> 'disk_full_risk'
 )
 SELECT node_id,
        username,
@@ -8704,6 +8816,7 @@ WITH expanded AS (
   WHERE node_id=$1
     AND created_at >= $2
     AND created_at <= $3
+    AND event_type <> 'disk_full_risk'
 )
 SELECT node_id,
        username,
