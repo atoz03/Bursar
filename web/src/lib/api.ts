@@ -283,6 +283,87 @@ export type NodeMonitorStatus = NodeStatus & {
   gpu_devices: GPUDeviceStatus[];
 };
 
+export type PowerRackNode = {
+  node_id: string;
+  rack_code: string;
+  slot_number: number;
+  allocated_power_w: number;
+  device_label: string;
+  note: string;
+  updated_by?: string;
+  created_at?: string;
+  updated_at?: string;
+  node_known: boolean;
+  online: boolean;
+  power_data_fresh: boolean;
+  monitor_metrics_available: boolean;
+  last_seen_at?: string;
+  cpu_model: string;
+  cpu_count: number;
+  gpu_model: string;
+  gpu_count: number;
+  reported_gpu_count: number;
+  host_cpu_percent: number;
+  gpu_power_draw_w: number;
+  gpu_power_limit_w: number;
+  estimated_power_w: number;
+  suggested_power_w: number;
+  issues: string[];
+};
+
+export type PowerRack = {
+  rack_code: string;
+  name: string;
+  capacity_w: number;
+  slot_count: number;
+  location: string;
+  note: string;
+  sort_order: number;
+  updated_by?: string;
+  created_at?: string;
+  updated_at?: string;
+  allocated_power_w: number;
+  remaining_power_w: number;
+  gpu_power_draw_w: number;
+  gpu_power_limit_w: number;
+  estimated_power_w: number;
+  utilization_percent: number;
+  online_node_count: number;
+  node_count: number;
+  issue_count: number;
+  status: "normal" | "warning" | "attention" | "overflow" | string;
+  nodes: PowerRackNode[];
+};
+
+export type PowerRackNodeOption = {
+  node_id: string;
+  online: boolean;
+  cpu_model: string;
+  gpu_model: string;
+  gpu_count: number;
+  gpu_power_limit_w: number;
+  suggested_power_w: number;
+};
+
+export type PowerRackOverview = {
+  racks: PowerRack[];
+  unassigned_nodes: PowerRackNodeOption[];
+  summary: {
+    rack_count: number;
+    capacity_w: number;
+    allocated_power_w: number;
+    gpu_power_draw_w: number;
+    gpu_power_limit_w: number;
+    estimated_power_w: number;
+    overflow_rack_count: number;
+    warning_rack_count: number;
+    config_issue_count: number;
+    offline_node_count: number;
+    unreported_node_count: number;
+  };
+  generated_at: string;
+};
+
 export type NodeSystemServiceStatus = {
   name: string;
   deployed: boolean;
@@ -1864,6 +1945,58 @@ export class ApiClient {
 
   async adminNodeMonitor(limit = 200): Promise<{ nodes: NodeMonitorStatus[]; generated_at: string }> {
     return await this.getJson(`/api/admin/node-monitor?limit=${limit}`, this.adminHeaders());
+  }
+
+  async adminPowerRacks(): Promise<PowerRackOverview> {
+    return await this.getJson("/api/admin/power-racks", this.adminHeaders());
+  }
+
+  async adminPowerRackUpsert(payload: {
+    rack_code: string;
+    name: string;
+    capacity_w: number;
+    slot_count: number;
+    location?: string;
+    note?: string;
+    sort_order?: number;
+  }): Promise<{ ok: boolean; rack: PowerRack }> {
+    return await this.postJson("/api/admin/power-racks", payload, this.adminHeaders());
+  }
+
+  async adminPowerRackDelete(rackCode: string): Promise<{ ok: boolean }> {
+    const res = await fetch(this.url(`/api/admin/power-racks/${encodeURIComponent(rackCode)}`), {
+      method: "DELETE",
+      headers: { ...this.adminHeaders(), ...this.csrfHeaders() },
+      credentials: "include",
+    });
+    if (!res.ok) {
+      const text = await this.readText(res);
+      throw normalizeServerError(res.status, text);
+    }
+    return (await res.json()) as { ok: boolean };
+  }
+
+  async adminPowerRackNodeUpsert(
+    rackCode: string,
+    payload: { node_id: string; slot_number: number; allocated_power_w: number; device_label?: string; note?: string },
+  ): Promise<{ ok: boolean; node: PowerRackNode }> {
+    return await this.postJson(`/api/admin/power-racks/${encodeURIComponent(rackCode)}/nodes`, payload, this.adminHeaders());
+  }
+
+  async adminPowerRackNodeDelete(rackCode: string, nodeId: string): Promise<{ ok: boolean }> {
+    const res = await fetch(
+      this.url(`/api/admin/power-racks/${encodeURIComponent(rackCode)}/nodes/${encodeURIComponent(nodeId)}`),
+      {
+        method: "DELETE",
+        headers: { ...this.adminHeaders(), ...this.csrfHeaders() },
+        credentials: "include",
+      },
+    );
+    if (!res.ok) {
+      const text = await this.readText(res);
+      throw normalizeServerError(res.status, text);
+    }
+    return (await res.json()) as { ok: boolean };
   }
 
   async adminNodeDetail(nodeId: string, params?: { minutes?: number; limit?: number }): Promise<NodeDetailResp> {

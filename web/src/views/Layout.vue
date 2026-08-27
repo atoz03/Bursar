@@ -16,6 +16,7 @@
             <template #title><el-icon><DataBoard /></el-icon><span>{{ t("总览", "Overview") }}</span></template>
             <el-menu-item index="/admin/board">{{ t("运营看板", "Dashboard") }}</el-menu-item>
             <el-menu-item index="/admin/status">{{ t("集群总览", "Cluster Overview") }}</el-menu-item>
+            <el-menu-item index="/admin/racks">{{ t("机柜功率", "Rack Power") }}</el-menu-item>
           </el-sub-menu>
           <el-sub-menu index="grp-resource">
             <template #title><el-icon><Monitor /></el-icon><span>{{ t("资源与计费", "Resources & Billing") }}</span></template>
@@ -297,6 +298,7 @@ const adminSearchEntries: FeatureSearchEntry[] = [
   searchEntry("数据留存与删除", "运营看板 · 数据工具", "/admin/board", "配置自动清理天数或按日期删除用量记录", "保留天数 自动删除 清理 retention delete sjlc"),
   searchEntry("用量数据导出", "运营看板", "/admin/board", "按统计区间导出 CSV", "csv export 导出 运营"),
   searchEntry("集群状态", "总览", "/admin/status", "查看节点 CPU 与每张 GPU 的实时状态", "监控 显卡 温度 显存 在线 gpu cpu jc jq"),
+  searchEntry("机柜功率", "总览", "/admin/racks", "管理机柜槽位、核算功率并查看 GPU 实时功耗", "机柜 功率 容量 槽位 rack power jg gl"),
   searchEntry("节点管理", "资源与计费", "/admin/nodes", "管理节点策略、版本和运行状态", "节点 同步 agent jd node"),
   searchEntry("节点限速策略", "节点管理", "/admin/nodes", "配置低积分和欠费 CPU 限速", "cpu quota throttle 限制 xscl"),
   searchEntry("节点磁盘配额", "节点管理", "/admin/nodes", "配置用户磁盘软硬配额", "disk quota home mnt 硬盘 pe"),

@@ -15,6 +15,7 @@ const UserAccounts = () => import("../views/pages/UserAccounts.vue");
 const AdminUsers = () => import("../views/pages/AdminUsers.vue");
 const AdminNodes = () => import("../views/pages/AdminNodes.vue");
 const AdminStatus = () => import("../views/pages/AdminStatus.vue");
+const AdminRacks = () => import("../views/pages/AdminRacks.vue");
 const AdminUsage = () => import("../views/pages/AdminUsage.vue");
 const AdminRequests = () => import("../views/pages/AdminRequests.vue");
 const AdminMailSettings = () => import("../views/pages/AdminMailSettings.vue");
@@ -74,6 +75,7 @@ export const router = createRouter({
         { path: "admin/points", component: AdminPoints },
         { path: "admin/nodes", component: AdminNodes },
         { path: "admin/status", component: AdminStatus },
+        { path: "admin/racks", component: AdminRacks },
         { path: "admin/accounts", component: AdminAccounts },
         { path: "admin/account-provision", component: AdminAccountProvision },
         { path: "admin/whitelist", component: AdminWhitelist },
