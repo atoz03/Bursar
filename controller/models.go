@@ -705,12 +705,13 @@ type UserAccount struct {
 }
 
 type MailSettings struct {
-	SMTPHost  string `json:"smtp_host"`
-	SMTPPort  int    `json:"smtp_port"`
-	SMTPUser  string `json:"smtp_user"`
-	SMTPPass  string `json:"smtp_pass,omitempty"`
-	FromEmail string `json:"from_email"`
-	FromName  string `json:"from_name"`
+	SMTPHost                    string  `json:"smtp_host"`
+	SMTPPort                    int     `json:"smtp_port"`
+	SMTPUser                    string  `json:"smtp_user"`
+	SMTPPass                    string  `json:"smtp_pass,omitempty"`
+	FromEmail                   string  `json:"from_email"`
+	FromName                    string  `json:"from_name"`
+	PointsWarningEmailThreshold float64 `json:"points_warning_email_threshold"`
 }
 
 type PowerUser struct {

@@ -30,6 +30,17 @@
         <el-col :span="12"><el-form-item label="发件邮箱 *" required><el-input v-model="form.from_email" placeholder="建议与 SMTP 用户名一致" /></el-form-item></el-col>
         <el-col :span="12"><el-form-item label="发件人名称 *" required><el-input v-model="form.from_name" /></el-form-item></el-col>
       </el-row>
+      <el-form-item label="积分预警邮件阈值">
+        <el-input-number v-model="form.points_warning_email_threshold" :min="0" :step="1" :precision="2" style="width: 220px" />
+        <span class="field-hint">余额从阈值以上降到该值（含）以下时发送一次；填 0 关闭。默认 100。</span>
+      </el-form-item>
+      <el-alert
+        title="邮件提醒按通用积分 + 结转积分计算，不包含节点专属积分；需要先正确配置 SMTP。"
+        type="info"
+        :closable="false"
+        show-icon
+        style="margin-bottom: 12px"
+      />
     </el-form>
 
     <el-button type="primary" :loading="saving" @click="save">保存设置</el-button>
@@ -148,6 +159,7 @@ const form = reactive({
   smtp_user: "",
   from_email: "",
   from_name: authState.platformName,
+  points_warning_email_threshold: 100,
 });
 
 const visibleUserOptions = computed(() => {
@@ -185,6 +197,7 @@ async function load() {
   smtpPasswordSet.value = !!mail.smtp_password_set;
   form.from_email = mail.from_email || form.smtp_user;
 	form.from_name = mail.from_name || authState.platformName;
+  form.points_warning_email_threshold = Number(mail.points_warning_email_threshold ?? 100);
   try {
     usersLoading.value = true;
     const users = await client.adminUsersDetails(2000);
@@ -238,6 +251,7 @@ async function save() {
       ...form,
       smtp_pass: smtpPass.value,
       update_pass: !!smtpPass.value,
+      points_warning_email_threshold: Number(form.points_warning_email_threshold || 0),
     });
     success.value = "保存成功";
     smtpPass.value = "";
@@ -326,4 +340,5 @@ load().catch((e: any) => {
 .head { display: flex; align-items: center; gap: 8px; font-weight: 700; }
 .section-inline-title { display: inline-flex; align-items: center; gap: 8px; font-weight: 700; }
 .mb { margin-bottom: 12px; }
+.field-hint { margin-left: 10px; color: var(--el-text-color-secondary); font-size: 12px; }
 </style>

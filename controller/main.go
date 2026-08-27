@@ -75,6 +75,7 @@ func main() {
 
 	srv := NewServer(cfg, store)
 	srv.StartPointsMonthlyResetScheduler(context.Background())
+	srv.StartPointsBalanceEmailAlertScheduler(context.Background())
 	srv.StartUsageAutoDeleteScheduler(context.Background())
 	srv.StartHASyncScheduler(context.Background())
 	go func() {

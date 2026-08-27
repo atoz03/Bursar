@@ -2702,6 +2702,7 @@ export class ApiClient {
     smtp_password_set: boolean;
     from_email: string;
     from_name: string;
+    points_warning_email_threshold: number;
   }> {
     return await this.getJson("/api/admin/mail/settings", this.adminHeaders());
   }
@@ -2714,6 +2715,7 @@ export class ApiClient {
     update_pass: boolean;
     from_email: string;
     from_name: string;
+    points_warning_email_threshold: number;
   }): Promise<{ ok: boolean }> {
     return await this.postJson("/api/admin/mail/settings", payload, this.adminHeaders());
   }

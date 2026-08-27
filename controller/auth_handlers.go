@@ -59,13 +59,14 @@ type changePasswordReq struct {
 }
 
 type mailSettingsReq struct {
-	SMTPHost   string `json:"smtp_host"`
-	SMTPPort   int    `json:"smtp_port"`
-	SMTPUser   string `json:"smtp_user"`
-	SMTPPass   string `json:"smtp_pass"`
-	UpdatePass bool   `json:"update_pass"`
-	FromEmail  string `json:"from_email"`
-	FromName   string `json:"from_name"`
+	SMTPHost                    string   `json:"smtp_host"`
+	SMTPPort                    int      `json:"smtp_port"`
+	SMTPUser                    string   `json:"smtp_user"`
+	SMTPPass                    string   `json:"smtp_pass"`
+	UpdatePass                  bool     `json:"update_pass"`
+	FromEmail                   string   `json:"from_email"`
+	FromName                    string   `json:"from_name"`
+	PointsWarningEmailThreshold *float64 `json:"points_warning_email_threshold"`
 }
 
 func (s *Server) handleAuthMe(c *gin.Context) {
@@ -755,12 +756,13 @@ func (s *Server) handleAdminMailSettingsGet(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"smtp_host":         settings.SMTPHost,
-		"smtp_port":         settings.SMTPPort,
-		"smtp_user":         settings.SMTPUser,
-		"smtp_password_set": strings.TrimSpace(settings.SMTPPass) != "",
-		"from_email":        settings.FromEmail,
-		"from_name":         settings.FromName,
+		"smtp_host":                      settings.SMTPHost,
+		"smtp_port":                      settings.SMTPPort,
+		"smtp_user":                      settings.SMTPUser,
+		"smtp_password_set":              strings.TrimSpace(settings.SMTPPass) != "",
+		"from_email":                     settings.FromEmail,
+		"from_name":                      settings.FromName,
+		"points_warning_email_threshold": settings.PointsWarningEmailThreshold,
 	})
 }
 
@@ -770,13 +772,25 @@ func (s *Server) handleAdminMailSettingsSet(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	threshold := normalizePointsWarningEmailThreshold(s.cfg.WarningThreshold)
+	if req.PointsWarningEmailThreshold != nil {
+		threshold = *req.PointsWarningEmailThreshold
+	} else {
+		current, err := s.store.GetPointsWarningEmailThreshold(c.Request.Context(), s.cfg)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		threshold = current
+	}
 	settings := MailSettings{
-		SMTPHost:  req.SMTPHost,
-		SMTPPort:  req.SMTPPort,
-		SMTPUser:  req.SMTPUser,
-		SMTPPass:  req.SMTPPass,
-		FromEmail: req.FromEmail,
-		FromName:  req.FromName,
+		SMTPHost:                    req.SMTPHost,
+		SMTPPort:                    req.SMTPPort,
+		SMTPUser:                    req.SMTPUser,
+		SMTPPass:                    req.SMTPPass,
+		FromEmail:                   req.FromEmail,
+		FromName:                    req.FromName,
+		PointsWarningEmailThreshold: threshold,
 	}
 	if err := s.store.UpsertMailSettings(c.Request.Context(), settings, req.UpdatePass); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})

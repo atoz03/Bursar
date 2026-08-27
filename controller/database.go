@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"net/url"
 	"os"
@@ -766,6 +767,9 @@ SET balance=$2, carryover_balance=$3, status=$4, blocked_at=$5
 WHERE username=$1`, username, newBalance, newCarryoverBalance, newStatus, newBlockedAt); err != nil {
 		return BalanceUpdateResult{}, err
 	}
+	if err := s.queuePointsBalanceEmailAlertTx(ctx, tx, username, prevUsableBalance, usableBalance, now, cfg); err != nil {
+		log.Printf("积分预警邮件告警入队失败：username=%s err=%v", username, err)
+	}
 
 	return BalanceUpdateResult{
 		PrevStatus:           prevStatus,
@@ -840,6 +844,9 @@ WHERE username=$1`, username, newBalance, newStatus, newBlockedAt); err != nil {
 	if err := s.insertRechargeRecordTx(ctx, tx, username, delta, method, "general", ""); err != nil {
 		return BalanceUpdateResult{}, err
 	}
+	if err := s.queuePointsBalanceEmailAlertTx(ctx, tx, username, prevUsableBalance, usableBalance, now, cfg); err != nil {
+		log.Printf("积分预警邮件告警入队失败：username=%s err=%v", username, err)
+	}
 
 	return BalanceUpdateResult{
 		PrevStatus:           prevStatus,
@@ -909,6 +916,9 @@ WHERE username=$1`, username, nextCarryover, newStatus, newBlockedAt); err != ni
 	if err := s.insertRechargeRecordTx(ctx, tx, username, delta, method, "carryover", ""); err != nil {
 		return BalanceUpdateResult{}, err
 	}
+	if err := s.queuePointsBalanceEmailAlertTx(ctx, tx, username, prevUsableBalance, usableBalance, now, cfg); err != nil {
+		log.Printf("积分预警邮件告警入队失败：username=%s err=%v", username, err)
+	}
 	return BalanceUpdateResult{
 		PrevStatus:           prevStatus,
 		PrevEffectiveBalance: prevUsableBalance,
@@ -973,6 +983,9 @@ WHERE username=$1`, username, targetBalance, newStatus, newBlockedAt); err != ni
 		if err := s.insertRechargeRecordTx(ctx, tx, username, delta, method, "general", ""); err != nil {
 			return BalanceUpdateResult{}, 0, err
 		}
+	}
+	if err := s.queuePointsBalanceEmailAlertTx(ctx, tx, username, prevUsableBalance, usableBalance, now, cfg); err != nil {
+		log.Printf("积分预警邮件告警入队失败：username=%s err=%v", username, err)
 	}
 
 	return BalanceUpdateResult{
@@ -1042,6 +1055,9 @@ WHERE username=$1`, username, targetCarryover, newStatus, newBlockedAt); err != 
 		if err := s.insertRechargeRecordTx(ctx, tx, username, delta, method, "carryover", ""); err != nil {
 			return BalanceUpdateResult{}, 0, err
 		}
+	}
+	if err := s.queuePointsBalanceEmailAlertTx(ctx, tx, username, prevUsableBalance, usableBalance, now, cfg); err != nil {
+		log.Printf("积分预警邮件告警入队失败：username=%s err=%v", username, err)
 	}
 
 	return BalanceUpdateResult{
@@ -1127,6 +1143,9 @@ WHERE username=$1`, username, targetGeneral, targetCarryover, newStatus, newBloc
 		if err := s.insertRechargeRecordTx(ctx, tx, username, carryoverDelta, carryoverMethod, "carryover", ""); err != nil {
 			return BalanceUpdateResult{}, 0, 0, err
 		}
+	}
+	if err := s.queuePointsBalanceEmailAlertTx(ctx, tx, username, prevUsableBalance, usableBalance, now, cfg); err != nil {
+		log.Printf("积分预警邮件告警入队失败：username=%s err=%v", username, err)
 	}
 
 	return BalanceUpdateResult{
@@ -12498,12 +12517,13 @@ SET value=EXCLUDED.value, updated_at=NOW()`, key, value); err != nil {
 
 func (s *Store) GetMailSettings(ctx context.Context, cfg Config) (MailSettings, error) {
 	out := MailSettings{
-		SMTPHost:  strings.TrimSpace(cfg.SMTPHost),
-		SMTPPort:  cfg.SMTPPort,
-		SMTPUser:  strings.TrimSpace(cfg.SMTPUser),
-		SMTPPass:  strings.TrimSpace(cfg.SMTPPass),
-		FromEmail: strings.TrimSpace(cfg.FromEmail),
-		FromName:  strings.TrimSpace(cfg.FromName),
+		SMTPHost:                    strings.TrimSpace(cfg.SMTPHost),
+		SMTPPort:                    cfg.SMTPPort,
+		SMTPUser:                    strings.TrimSpace(cfg.SMTPUser),
+		SMTPPass:                    strings.TrimSpace(cfg.SMTPPass),
+		FromEmail:                   strings.TrimSpace(cfg.FromEmail),
+		FromName:                    strings.TrimSpace(cfg.FromName),
+		PointsWarningEmailThreshold: normalizePointsWarningEmailThreshold(cfg.WarningThreshold),
 	}
 	if out.SMTPPort == 0 {
 		out.SMTPPort = 587
@@ -12515,7 +12535,13 @@ func (s *Store) GetMailSettings(ctx context.Context, cfg Config) (MailSettings, 
 		out.FromName = defaultPlatformName
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT key, value FROM app_settings WHERE key = ANY($1)`, pq.Array([]string{
-		appSettingSMTPHost, appSettingSMTPPort, appSettingSMTPUser, appSettingSMTPPass, appSettingFromEmail, appSettingFromName,
+		appSettingSMTPHost,
+		appSettingSMTPPort,
+		appSettingSMTPUser,
+		appSettingSMTPPass,
+		appSettingFromEmail,
+		appSettingFromName,
+		appSettingPointsWarningEmailThreshold,
 	}))
 	if err != nil {
 		return out, err
@@ -12541,6 +12567,10 @@ func (s *Store) GetMailSettings(ctx context.Context, cfg Config) (MailSettings, 
 			out.FromEmail = strings.TrimSpace(value)
 		case appSettingFromName:
 			out.FromName = strings.TrimSpace(value)
+		case appSettingPointsWarningEmailThreshold:
+			if threshold, err := parsePointsWarningEmailThreshold(value); err == nil {
+				out.PointsWarningEmailThreshold = threshold
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -12555,6 +12585,7 @@ func (s *Store) GetMailSettings(ctx context.Context, cfg Config) (MailSettings, 
 	if out.FromName == "" {
 		out.FromName = defaultPlatformName
 	}
+	out.PointsWarningEmailThreshold = normalizePointsWarningEmailThreshold(out.PointsWarningEmailThreshold)
 	return out, nil
 }
 
@@ -12652,6 +12683,11 @@ func (s *Store) UpsertMailSettings(ctx context.Context, settings MailSettings, u
 	if settings.SMTPPort <= 0 || settings.SMTPPort > 65535 {
 		return errors.New("smtp_port 不合法")
 	}
+	if math.IsNaN(settings.PointsWarningEmailThreshold) ||
+		math.IsInf(settings.PointsWarningEmailThreshold, 0) ||
+		settings.PointsWarningEmailThreshold < 0 {
+		return errors.New("积分预警邮件阈值必须是大于等于 0 的有限数字")
+	}
 
 	type kv struct {
 		k string
@@ -12663,6 +12699,7 @@ func (s *Store) UpsertMailSettings(ctx context.Context, settings MailSettings, u
 		{k: appSettingSMTPUser, v: settings.SMTPUser},
 		{k: appSettingFromEmail, v: settings.FromEmail},
 		{k: appSettingFromName, v: settings.FromName},
+		{k: appSettingPointsWarningEmailThreshold, v: strconv.FormatFloat(settings.PointsWarningEmailThreshold, 'f', -1, 64)},
 	}
 	if updatePassword {
 		items = append(items, kv{k: appSettingSMTPPass, v: settings.SMTPPass})
