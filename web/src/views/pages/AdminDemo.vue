@@ -6,8 +6,8 @@
         <div class="ops-title-row">
           <span class="ops-hero-icon"><el-icon><View /></el-icon></span>
           <div>
-            <h1>界面演示</h1>
-            <p>用本地 Mock 数据预览不同身份下的页面，不连接业务接口。</p>
+            <h1>{{ t("界面演示", "Interface Demo") }}</h1>
+            <p>{{ t("用本地 Mock 数据预览不同身份下的页面，不连接业务接口。", "Preview role-based pages with local mock data; no business API is called.") }}</p>
           </div>
         </div>
       </div>
@@ -20,15 +20,15 @@
     <el-card class="demo-controls" shadow="never">
       <div class="control-row">
         <div class="control-block">
-          <span class="control-label">模拟身份</span>
+            <span class="control-label">{{ t("模拟身份", "Role") }}</span>
           <el-radio-group v-model="activeRole">
-            <el-radio-button v-for="role in roleOptions" :key="role.value" :label="role.value">
+            <el-radio-button v-for="role in localizedRoleOptions" :key="role.value" :label="role.value">
               {{ role.label }}
             </el-radio-button>
           </el-radio-group>
         </div>
         <div class="control-block page-control">
-          <span class="control-label">预览页面</span>
+          <span class="control-label">{{ t("预览页面", "Preview page") }}</span>
           <el-select v-model="activePageId" filterable>
             <el-option v-for="page in availablePages" :key="page.id" :label="page.title" :value="page.id" />
           </el-select>
@@ -65,16 +65,16 @@
             <div class="auth-preview">
               <section class="auth-intro">
                 <el-tag effect="dark" type="success">HIT AIOT LAB</el-tag>
-                <h2>GPU / CPU<br />集群管理平台</h2>
-                <p>统一管理计算资源、节点账号与积分。</p>
+                <h2>{{ t("GPU / CPU", "GPU / CPU") }}<br />{{ t("集群管理平台", "Cluster Platform") }}</h2>
+                <p>{{ t("统一管理计算资源、节点账号与积分。", "Manage compute resources, node accounts, and points in one place.") }}</p>
               </section>
               <section class="auth-panel">
-                <h2>欢迎登录</h2>
-                <p>演示账号不会提交到服务器</p>
+                <h2>{{ t("欢迎登录", "Welcome back") }}</h2>
+                <p>{{ t("演示账号不会提交到服务器", "Demo credentials never leave this page") }}</p>
                 <el-form label-position="top">
-                  <el-form-item label="用户名"><el-input v-model="mockForm.username" /></el-form-item>
-                  <el-form-item label="密码"><el-input v-model="mockForm.password" type="password" show-password /></el-form-item>
-                  <el-button type="primary" class="full-button" @click="mockAction">登录演示</el-button>
+                  <el-form-item :label="t('用户名', 'Username')"><el-input v-model="mockForm.username" /></el-form-item>
+                  <el-form-item :label="t('密码', 'Password')"><el-input v-model="mockForm.password" type="password" show-password /></el-form-item>
+                  <el-button type="primary" class="full-button" @click="mockAction">{{ t("登录演示", "Sign in (demo)") }}</el-button>
                 </el-form>
               </section>
             </div>
@@ -85,60 +85,60 @@
               <div class="register-preview-head">
                 <div>
                   <span>PLATFORM REGISTRATION</span>
-                  <h2>平台账号注册申请</h2>
-                  <p>完成邮箱验证后进入管理员审核，通过结果将发送至校园邮箱。</p>
+                  <h2>{{ t("平台账号注册申请", "Platform registration") }}</h2>
+                  <p>{{ t("完成邮箱验证后进入管理员审核，通过结果将发送至校园邮箱。", "Verify your email first; approval results are sent to your campus mailbox.") }}</p>
                 </div>
-                <el-tag type="warning" effect="plain">审核制</el-tag>
+                <el-tag type="warning" effect="plain">{{ t("审核制", "Review required") }}</el-tag>
               </div>
 
-              <el-alert title="所有字段均为必填；用户名、学号和邮箱必须保持全平台唯一。" type="warning" :closable="false" show-icon />
+              <el-alert :title="t('所有字段均为必填；用户名、学号和邮箱必须保持全平台唯一。', 'All fields are required; username, student ID, and email must be unique.')" type="warning" :closable="false" show-icon />
               <div class="register-rule-chips">
-                <span>用户名：姓名缩写 + 邮箱前缀</span>
-                <span>邮箱：仅限 HIT 校园邮箱</span>
-                <span>资料：请填写真实信息</span>
+                <span>{{ t("用户名：姓名缩写 + 邮箱前缀", "Username: initials + email prefix") }}</span>
+                <span>{{ t("邮箱：仅限 HIT 校园邮箱", "Email: HIT campus address only") }}</span>
+                <span>{{ t("资料：请填写真实信息", "Profile: use real information") }}</span>
               </div>
 
               <el-form :model="mockForm" label-position="top" class="register-mock-form">
                 <div class="register-section-grid">
                   <section class="register-section account-section">
-                    <header><i /><div><h3>账号信息</h3><p>用于登录平台并接收验证邮件</p></div></header>
-                    <el-form-item label="校园邮箱" required>
+                    <header><i /><div><h3>{{ t("账号信息", "Account information") }}</h3><p>{{ t("用于登录平台并接收验证邮件", "Used to sign in and receive verification mail") }}</p></div></header>
+                    <el-form-item :label="t('校园邮箱', 'Campus email')" required>
                       <el-input v-model="mockForm.email" placeholder="user@example.org" />
-                      <small>邮箱域名由管理员在系统设置中配置</small>
+                      <small>{{ t("邮箱域名由管理员在系统设置中配置", "Allowed email domains are configured in System Setup") }}</small>
                     </el-form-item>
-                    <el-form-item label="用户名" required>
-                      <el-input v-model="mockForm.usernamePrefix" placeholder="姓名拼音首字母">
+                    <el-form-item :label="t('用户名', 'Username')" required>
+                      <el-input v-model="mockForm.usernamePrefix" :placeholder="t('姓名拼音首字母', 'Name initials')">
                         <template #append>+ 26B123456</template>
                       </el-input>
-                      <small>示例：张三填写 zs，最终用户名为 zs26B123456</small>
+                      <small>{{ t("示例：张三填写 zs，最终用户名为 zs26B123456", "Example: enter zs; final username is zs26B123456") }}</small>
                     </el-form-item>
                     <div class="register-two-cols">
-                      <el-form-item label="密码" required><el-input v-model="mockForm.password" type="password" show-password /></el-form-item>
-                      <el-form-item label="确认密码" required><el-input v-model="mockForm.confirmPassword" type="password" show-password /></el-form-item>
+                      <el-form-item :label="t('密码', 'Password')" required><el-input v-model="mockForm.password" type="password" show-password /></el-form-item>
+                      <el-form-item :label="t('确认密码', 'Confirm password')" required><el-input v-model="mockForm.confirmPassword" type="password" show-password /></el-form-item>
                     </div>
-                    <div class="password-hint"><i /><span>密码需同时包含大小写字母、数字和特殊字符</span></div>
+                    <div class="password-hint"><i /><span>{{ t("密码需同时包含大小写字母、数字和特殊字符", "Use upper/lowercase letters, numbers, and symbols") }}</span></div>
                   </section>
 
                   <section class="register-section profile-section">
-                    <header><i /><div><h3>身份信息</h3><p>用于管理员核验申请人身份</p></div></header>
+                    <header><i /><div><h3>{{ t("身份信息", "Profile information") }}</h3><p>{{ t("用于管理员核验申请人身份", "Used for admin identity review") }}</p></div></header>
                     <div class="register-two-cols">
-                      <el-form-item label="真实姓名" required><el-input v-model="mockForm.realName" /></el-form-item>
-                      <el-form-item label="学号" required><el-input v-model="mockForm.studentId" /></el-form-item>
+                      <el-form-item :label="t('真实姓名', 'Real name')" required><el-input v-model="mockForm.realName" /></el-form-item>
+                      <el-form-item :label="t('学号', 'Student ID')" required><el-input v-model="mockForm.studentId" /></el-form-item>
                     </div>
                     <div class="register-two-cols">
-                      <el-form-item label="导师" required><el-input v-model="mockForm.advisor" /></el-form-item>
-                      <el-form-item label="联系电话" required><el-input v-model="mockForm.phone" /></el-form-item>
+                      <el-form-item :label="t('导师', 'Advisor')" required><el-input v-model="mockForm.advisor" /></el-form-item>
+                      <el-form-item :label="t('联系电话', 'Phone')" required><el-input v-model="mockForm.phone" /></el-form-item>
                     </div>
-                    <el-form-item label="预计毕业年月" required>
+                    <el-form-item :label="t('预计毕业年月', 'Expected graduation')" required>
                       <el-date-picker v-model="mockForm.graduation" type="month" value-format="YYYY-MM" style="width:100%" />
                     </el-form-item>
-                    <div class="identity-tip">资料仅用于账号审核和毕业到期提醒，不会展示给其他用户。</div>
+                    <div class="identity-tip">{{ t("资料仅用于账号审核和毕业到期提醒，不会展示给其他用户。", "Profile data is used only for review and graduation reminders.") }}</div>
                   </section>
                 </div>
 
                 <section class="register-security">
                   <div class="captcha-block">
-                    <div><b>安全验证</b><small>请选择算式 8 + 7 的结果</small></div>
+                    <div><b>{{ t("安全验证", "Security check") }}</b><small>{{ t("请选择算式 8 + 7 的结果", "Choose the result of 8 + 7") }}</small></div>
                     <el-radio-group v-model="mockForm.captchaOption">
                       <el-radio-button label="12">12</el-radio-button>
                       <el-radio-button label="15">15</el-radio-button>
@@ -146,12 +146,12 @@
                     </el-radio-group>
                   </div>
                   <el-checkbox v-model="mockForm.acceptedGuideline">
-                    我已阅读并同意《用户准则》，并承诺遵守平台资源使用规范
+                    {{ t("我已阅读并同意《用户准则》，并承诺遵守平台资源使用规范", "I have read the guidelines and agree to follow the resource usage policy") }}
                   </el-checkbox>
-                  <el-alert title="演示模式不会发送验证邮件，也不会创建真实注册申请。" type="info" :closable="false" show-icon />
+                  <el-alert :title="t('演示模式不会发送验证邮件，也不会创建真实注册申请。', 'Demo mode does not send email or create a real registration request.')" type="info" :closable="false" show-icon />
                   <div class="register-submit-row">
-                    <span>提交后：邮箱验证 → 管理员审核 → 邮件通知</span>
-                    <el-button type="primary" @click="mockAction">提交注册申请</el-button>
+                    <span>{{ t("提交后：邮箱验证 → 管理员审核 → 邮件通知", "After submit: email verification → admin review → email notice") }}</span>
+                    <el-button type="primary" @click="mockAction">{{ t("提交注册申请", "Submit registration") }}</el-button>
                   </div>
                 </section>
               </el-form>
@@ -166,7 +166,7 @@
                 <p>{{ activePage.description }}</p>
               </div>
               <div class="mock-head-actions">
-                <el-tag type="success" effect="plain">Mock 数据</el-tag>
+                <el-tag type="success" effect="plain">{{ t("Mock 数据", "Mock data") }}</el-tag>
                 <el-button type="primary" @click="mockAction">{{ activePage.action }}</el-button>
               </div>
             </div>
@@ -179,11 +179,14 @@
 
             <div v-if="activePage.kind === 'cluster'" class="mock-node-grid">
               <article v-for="node in mockNodes" :key="node.id" class="mock-node-card">
-                <header><div><i :class="node.state" /><b>{{ node.id }}</b></div><el-tag size="small" :type="node.online ? 'success' : 'info'">{{ node.online ? '在线' : '离线' }}</el-tag></header>
-                <div class="node-spec">{{ node.cpu }} · {{ node.gpus.length }} 张 GPU</div>
+                <header><div><i :class="node.state" /><b>{{ node.id }}</b></div><el-tag size="small" :type="node.online ? 'success' : 'info'">{{ node.online ? t('在线', 'Online') : t('离线', 'Offline') }}</el-tag></header>
+                <div class="node-spec">{{ node.cpu }} · {{ node.gpus.length }} {{ t("张 GPU", "GPUs") }}</div>
                 <div class="node-meter"><span>CPU <b>{{ node.cpuUse }}%</b></span><em><i :style="{ width: `${node.cpuUse}%` }" /></em></div>
                 <div class="gpu-demo-grid">
                   <div v-for="gpu in node.gpus" :key="gpu.name"><span>{{ gpu.name }}</span><b>{{ gpu.use }}%</b><em><i :style="{ width: `${gpu.use}%` }" /></em></div>
+                </div>
+                <div v-if="node.alerts?.length" class="mock-node-alerts">
+                  <span v-for="alert in node.alerts" :key="alert">{{ demoAlertText(alert) }}</span>
                 </div>
               </article>
             </div>
@@ -191,36 +194,36 @@
             <el-card v-else-if="activePage.kind === 'form' || activePage.kind === 'profile'" class="mock-form-card" shadow="never">
               <div class="section-caption">{{ activePage.section }}</div>
               <el-form :model="mockForm" label-width="116px">
-                <el-form-item label="功能开关"><el-switch v-model="mockForm.enabled" inline-prompt active-text="开" inactive-text="关" /></el-form-item>
-                <el-form-item label="名称"><el-input v-model="mockForm.title" /></el-form-item>
-                <el-form-item label="通知邮箱"><el-input v-model="mockForm.email" /></el-form-item>
-                <el-form-item label="说明"><el-input v-model="mockForm.note" type="textarea" :rows="3" /></el-form-item>
-                <el-form-item><el-button type="primary" @click="mockAction">保存演示设置</el-button></el-form-item>
+                <el-form-item :label="t('功能开关', 'Enabled')"><el-switch v-model="mockForm.enabled" inline-prompt :active-text="t('开', 'On')" :inactive-text="t('关', 'Off')" /></el-form-item>
+                <el-form-item :label="t('名称', 'Name')"><el-input v-model="mockForm.title" /></el-form-item>
+                <el-form-item :label="t('通知邮箱', 'Notification email')"><el-input v-model="mockForm.email" /></el-form-item>
+                <el-form-item :label="t('说明', 'Description')"><el-input v-model="mockForm.note" type="textarea" :rows="3" /></el-form-item>
+                <el-form-item><el-button type="primary" @click="mockAction">{{ t("保存演示设置", "Save demo settings") }}</el-button></el-form-item>
               </el-form>
             </el-card>
 
             <el-card v-else-if="activePage.kind === 'document' || activePage.kind === 'notices'" class="mock-document" shadow="never">
-              <div class="document-meta"><el-tag size="small">已发布</el-tag><span>更新于 2026-08-14 14:30</span></div>
-              <h3>{{ activePage.title }}示例</h3>
-              <p>这里展示该页面的排版、信息层级和操作区域。演示内容完全保存在当前浏览器内存中。</p>
-              <el-alert title="维护窗口：本周六 02:00—03:00，期间部分节点可能短暂离线。" type="warning" :closable="false" show-icon />
+              <div class="document-meta"><el-tag size="small">{{ t("已发布", "Published") }}</el-tag><span>{{ t("更新于 2026-08-14 14:30", "Updated 2026-08-14 14:30") }}</span></div>
+              <h3>{{ activePage.title }} {{ t("示例", "preview") }}</h3>
+              <p>{{ t("这里展示该页面的排版、信息层级和操作区域。演示内容完全保存在当前浏览器内存中。", "This preview shows the page layout, information hierarchy, and actions. All data stays in browser memory.") }}</p>
+              <el-alert :title="t('维护窗口：本周六 02:00—03:00，期间部分节点可能短暂离线。', 'Maintenance window: Sat 02:00–03:00; some nodes may briefly go offline.')" type="warning" :closable="false" show-icon />
             </el-card>
 
             <el-card v-else class="mock-table-card" shadow="never">
               <div class="table-toolbar">
-                <el-input v-model="keyword" clearable placeholder="搜索 Mock 数据" />
-                <el-button @click="mockAction">筛选</el-button>
+                <el-input v-model="keyword" clearable :placeholder="t('搜索 Mock 数据', 'Search mock data')" />
+                <el-button @click="mockAction">{{ t("筛选", "Filter") }}</el-button>
               </div>
-              <el-table :data="filteredRows" stripe height="310" empty-text="暂无 Mock 数据">
+              <el-table :data="filteredRows" stripe height="310" :empty-text="t('暂无 Mock 数据', 'No mock data')">
                 <el-table-column prop="name" :label="activePage.primaryColumn" min-width="150" />
-                <el-table-column prop="identity" label="账号 / 节点" min-width="140" />
-                <el-table-column prop="resource" label="资源与积分" min-width="160" />
-                <el-table-column prop="status" label="状态" width="100">
-                  <template #default="{ row }"><el-tag size="small" :type="row.status === '正常' ? 'success' : 'warning'">{{ row.status }}</el-tag></template>
+                <el-table-column prop="identity" :label="t('账号 / 节点', 'Account / node')" min-width="140" />
+                <el-table-column prop="resource" :label="t('资源与积分', 'Resources & points')" min-width="160" />
+                <el-table-column prop="status" :label="t('状态', 'Status')" width="100">
+                  <template #default="{ row }"><el-tag size="small" :type="row.status === '正常' ? 'success' : 'warning'">{{ row.status === '正常' ? t('正常', 'Healthy') : t('待处理', 'Pending') }}</el-tag></template>
                 </el-table-column>
-                <el-table-column prop="updated" label="更新时间" width="170" />
-                <el-table-column label="操作" width="150" fixed="right">
-                  <template #default><el-button size="small" @click="mockAction">查看</el-button><el-button size="small" type="primary" @click="mockAction">处理</el-button></template>
+                <el-table-column prop="updated" :label="t('更新时间', 'Updated')" width="170" />
+                <el-table-column :label="t('操作', 'Actions')" width="150" fixed="right">
+                  <template #default><el-button size="small" @click="mockAction">{{ t("查看", "View") }}</el-button><el-button size="small" type="primary" @click="mockAction">{{ t("处理", "Handle") }}</el-button></template>
                 </el-table-column>
               </el-table>
             </el-card>
@@ -236,6 +239,7 @@ import { computed, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { Cpu, View } from "@element-plus/icons-vue";
+import { pickText } from "../../lib/uiLocale";
 
 type DemoRole = "admin" | "power_user" | "user" | "guest";
 type DemoKind = "dashboard" | "cluster" | "table" | "points" | "form" | "profile" | "document" | "notices" | "login" | "register";
@@ -258,6 +262,36 @@ const roleOptions: Array<{ value: DemoRole; label: string }> = [
   { value: "user", label: "普通用户" },
   { value: "guest", label: "访客 / 注册" },
 ];
+
+function t(zh: string, en: string): string {
+  return pickText(zh, en);
+}
+
+const roleEnglish: Record<DemoRole, string> = {
+  admin: "Administrator",
+  power_user: "Power user",
+  user: "User",
+  guest: "Guest / registration",
+};
+
+const demoEnglish: Record<string, string> = {
+  "刷新": "Refresh", "同步数据": "Sync data", "刷新状态": "Refresh status", "同步节点": "Sync nodes", "导出 CSV": "Export CSV", "调整积分": "Adjust points", "新增映射": "Add mapping", "开通账号": "Provision account", "批量审核": "Review batch", "新增授权": "Add authorization", "新增规则": "Add rule", "检查同步": "Check sync", "新建公告": "New announcement", "编辑准则": "Edit guidelines", "新建记录": "New note", "发送测试": "Send test", "保存资料": "Save profile", "审核": "Review", "申请开通": "Request provisioning", "标记已读": "Mark as read", "查询": "Query", "登录": "Sign in", "提交申请": "Submit request", "发送邮件": "Send email",
+  "名称": "Name", "配置内容": "Configuration", "节点": "Node", "进程": "Process", "用户": "User", "平台账号": "Platform account", "映射关系": "Mapping", "节点账号开通": "Node provisioning", "申请人": "Applicant", "账号": "Account", "容灾设置": "HA settings", "邮件服务": "Mail service", "个人资料": "Profile", "积分记录": "Point records", "身份验证": "Identity verification",
+  "运营看板": "Operations dashboard", "集群状态": "Cluster status", "节点管理": "Node management", "进程审计": "Process audit", "积分管理": "Points", "平台用户": "Platform users", "账号映射": "Account mapping", "账号开通": "Account provisioning", "注册与资料审核": "Registration & profile review", "高级用户": "Power users", "SSH 名单": "SSH lists", "容灾同步": "HA sync", "公告管理": "Announcements", "用户准则": "Guidelines", "管理员记事本": "Admin notebook", "邮件设置": "Mail settings", "管理员资料": "Admin profile", "注册审核": "Registration review", "我的积分": "My points", "节点账号": "Node accounts", "公告与准则": "Notices & guidelines", "注册申请": "Registration", "找回密码": "Forgot password",
+  "资源使用、积分变化和活跃用户概览。": "Resource usage, point changes, and active-user overview.", "CPU 与多 GPU 实时状态卡片。": "Real-time CPU and multi-GPU status cards.", "节点策略、版本与运行状态。": "Node policies, versions, and runtime status.", "按用户和节点查看进程记录。": "Review process records by user and node.", "积分余额、规则和调整记录。": "Point balances, rules, and adjustments.", "平台账号、身份信息和状态。": "Platform accounts, identity, and status.", "平台账号与节点账号绑定关系。": "Platform-to-node account bindings.", "节点账号开通与密钥下发。": "Provision node accounts and deliver keys.", "注册、资料修改和解绑申请。": "Registration, profile, and unbind requests.", "授权范围与管理权限。": "Authorized scope and management permissions.", "黑白名单与临时账号。": "Allow/deny lists and temporary accounts.", "主备同步状态和容灾配置。": "Primary/standby sync and disaster-recovery settings.", "平台公告的发布与维护。": "Publish and maintain platform announcements.", "注册与资源使用规范。": "Registration and resource usage rules.", "内部运维记录与交接信息。": "Internal operations notes and handover.", "SMTP、模板和通知策略。": "SMTP, templates, and notification policies.", "管理员资料与安全状态。": "Admin profile and security status.", "已授权范围内的运营数据。": "Operations data within the authorized scope.", "已授权节点的状态与策略。": "Status and policies for authorized nodes.", "按授权查看和调整用户积分。": "View and adjust points within authorization.", "待审核注册与资料变更。": "Pending registration and profile changes.", "个人可用积分与变动。": "Personal points and changes.", "个人节点账号与开通进度。": "Personal node accounts and provisioning progress.", "通用、结转和节点专属积分。": "General, carried-over, and node-specific points.", "CPU、GPU 使用时间和积分消耗。": "CPU/GPU time and point consumption.", "节点账号、登录状态与开通申请。": "Node accounts, sign-in status, and requests.", "平台公告和使用规范。": "Platform notices and usage rules.", "身份资料与安全设置。": "Identity details and security settings.", "账号登录与双因素验证。": "Account sign-in and two-factor authentication.", "新用户注册、邮箱验证和资料填写。": "New-user registration, email verification, and profile.", "通过邮箱重置登录密码。": "Reset your password by email.",
+};
+
+function localizePage(item: DemoPage): DemoPage {
+  return {
+    ...item,
+    title: t(item.title, demoEnglish[item.title] || item.title),
+    description: t(item.description, demoEnglish[item.description] || item.description),
+    action: t(item.action, demoEnglish[item.action] || item.action),
+    section: t(item.section, demoEnglish[item.section] || item.section),
+    primaryColumn: t(item.primaryColumn, demoEnglish[item.primaryColumn] || item.primaryColumn),
+    eyebrow: item.eyebrow,
+  };
+}
 
 function page(id: string, title: string, kind: DemoKind, description: string, action = "刷新", primaryColumn = "名称", section = "配置内容"): DemoPage {
   return { id, title, kind, description, action, primaryColumn, section, eyebrow: id.replaceAll("-", " ").toUpperCase() };
@@ -314,9 +348,10 @@ const initialRole: DemoRole = roleOptions.some((item) => item.value === queryRol
 const activeRole = ref<DemoRole>(initialRole);
 const initialPage = queryText(route.query.page);
 const activePageId = ref(pageCatalog[initialRole].some((item) => item.id === initialPage) ? initialPage : pageCatalog[initialRole][0].id);
-const availablePages = computed(() => pageCatalog[activeRole.value]);
+const localizedRoleOptions = computed(() => roleOptions.map((role) => ({ ...role, label: t(role.label, roleEnglish[role.value]) })));
+const availablePages = computed(() => pageCatalog[activeRole.value].map(localizePage));
 const activePage = computed(() => availablePages.value.find((item) => item.id === activePageId.value) || availablePages.value[0]);
-const activeRoleLabel = computed(() => roleOptions.find((item) => item.value === activeRole.value)?.label || "管理员");
+const activeRoleLabel = computed(() => t(roleOptions.find((item) => item.value === activeRole.value)?.label || "管理员", roleEnglish[activeRole.value]));
 const demoPath = computed(() => `/admin/demo?role=${activeRole.value}&page=${activePage.value.id}`);
 const keyword = ref("");
 const mockForm = reactive({
@@ -350,24 +385,29 @@ const filteredRows = computed(() => {
 });
 
 const mockNodes = [
-  { id: "node-01", online: true, state: "good", cpu: "Intel Xeon 64C", cpuUse: 31, gpus: [{ name: "GPU 0", use: 72 }, { name: "GPU 1", use: 18 }, { name: "GPU 2", use: 0 }, { name: "GPU 3", use: 44 }] },
-  { id: "60021", online: true, state: "warn", cpu: "AMD EPYC 96C", cpuUse: 68, gpus: [{ name: "GPU 0", use: 91 }, { name: "GPU 1", use: 87 }] },
-  { id: "60022", online: false, state: "muted", cpu: "AMD EPYC 64C", cpuUse: 0, gpus: [{ name: "GPU 0", use: 0 }, { name: "GPU 1", use: 0 }] },
+  { id: "node-01", online: true, state: "good", cpu: "Intel Xeon 64C", cpuUse: 31, gpus: [{ name: "GPU 0", use: 72 }, { name: "GPU 1", use: 18 }, { name: "GPU 2", use: 0 }, { name: "GPU 3", use: 44 }], alerts: [] as string[] },
+  { id: "60021", online: true, state: "warn", cpu: "AMD EPYC 96C", cpuUse: 68, gpus: [{ name: "GPU 0", use: 91 }, { name: "GPU 1", use: 87 }], alerts: ["gpu_hot"] },
+  { id: "60022", online: false, state: "muted", cpu: "AMD EPYC 64C", cpuUse: 0, gpus: [{ name: "GPU 0", use: 0 }, { name: "GPU 1", use: 0 }], alerts: [] as string[] },
 ];
+
+function demoAlertText(alert: string): string {
+  if (alert === "gpu_hot") return t("GPU 0 温度 87℃", "GPU 0 temperature 87°C");
+  return alert;
+}
 
 const showMetrics = computed(() => ["dashboard", "points", "table"].includes(activePage.value.kind));
 const activeMetrics = computed(() => activePage.value.kind === "points"
   ? [
-      { label: "总积分", value: "2,840.50", note: "全部可用余额", tone: "blue" },
-      { label: "通用积分", value: "1,920.50", note: "本月可用", tone: "green" },
-      { label: "结转积分", value: "620.00", note: "历史结转", tone: "violet" },
-      { label: "专属积分", value: "300.00", note: "节点限定", tone: "amber" },
+      { label: t("总积分", "Total points"), value: "2,840.50", note: t("全部可用余额", "Available balance"), tone: "blue" },
+      { label: t("通用积分", "General points"), value: "1,920.50", note: t("本月可用", "Available this month"), tone: "green" },
+      { label: t("结转积分", "Carried-over"), value: "620.00", note: t("历史结转", "Historical carry-over"), tone: "violet" },
+      { label: t("专属积分", "Exclusive points"), value: "300.00", note: t("节点限定", "Node-specific"), tone: "amber" },
     ]
   : [
-      { label: "在线节点", value: "19 / 20", note: "95% 可用", tone: "green" },
-      { label: "活跃 GPU", value: "11 / 82", note: "多卡状态", tone: "violet" },
-      { label: "CPU 使用率", value: "32.8%", note: "集群平均", tone: "blue" },
-      { label: "今日积分", value: "468.20", note: "累计消耗", tone: "amber" },
+      { label: t("在线节点", "Online nodes"), value: "19 / 20", note: t("95% 可用", "95% available"), tone: "green" },
+      { label: t("活跃 GPU", "Active GPUs"), value: "11 / 82", note: t("多卡状态", "Multi-GPU status"), tone: "violet" },
+      { label: t("CPU 使用率", "CPU usage"), value: "32.8%", note: t("集群平均", "Cluster average"), tone: "blue" },
+      { label: t("今日积分", "Points today"), value: "468.20", note: t("累计消耗", "Consumed total"), tone: "amber" },
     ]);
 
 watch(activeRole, () => {
@@ -378,7 +418,7 @@ watch([activeRole, activePageId], () => {
 });
 
 function mockAction() {
-  ElMessage.info("演示模式：该操作不会请求接口或修改真实数据");
+  ElMessage.info(t("演示模式：该操作不会请求接口或修改真实数据", "Demo mode: this action does not call an API or change real data."));
 }
 </script>
 
@@ -403,7 +443,7 @@ function mockAction() {
 .mock-page-head { display:flex; align-items:center; justify-content:space-between; gap:18px; margin-bottom:16px; padding:18px 20px; border:1px solid rgba(255,255,255,.9); border-radius:16px; background:linear-gradient(145deg,rgba(255,255,255,.9),rgba(245,249,255,.7)); box-shadow:0 12px 28px rgba(40,62,98,.08),inset 0 1px 0 #fff; }.mock-page-head span{color:#2563eb;font-size:9px;font-weight:850;letter-spacing:.14em}.mock-page-head h2{margin:3px 0 2px;color:#152033;font-size:25px;letter-spacing:-.03em}.mock-page-head p{margin:0;color:#718096;font-size:11px}.mock-head-actions{display:flex;align-items:center;gap:8px}
 .mock-metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin-bottom:14px; }.mock-metrics article{padding:14px;border:1px solid rgba(255,255,255,.9);border-top:3px solid currentColor;border-radius:13px;background:linear-gradient(145deg,rgba(255,255,255,.88),rgba(255,255,255,.58));box-shadow:0 8px 20px rgba(39,60,92,.07)}.mock-metrics span,.mock-metrics small{display:block;color:#7a899d;font-size:9px}.mock-metrics strong{display:block;margin:8px 0 5px;color:#182235;font-size:20px}.mock-metrics .blue{color:#3b82f6}.mock-metrics .green{color:#10b981}.mock-metrics .violet{color:#8b5cf6}.mock-metrics .amber{color:#f59e0b}
 .mock-table-card,.mock-form-card,.mock-document{border-radius:16px!important}.table-toolbar{display:flex;gap:8px;margin-bottom:12px}.table-toolbar .el-input{max-width:280px}.section-caption{margin-bottom:14px;color:#26364b;font-size:14px;font-weight:800}.form-actions{display:flex;justify-content:flex-end;margin-top:14px}
-.mock-node-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.mock-node-card{padding:15px;border:1px solid rgba(255,255,255,.92);border-radius:15px;background:linear-gradient(145deg,rgba(255,255,255,.9),rgba(255,255,255,.58));box-shadow:0 10px 24px rgba(35,55,86,.08)}.mock-node-card header{display:flex;align-items:center;justify-content:space-between}.mock-node-card header>div{display:flex;align-items:center;gap:8px}.mock-node-card header i{width:8px;height:8px;border-radius:50%;background:#10b981}.mock-node-card header i.warn{background:#f59e0b}.mock-node-card header i.muted{background:#94a3b8}.node-spec{margin:7px 0 14px;color:#8491a2;font-size:9px}.node-meter span{display:flex;justify-content:space-between;color:#53647a;font-size:10px}.node-meter em,.gpu-demo-grid em{height:4px;display:block;margin-top:5px;overflow:hidden;border-radius:999px;background:#e5ebf2}.node-meter em i,.gpu-demo-grid em i{height:100%;display:block;border-radius:inherit;background:linear-gradient(90deg,#10b981,#34d399)}.gpu-demo-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:12px}.gpu-demo-grid>div{padding:8px;border-radius:8px;background:rgba(248,250,252,.76);color:#66768b;font-size:8px}.gpu-demo-grid span{display:inline-block}.gpu-demo-grid b{float:right;color:#31445a}
+.mock-node-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.mock-node-card{padding:15px;border:1px solid rgba(255,255,255,.92);border-radius:15px;background:linear-gradient(145deg,rgba(255,255,255,.9),rgba(255,255,255,.58));box-shadow:0 10px 24px rgba(35,55,86,.08)}.mock-node-card header{display:flex;align-items:center;justify-content:space-between}.mock-node-card header>div{display:flex;align-items:center;gap:8px}.mock-node-card header i{width:8px;height:8px;border-radius:50%;background:#10b981}.mock-node-card header i.warn{background:#f59e0b}.mock-node-card header i.muted{background:#94a3b8}.node-spec{margin:7px 0 14px;color:#8491a2;font-size:9px}.node-meter span{display:flex;justify-content:space-between;color:#53647a;font-size:10px}.node-meter em,.gpu-demo-grid em{height:4px;display:block;margin-top:5px;overflow:hidden;border-radius:999px;background:#e5ebf2}.node-meter em i,.gpu-demo-grid em i{height:100%;display:block;border-radius:inherit;background:linear-gradient(90deg,#10b981,#34d399)}.gpu-demo-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:12px}.gpu-demo-grid>div{padding:8px;border-radius:8px;background:rgba(248,250,252,.76);color:#66768b;font-size:8px}.gpu-demo-grid span{display:inline-block}.gpu-demo-grid b{float:right;color:#31445a}.mock-node-alerts{display:grid;gap:4px;margin-top:10px}.mock-node-alerts span{padding:5px 7px;border:1px solid #fed7aa;border-radius:7px;color:#9a3412;background:#fff7ed;font-size:8px;line-height:1.35}
 .mock-document{min-height:280px}.mock-document h3{margin:18px 0 8px;font-size:22px}.mock-document p{max-width:720px;color:#64748b;line-height:1.75}.document-meta{display:flex;align-items:center;gap:10px;color:#94a3b8;font-size:10px}
 .auth-preview{min-height:590px;display:grid;grid-template-columns:1.05fr .95fr;align-items:stretch;overflow:hidden;border-radius:20px;background:linear-gradient(130deg,#073b4c,#0f766e 48%,#d9f99d);box-shadow:0 20px 50px rgba(2,6,23,.16)}.auth-intro{display:flex;justify-content:center;flex-direction:column;padding:42px;color:#fff}.auth-intro .el-tag{align-self:flex-start}.auth-intro h2{margin:18px 0 8px;font-size:38px;line-height:1.14}.auth-intro p{font-size:15px;opacity:.88}.auth-panel{align-self:center;margin:28px;padding:28px;border:1px solid rgba(255,255,255,.9);border-radius:20px;background:linear-gradient(145deg,#fff,#eff8f7);box-shadow:0 18px 45px rgba(2,6,23,.18)}.auth-panel h2{margin:0;font-size:25px}.auth-panel>p{margin:5px 0 20px;color:#7a8798;font-size:11px}.full-button{width:100%}
 .register-preview { padding: 22px; border: 1px solid rgba(255,255,255,.92); border-radius: 19px; background: linear-gradient(145deg,rgba(255,255,255,.94),rgba(244,249,255,.78)); box-shadow: 0 18px 42px rgba(36,56,90,.11), inset 0 1px 0 #fff; }
