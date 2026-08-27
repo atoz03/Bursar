@@ -11035,15 +11035,13 @@ func collectDiskMountUsages(data MetricsData) []diskMountUsage {
 		if x.total > 0 {
 			usedPercent = (used / x.total) * 100.0
 		}
-		if usedPercent >= 98.0 || free <= 1.0 {
-			out = append(out, diskMountRisk{
-				Name:        x.name,
-				TotalGB:     x.total,
-				UsedGB:      used,
-				FreeGB:      free,
-				UsedPercent: usedPercent,
-			})
-		}
+		out = append(out, diskMountUsage{
+			Name:        x.name,
+			TotalGB:     x.total,
+			UsedGB:      used,
+			FreeGB:      free,
+			UsedPercent: usedPercent,
+		})
 	}
 	return out
 }
