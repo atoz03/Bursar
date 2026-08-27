@@ -7125,7 +7125,7 @@ func (s *Server) parseSecurityEventRange(c *gin.Context) (*time.Time, *time.Time
 			return nil, nil, fmt.Errorf("to 时间格式不合法，建议 RFC3339 或 YYYY-MM-DD")
 		}
 		if len(x) == len("2006-01-02") {
-			t = t.Add(24*time.Hour - time.Nanosecond)
+			t = endOfDateForPostgres(t)
 		}
 		toPtr = &t
 	}
@@ -9178,7 +9178,7 @@ func parseUsageRange(fromStr string, toStr string) (time.Time, bool, time.Time, 
 			return time.Time{}, false, time.Time{}, false, fmt.Errorf("to 时间格式不合法，建议 RFC3339 或 YYYY-MM-DD")
 		}
 		if len(toStr) == len("2006-01-02") {
-			t = t.Add(24*time.Hour - time.Nanosecond)
+			t = endOfDateForPostgres(t)
 		}
 		to = t
 		hasTo = true
@@ -11103,6 +11103,12 @@ func parseTimeFlexible(v string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("invalid time: %s", v)
 }
 
+// PostgreSQL timestamp 的最高精度是微秒。使用“次日减 1 纳秒”会在参数编码时
+// 被四舍五入为次日 00:00:00，从而把结束日期后的第一天错误纳入查询。
+func endOfDateForPostgres(t time.Time) time.Time {
+	return t.Add(24*time.Hour - time.Microsecond)
+}
+
 func parseStatsRange(c *gin.Context, defaultDays int) (time.Time, time.Time, error) {
 	now := nowInBeijing()
 	from := now.AddDate(0, 0, -defaultDays)
@@ -11120,7 +11126,7 @@ func parseStatsRange(c *gin.Context, defaultDays int) (time.Time, time.Time, err
 			return time.Time{}, time.Time{}, fmt.Errorf("to 时间格式不合法，建议 RFC3339 或 YYYY-MM-DD")
 		}
 		if len(x) == len("2006-01-02") {
-			t = t.Add(24*time.Hour - time.Nanosecond)
+			t = endOfDateForPostgres(t)
 		}
 		to = t
 	}
