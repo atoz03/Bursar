@@ -1,5 +1,4 @@
 package main
-
 // 注意：这些结构体与 controller/models.go 的 JSON 字段保持一致，便于直接通信。
 
 type MetricsData struct {
