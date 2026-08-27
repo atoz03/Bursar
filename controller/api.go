@@ -117,7 +117,7 @@ func (s *Server) enqueueNodeAction(nodeID string, action Action) {
 		}
 	}
 	s.nodeActionsMu.Lock()
-	s.nodeActions[nodeID] = append(s.nodeActions[nodeID], action)
+	s.nodeActions[nodeID] = append(s.nodeActions[nodeID], actionCopy)
 	s.nodeActionsMu.Unlock()
 
 	if isProcessKillActionType(actionCopy.Type) {
