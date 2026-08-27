@@ -428,9 +428,9 @@ export type NodeLocalUser = {
   cpu_quota_percent?: number;
   cpu_quota_reason?: string;
   cpu_quota_updated_at?: string;
-  memory_limit_gb?: number;
-  memory_limit_reason?: string;
-  memory_limit_updated_at?: string;
+	memory_limit_gb?: number;
+	memory_limit_reason?: string;
+	memory_limit_updated_at?: string;
   gpu_visible_indices?: number[];
   gpu_visibility_reason?: string;
   gpu_visibility_updated_at?: string;

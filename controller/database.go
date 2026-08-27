@@ -7860,9 +7860,9 @@ func (s *Store) ListNodeUserCPULimits(
 		where = "WHERE " + strings.Join(conds, " AND ")
 	}
 	query := `
-SELECT l.node_id,
-       l.local_username,
-       COALESCE(una.billing_username, '') AS billing_username,
+	SELECT l.node_id,
+	       l.local_username,
+	       COALESCE(una.billing_username, '') AS billing_username,
        (una.billing_username IS NOT NULL) AS mapping_exists,
        (
          EXISTS(SELECT 1 FROM user_accounts ua WHERE ua.username=una.billing_username)
@@ -8085,8 +8085,8 @@ func (s *Store) ListNodeUserMemoryLimits(
 		where = "WHERE " + strings.Join(conds, " AND ")
 	}
 	query := `
-SELECT l.node_id,
-       l.local_username,
+	SELECT l.node_id,
+	       l.local_username,
        COALESCE(una.billing_username, '') AS billing_username,
        (una.billing_username IS NOT NULL) AS mapping_exists,
        (
