@@ -6,21 +6,22 @@
         <div class="ops-title-row">
           <span class="ops-hero-icon"><el-icon><Monitor /></el-icon></span>
           <div>
-            <h1>节点管理</h1>
-            <p>查看节点运行、安全与计费状态，并集中管理节点策略。</p>
+            <h1>{{ t("节点管理", "Node Management") }}</h1>
+            <p>{{ t("查看节点运行、安全与计费状态，并集中管理节点策略。", "Review node runtime, security, and billing status while managing node policies.") }}</p>
           </div>
         </div>
       </div>
       <div class="ops-hero-actions">
-        <span class="ops-sync-meta">上次刷新：{{ lastRefreshTimeText }}</span>
+        <span class="ops-sync-meta">{{ t("上次刷新：", "Last refresh: ") }}{{ lastRefreshTimeText }}</span>
         <el-button :loading="loading" type="primary" @click="reload">
           <el-icon><Refresh /></el-icon>
-          立即刷新
+          {{ t("立即刷新", "Refresh now") }}
         </el-button>
       </div>
     </section>
 
-    <el-alert v-if="error" :title="error" type="error" show-icon class="error-alert" />
+    <el-alert v-if="error" :title="error" type="error" show-icon closable class="error-alert" role="alert" @close="error = ''" />
+    <el-alert v-if="success" :title="success" type="success" show-icon closable class="success-alert" @close="success = ''" />
     <el-alert
       v-if="riskyNodes.length > 0"
       type="warning"
@@ -29,7 +30,7 @@
       class="risk-banner"
     >
       <template #title>
-        <span>近 7 天有 {{ riskyNodes.length }} 台节点出现安全事件或疑似恶意账号</span>
+        <span>{{ t(`近 7 天有 ${riskyNodes.length} 台节点存在活动告警或安全事件`, `${riskyNodes.length} node(s) have active alerts or security events in the last 7 days`) }}</span>
       </template>
       <div class="risk-banner-list">
         <button
@@ -48,24 +49,24 @@
     <!-- 统计卡片 -->
     <div v-if="rows.length > 0" class="ops-metric-grid nodes-metric-grid">
       <article class="ops-metric-card ops-tone-green">
-        <span>在线节点</span>
+        <span>{{ t("在线节点", "Online nodes") }}</span>
         <strong>{{ onlineNodeCount }}<small>/ {{ rows.length }}</small></strong>
-        <small>当前在线 / 全部节点</small>
+        <small>{{ t("当前在线 / 全部节点", "Online / total") }}</small>
       </article>
       <article class="ops-metric-card ops-tone-violet">
-        <span>GPU 进程</span>
+        <span>{{ t("GPU 进程", "GPU processes") }}</span>
         <strong>{{ totalGpuProcesses }}</strong>
-        <small>全部节点 GPU 进程总数</small>
+        <small>{{ t("全部节点 GPU 进程总数", "Total GPU processes across nodes") }}</small>
       </article>
       <article class="ops-metric-card ops-tone-cyan">
-        <span>CPU 进程</span>
+        <span>{{ t("CPU 进程", "CPU processes") }}</span>
         <strong>{{ totalCpuProcesses }}</strong>
-        <small>全部节点 CPU 进程总数</small>
+        <small>{{ t("全部节点 CPU 进程总数", "Total CPU processes across nodes") }}</small>
       </article>
       <article class="ops-metric-card ops-tone-amber">
-        <span>积分消耗</span>
+        <span>{{ t("积分消耗", "Points consumed") }}</span>
         <strong>{{ totalCost.toFixed(2) }}</strong>
-        <small>当前节点记录累计</small>
+        <small>{{ t("当前节点记录累计", "Accumulated node records") }}</small>
       </article>
     </div>
 
@@ -75,9 +76,9 @@
         <div class="card-header">
           <div class="card-title">
             <el-icon><List /></el-icon>
-            <span>节点详细信息</span>
+            <span>{{ t("节点详细信息", "Node details") }}</span>
           </div>
-          <el-text type="info" size="small">共 {{ rows.length }} 个节点</el-text>
+          <el-text type="info" size="small">{{ t(`共 ${rows.length} 个节点`, `${rows.length} nodes total`) }}</el-text>
         </div>
       </template>
 
@@ -789,38 +790,38 @@
         <div class="ssh-users-wrap">
           <div class="ssh-users-title section-inline-title">
             <el-icon><Document /></el-icon>
-            <span>安全审计日志</span>
+            <span>{{ t("安全审计日志", "Security audit log") }}</span>
           </div>
           <div class="security-filter-bar">
             <el-date-picker
               v-model="securityRange"
               type="datetimerange"
-              start-placeholder="开始时间"
-              end-placeholder="结束时间"
+              :start-placeholder="t('开始时间', 'Start time')"
+              :end-placeholder="t('结束时间', 'End time')"
               format="YYYY-MM-DD HH:mm:ss"
               value-format="YYYY-MM-DD HH:mm:ss"
               range-separator="至"
               style="width: 420px"
             />
-            <el-select v-model="securityEventTypeFilter" clearable filterable placeholder="事件类型" style="width: 220px">
-              <el-option label="全部事件" value="" />
-              <el-option label="疑似挖矿" value="suspected_mining" />
-              <el-option label="高CPU负载" value="high_cpu_load" />
-              <el-option label="SSH失败峰值" value="ssh_failed_login_spike" />
-              <el-option label="SSH爆破" value="ssh_bruteforce" />
-              <el-option label="端口扫描" value="abnormal_port_scan" />
-              <el-option label="磁盘风险" value="disk_full_risk" />
+            <el-select v-model="securityEventTypeFilter" clearable filterable :placeholder="t('事件类型', 'Event type')" style="width: 220px">
+              <el-option :label="t('全部事件', 'All events')" value="" />
+              <el-option :label="t('疑似挖矿', 'Suspected mining')" value="suspected_mining" />
+              <el-option :label="t('高CPU负载', 'High CPU load')" value="high_cpu_load" />
+              <el-option :label="t('SSH失败峰值', 'SSH failed-login spike')" value="ssh_failed_login_spike" />
+              <el-option :label="t('SSH爆破', 'SSH brute force')" value="ssh_bruteforce" />
+              <el-option :label="t('端口扫描', 'Port scan')" value="abnormal_port_scan" />
+              <el-option :label="t('磁盘风险', 'Disk risk')" value="disk_full_risk" />
             </el-select>
-            <el-switch v-model="securityShowSummary" inline-prompt active-text="规约视图" inactive-text="原始日志" />
-            <el-button type="primary" :loading="securityEventsLoading" @click="queryNodeSecurityEvents">查询</el-button>
-            <el-button :disabled="securityEventsLoading" @click="resetNodeSecurityFilters">重置</el-button>
+            <el-switch v-model="securityShowSummary" inline-prompt :active-text="t('规约视图', 'Grouped')" :inactive-text="t('原始日志', 'Raw')" />
+            <el-button type="primary" :loading="securityEventsLoading" @click="queryNodeSecurityEvents">{{ t("查询", "Search") }}</el-button>
+            <el-button :disabled="securityEventsLoading" @click="resetNodeSecurityFilters">{{ t("重置", "Reset") }}</el-button>
           </div>
           <el-alert
             type="info"
             show-icon
             :closable="false"
             class="security-normalizer-alert"
-            :title="`规约说明：${securitySummaryNormalizer || 'event_type + severity + reason(数字归一化)'}`"
+            :title="t(`规约说明：${securitySummaryNormalizer || 'event_type + severity + reason(数字归一化)'}`, `Grouping: ${securitySummaryNormalizer || 'event_type + severity + reason (numbers normalized)'}`)"
           />
           <el-table
             v-if="securityShowSummary"
@@ -830,22 +831,22 @@
             style="width: 100%"
             v-loading="securityEventsLoading"
             :header-cell-style="{ background: 'var(--bg-tertiary)', color: 'var(--text-primary)' }"
-            empty-text="当前时间范围内暂无可规约的安全事件"
+            :empty-text="t('当前时间范围内暂无可规约的安全事件', 'No grouped security events in this time range')"
           >
-            <el-table-column prop="event_type" label="事件类型" min-width="140" />
-            <el-table-column prop="severity" label="等级" width="90" />
-            <el-table-column prop="normalized_reason" label="规约后原因" min-width="280" />
-            <el-table-column prop="event_count" label="事件数" width="90" align="center" />
-            <el-table-column prop="affected_users" label="影响账号数" width="110" align="center" />
-            <el-table-column label="首次时间" min-width="170">
+            <el-table-column prop="event_type" :label="t('事件类型', 'Event type')" min-width="140" />
+            <el-table-column prop="severity" :label="t('等级', 'Severity')" width="90" />
+            <el-table-column prop="normalized_reason" :label="t('规约后原因', 'Grouped reason')" min-width="280" />
+            <el-table-column prop="event_count" :label="t('事件数', 'Events')" width="90" align="center" />
+            <el-table-column prop="affected_users" :label="t('影响账号数', 'Affected accounts')" width="110" align="center" />
+            <el-table-column :label="t('首次时间', 'First seen')" min-width="170">
               <template #default="{ row }">{{ formatTime(row.first_seen_at) }}</template>
             </el-table-column>
-            <el-table-column label="最近时间" min-width="170">
+            <el-table-column :label="t('最近时间', 'Last seen')" min-width="170">
               <template #default="{ row }">{{ formatTime(row.last_seen_at) }}</template>
             </el-table-column>
-            <el-table-column label="详情" width="130" fixed="right">
+            <el-table-column :label="t('详情', 'Details')" width="130" fixed="right">
               <template #default="{ row }">
-                <el-button size="small" @click="showSecuritySummaryDetail(row)">查看</el-button>
+                <el-button size="small" @click="showSecuritySummaryDetail(row)">{{ t("查看", "View") }}</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -857,22 +858,22 @@
             style="width: 100%"
             v-loading="securityEventsLoading"
             :header-cell-style="{ background: 'var(--bg-tertiary)', color: 'var(--text-primary)' }"
-            empty-text="暂无安全事件日志"
+            :empty-text="t('暂无安全事件日志', 'No security event logs')"
           >
-            <el-table-column label="时间" min-width="170">
+            <el-table-column :label="t('时间', 'Time')" min-width="170">
               <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
             </el-table-column>
-            <el-table-column prop="event_type" label="事件类型" min-width="120" />
-            <el-table-column prop="severity" label="等级" width="90" />
-            <el-table-column prop="reason" label="原因" min-width="280" />
-            <el-table-column label="相关账号" min-width="180">
+            <el-table-column prop="event_type" :label="t('事件类型', 'Event type')" min-width="120" />
+            <el-table-column prop="severity" :label="t('等级', 'Severity')" width="90" />
+            <el-table-column prop="reason" :label="t('原因', 'Reason')" min-width="280" />
+            <el-table-column :label="t('相关账号', 'Related accounts')" min-width="180">
               <template #default="{ row }">
                 <span>{{ (row.related_usernames || []).join(", ") || "-" }}</span>
               </template>
             </el-table-column>
-            <el-table-column label="详情" width="120" fixed="right">
+            <el-table-column :label="t('详情', 'Details')" width="120" fixed="right">
               <template #default="{ row }">
-                <el-button size="small" @click="showSecurityEventDetail(row)">查看</el-button>
+                <el-button size="small" @click="showSecurityEventDetail(row)">{{ t("查看", "View") }}</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -1444,12 +1445,18 @@ import {
 import { settingsState } from "../../lib/settingsStore";
 import { authState } from "../../lib/authStore";
 import { formatServerDateTime } from "../../lib/time";
+import { pickText } from "../../lib/uiLocale";
 import { Monitor, Refresh, Cpu, Coin, Clock, List, Document, User, UserFilled, WarningFilled } from "@element-plus/icons-vue";
 import dayjs from "dayjs";
 
 const loading = ref(false);
 const error = ref("");
+const success = ref("");
 const rows = ref<NodeStatus[]>([]);
+
+function t(zh: string, en: string): string {
+  return pickText(zh, en);
+}
 const disconnectingNodeId = ref("");
 const killingProcNodeId = ref("");
 const killingUserProcKey = ref("");
@@ -1582,25 +1589,23 @@ const riskyNodes = computed(() => {
   return [...rows.value]
     .filter((node) => hasNodeSecurityRisk(node))
     .sort((a, b) => {
-      const e = Number(b.security_event_count_7d || 0) - Number(a.security_event_count_7d || 0);
+      const e = Number(b.security_non_disk_event_count_7d || 0) - Number(a.security_non_disk_event_count_7d || 0);
       if (e !== 0) return e;
       const s = Number(b.suspicious_user_count_7d || 0) - Number(a.suspicious_user_count_7d || 0);
       if (s !== 0) return s;
       return nodeIdSortValue(b.node_id) - nodeIdSortValue(a.node_id);
     })
     .map((node) => {
-      const eventCount = Number(node.security_event_count_7d || 0);
-      const suspiciousCount = Number(node.suspicious_user_count_7d || 0);
       return {
         node_id: node.node_id,
-        summary: `事件 ${eventCount} / 疑似账号 ${suspiciousCount}`,
+        summary: nodeRiskSummary(node),
       };
     });
 });
 const history = computed(() => detailData.value?.history ?? []);
 const cpuUtilNow = computed(() => calcCPUUtil(detailData.value?.latest));
 const gpuUtilNow = computed(() => calcGPUUtil(detailData.value?.latest));
-const lastRefreshTimeText = computed(() => (lastRefreshAt.value ? formatTime(lastRefreshAt.value) : "尚未刷新"));
+const lastRefreshTimeText = computed(() => (lastRefreshAt.value ? formatTime(lastRefreshAt.value) : t("尚未刷新", "Not refreshed")));
 const detailRefreshTimeText = computed(() => (detailLastRefreshAt.value ? formatTime(detailLastRefreshAt.value) : "-"));
 const isSuperAdmin = computed(() => authState.role === "admin");
 const nodeExclusiveGPUOptions = computed(() => {
@@ -2089,8 +2094,8 @@ async function onNodeServiceTagClick(node: NodeStatus) {
   await syncNodeNow(String(node.node_id || "").trim());
 }
 
-function hasNodeSecurityEvents(node: NodeStatus): boolean {
-  return Number(node.security_event_count_7d || 0) > 0;
+function hasNodeNonDiskSecurityEvents(node: NodeStatus): boolean {
+  return Number(node.security_non_disk_event_count_7d || 0) > 0;
 }
 
 function hasNodeSuspiciousUsers(node: NodeStatus): boolean {
@@ -2098,17 +2103,26 @@ function hasNodeSuspiciousUsers(node: NodeStatus): boolean {
 }
 
 function hasNodeSecurityRisk(node: NodeStatus): boolean {
-  return hasNodeSecurityEvents(node) || hasNodeSuspiciousUsers(node);
+  return hasNodeNonDiskSecurityEvents(node) || hasNodeSuspiciousUsers(node);
 }
 
 function nodeRiskEmoji(node: NodeStatus): string {
-  if (hasNodeSecurityEvents(node)) return "🚨";
+  if (hasNodeNonDiskSecurityEvents(node)) return "🚨";
   if (hasNodeSuspiciousUsers(node)) return "⚠️";
   return "";
 }
 
 function nodeRiskTooltip(node: NodeStatus): string {
-  return `近7天安全事件 ${Number(node.security_event_count_7d || 0)} 条；疑似账号 ${Number(node.suspicious_user_count_7d || 0)} 个`;
+  return nodeRiskSummary(node);
+}
+
+function nodeRiskSummary(node: NodeStatus): string {
+  const parts: string[] = [];
+  const eventCount = Number(node.security_non_disk_event_count_7d || 0);
+  const suspiciousCount = Number(node.suspicious_user_count_7d || 0);
+  if (eventCount > 0) parts.push(t(`近 7 天安全事件 ${eventCount} 条`, `${eventCount} non-disk security event(s) in 7 days`));
+  if (suspiciousCount > 0) parts.push(t(`疑似账号 ${suspiciousCount} 个`, `${suspiciousCount} suspicious account(s)`));
+  return parts.join("；") || t("暂无活动告警", "No active alerts");
 }
 
 async function reload() {
@@ -2121,6 +2135,7 @@ async function reload() {
     lastRefreshAt.value = Date.now();
   } catch (e: any) {
     error.value = e?.message ?? String(e);
+    success.value = "";
   } finally {
     loading.value = false;
   }
@@ -3118,11 +3133,13 @@ async function saveDetailUserLimitsFromDialog() {
   const memoryGB = Number(userLimitMemoryGB.value || 0);
   const gpuIndices = normalizeGPUIndexList((userLimitVisibleGPUIndices.value || []).map((x) => Number(x)));
   if (cpuEnabled && (!Number.isFinite(cpuPercent) || cpuPercent <= 0 || cpuPercent > 100)) {
-    ElMessage.error("CPU 限制比例必须在 1~100 之间");
+    error.value = "CPU 限制比例必须在 1~100 之间";
+    success.value = "";
     return;
   }
   if (memoryEnabled && (!Number.isFinite(memoryGB) || memoryGB <= 0 || memoryGB > 4096)) {
-    ElMessage.error("内存限制必须在 0~4096 GB 之间");
+    error.value = "内存限制必须在 0~4096 GB 之间";
+    success.value = "";
     return;
   }
   if (gpuEnabled && gpuIndices.length === 0) {
@@ -3131,6 +3148,7 @@ async function saveDetailUserLimitsFromDialog() {
   }
   userLimitSaving.value = true;
   error.value = "";
+  success.value = "";
   try {
     const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
     const reason = String(userLimitReason.value || "").trim();
@@ -3168,6 +3186,7 @@ async function saveDetailUserLimitsFromDialog() {
     await reload();
   } catch (e: any) {
     error.value = e?.message ?? String(e);
+    success.value = "";
   } finally {
     userLimitSaving.value = false;
   }
@@ -3700,6 +3719,10 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.success-alert {
+  margin-bottom: 12px;
 }
 
 .charts-grid {

@@ -6,17 +6,17 @@
         <div class="ops-title-row">
           <span class="ops-hero-icon"><el-icon><Monitor /></el-icon></span>
           <div>
-            <h1>集群总览</h1>
-            <p>优先展示 CPU 与逐卡 GPU 状态，异常节点自动排在前面。</p>
+            <h1>{{ t("集群总览", "Cluster Overview") }}</h1>
+            <p>{{ t("优先展示 CPU 与逐卡 GPU 状态，异常节点自动排在前面。", "Monitor host CPU and per-GPU health first; nodes needing attention are listed up front.") }}</p>
           </div>
         </div>
       </div>
       <div class="ops-hero-actions">
-        <span class="live-badge"><i />实时</span>
-        <span class="ops-sync-meta">{{ AUTO_REFRESH_SECONDS }} 秒自动刷新 · {{ lastRefreshText }}</span>
+        <span class="live-badge"><i />{{ t("实时", "LIVE") }}</span>
+        <span class="ops-sync-meta">{{ t(`${AUTO_REFRESH_SECONDS} 秒自动刷新 · ${lastRefreshText}`, `Auto-refreshes every ${AUTO_REFRESH_SECONDS}s · ${lastRefreshText}`) }}</span>
         <el-button :loading="loading" type="primary" @click="loadMonitor">
           <el-icon><Refresh /></el-icon>
-          立即刷新
+          {{ t("立即刷新", "Refresh now") }}
         </el-button>
       </div>
     </section>
@@ -25,29 +25,29 @@
 
     <section class="ops-metric-grid monitor-summary-grid">
       <article class="ops-metric-card ops-tone-green">
-        <span>在线节点</span>
+        <span>{{ t("在线节点", "Online nodes") }}</span>
         <strong>{{ onlineCount }}<small>/ {{ nodes.length }}</small></strong>
-        <small>当前可正常上报的节点</small>
+        <small>{{ t("当前可正常上报的节点", "Nodes currently reporting normally") }}</small>
       </article>
       <article class="ops-metric-card ops-tone-violet">
-        <span>活跃 GPU</span>
+        <span>{{ t("活跃 GPU", "Active GPUs") }}</span>
         <strong>{{ busyGPUCount }}<small>/ {{ totalGPUCount }}</small></strong>
-        <small>逐卡统计当前活跃设备</small>
+        <small>{{ t("逐卡统计当前活跃设备", "Active devices by GPU") }}</small>
       </article>
       <article class="ops-metric-card ops-tone-blue">
-        <span>平均 CPU</span>
+        <span>{{ t("平均 CPU", "Average CPU") }}</span>
         <strong>{{ averageCPUText }}</strong>
-        <small>在线节点平均占用率</small>
+        <small>{{ t("在线节点平均占用率", "Average utilization across online nodes") }}</small>
       </article>
       <article class="ops-metric-card ops-tone-amber">
-        <span>需关注</span>
-        <strong>{{ warningCount }}<small> 台</small></strong>
-        <small>资源或服务状态异常</small>
+        <span>{{ t("需关注", "Needs attention") }}</span>
+        <strong>{{ warningCount }}<small>{{ t(" 台", " nodes") }}</small></strong>
+        <small>{{ t("资源或服务状态异常", "Resource or service warnings") }}</small>
       </article>
     </section>
 
     <section class="monitor-toolbar">
-      <div class="filter-tabs" role="tablist" aria-label="节点状态筛选">
+      <div class="filter-tabs" role="tablist" :aria-label="t('节点状态筛选', 'Filter node status')">
         <button
           v-for="item in filterOptions"
           :key="item.value"
@@ -58,7 +58,7 @@
           {{ item.label }} <span>{{ item.count }}</span>
         </button>
       </div>
-      <el-input v-model="keyword" class="node-search" clearable placeholder="搜索节点、CPU 或 GPU 型号">
+      <el-input v-model="keyword" class="node-search" clearable :placeholder="t('搜索节点、CPU 或 GPU 型号', 'Search node, CPU, or GPU model')">
         <template #prefix><el-icon><Search /></el-icon></template>
       </el-input>
     </section>
@@ -79,7 +79,7 @@
             <span class="status-dot" />
             <div>
               <h2>{{ node.node_id }}</h2>
-              <span>{{ compactModel(node.gpu_model || node.cpu_model || "硬件信息待上报") }}</span>
+              <span>{{ compactModel(node.gpu_model || node.cpu_model || t("硬件信息待上报", "Hardware data pending")) }}</span>
             </div>
           </div>
           <div class="node-head-tags">
@@ -88,17 +88,21 @@
           </div>
         </header>
 
+        <div v-if="hasWarning(node)" class="node-inline-alerts">
+          <span v-for="reason in warningReasons(node).slice(0, 2)" :key="reason" :title="reason">{{ reason }}</span>
+        </div>
+
         <div class="primary-metrics">
           <div class="metric-panel cpu-panel">
             <div class="metric-title"><span>CPU</span><strong>{{ metricPercent(node.host_cpu_percent, node.monitor_metrics_available) }}</strong></div>
             <div class="progress-track"><span :class="barTone(node.host_cpu_percent)" :style="barWidth(node.host_cpu_percent)" /></div>
             <div class="metric-foot">
-              <span>{{ node.cpu_count || "-" }} 核</span>
-              <span>负载 {{ loadText(node) }}</span>
+              <span>{{ node.cpu_count || "-" }} {{ t("核", "cores") }}</span>
+              <span>{{ t("负载", "Load") }} {{ loadText(node) }}</span>
             </div>
           </div>
           <div class="metric-panel memory-panel">
-            <div class="metric-title"><span>内存</span><strong>{{ metricPercent(memoryPercent(node), node.monitor_metrics_available) }}</strong></div>
+            <div class="metric-title"><span>{{ t("内存", "Memory") }}</span><strong>{{ metricPercent(memoryPercent(node), node.monitor_metrics_available) }}</strong></div>
             <div class="progress-track"><span :class="barTone(memoryPercent(node))" :style="barWidth(memoryPercent(node))" /></div>
             <div class="metric-foot">
               <span>{{ memoryUsageText(node) }}</span>
@@ -109,7 +113,7 @@
         <div class="gpu-section">
           <div class="section-label">
             <span>GPU <em>{{ compactModel(node.gpu_model || "") }}</em></span>
-            <small><b>{{ gpuBusyOnNode(node) }}</b>/{{ node.gpu_count || displayGPUs(node).length }} 活跃</small>
+            <small><b>{{ gpuBusyOnNode(node) }}</b>/{{ node.gpu_count || displayGPUs(node).length }} {{ t("活跃", "active") }}</small>
           </div>
           <div v-if="displayGPUs(node).length" class="gpu-grid">
             <div
@@ -120,35 +124,35 @@
             >
               <div class="gpu-head">
                 <strong :title="gpu.name || node.gpu_model">GPU {{ gpu.index }}</strong>
-                <span>{{ gpu.pending ? "待上报" : gpuStateText(gpu) }}</span>
+                <span>{{ gpu.pending ? t("待上报", "Pending") : gpuStateText(gpu) }}</span>
               </div>
               <div class="gpu-values">
-                <span><i>核心</i><b>{{ gpu.pending ? "--" : `${round(gpu.utilization_percent)}%` }}</b></span>
-                <span><i>显存</i><b>{{ gpu.pending ? "--" : `${round(gpuMemoryPercent(gpu))}%` }}</b></span>
+                <span><i>{{ t("核心", "Core") }}</i><b>{{ gpu.pending ? "--" : `${round(gpu.utilization_percent)}%` }}</b></span>
+                <span><i>{{ t("显存", "Memory") }}</i><b>{{ gpu.pending ? "--" : `${round(gpuMemoryPercent(gpu))}%` }}</b></span>
               </div>
               <div class="gpu-bars">
                 <div class="mini-track"><i :class="barTone(gpu.utilization_percent)" :style="barWidth(gpu.utilization_percent)" /></div>
                 <div class="mini-track"><i :class="barTone(gpuMemoryPercent(gpu))" :style="barWidth(gpuMemoryPercent(gpu))" /></div>
               </div>
               <div class="gpu-meta">
-                <span>{{ gpu.pending ? "等待新 Agent" : `${formatMemory(gpu.memory_used_mb)} / ${formatMemory(gpu.memory_total_mb)}` }}</span>
-                <span v-if="!gpu.pending">{{ temperatureText(gpu) }} · {{ gpu.compute_processes || 0 }} 进程</span>
+                <span>{{ gpu.pending ? t("等待新 Agent", "Waiting for agent") : `${formatMemory(gpu.memory_used_mb)} / ${formatMemory(gpu.memory_total_mb)}` }}</span>
+                <span v-if="!gpu.pending">{{ temperatureText(gpu) }} · {{ gpu.compute_processes || 0 }} {{ t("进程", "processes") }}</span>
               </div>
             </div>
           </div>
-          <div v-else class="no-gpu">GPU 数据不可用或未配置</div>
+          <div v-else class="no-gpu">{{ t("GPU 数据不可用或未配置", "GPU data unavailable or not configured") }}</div>
         </div>
 
         <footer class="node-footer">
-          <span><i>硬盘</i>{{ diskText(node) }}</span>
+          <span><i>{{ t("硬盘", "Disk") }}</i>{{ diskText(node) }}</span>
           <span><i>SSH</i>{{ node.ssh_active_count || 0 }}</span>
-          <span><i>运行</i>{{ uptimeText(node.host_uptime_seconds).replace("运行 ", "") }}</span>
-          <span class="heartbeat"><i>负载</i>{{ Number(node.host_load_1 || 0).toFixed(2) }}</span>
+          <span><i>{{ t("运行", "Uptime") }}</i>{{ uptimeText(node.host_uptime_seconds).replace(t("运行 ", "Uptime "), "") }}</span>
+          <span class="heartbeat"><i>{{ t("负载", "Load") }}</i>{{ Number(node.host_load_1 || 0).toFixed(2) }}</span>
         </footer>
       </article>
     </section>
 
-    <el-empty v-else description="没有符合筛选条件的节点" />
+    <el-empty v-else :description="t('没有符合筛选条件的节点', 'No nodes match the current filters')" />
   </div>
 </template>
 
@@ -158,6 +162,7 @@ import { Monitor, Refresh, Search } from "@element-plus/icons-vue";
 import { ApiClient, type GPUDeviceStatus, type NodeMonitorStatus } from "../../lib/api";
 import { authState } from "../../lib/authStore";
 import { settingsState } from "../../lib/settingsStore";
+import { pickText } from "../../lib/uiLocale";
 
 type FilterValue = "all" | "online" | "busy" | "warning" | "offline";
 type DisplayGPU = GPUDeviceStatus & { pending?: boolean };
@@ -170,6 +175,10 @@ const keyword = ref("");
 const activeFilter = ref<FilterValue>("all");
 const lastRefreshAt = ref(0);
 let refreshTimer: ReturnType<typeof setInterval> | null = null;
+
+function t(zh: string, en: string): string {
+  return pickText(zh, en);
+}
 
 function heartbeatTimeoutMs(node: NodeMonitorStatus): number {
   return Math.max(5 * 60_000, Number(node.interval_seconds || 0) * 3_000);
@@ -203,7 +212,21 @@ function hasWarning(node: NodeMonitorStatus): boolean {
   if (!isOnline(node)) return false;
   const unhealthyService = (node.system_services || []).some((item) => item.deployed && !item.healthy);
   const hotGPU = (node.gpu_devices || []).some((gpu) => Number(gpu.temperature_c || 0) >= 85);
-  return unhealthyService || Number(node.host_cpu_percent || 0) >= 90 || memoryPercent(node) >= 90 || diskPercent(node) >= 90 || hotGPU;
+  return unhealthyService || Number(node.host_cpu_percent || 0) >= 90 || memoryPercent(node) >= 90 || hotGPU;
+}
+
+function warningReasons(node: NodeMonitorStatus): string[] {
+  if (!isOnline(node)) return [t("节点离线，暂无最新指标", "Node is offline; latest metrics unavailable")];
+  const reasons: string[] = [];
+  const services = (node.system_services || []).filter((item) => item.deployed && !item.healthy);
+  if (services.length) {
+    reasons.push(t(`服务异常：${services.map((item) => item.name).join("、")}`, `Unhealthy service: ${services.map((item) => item.name).join(", ")}`));
+  }
+  if (Number(node.host_cpu_percent || 0) >= 90) reasons.push(t(`CPU 使用率 ${Number(node.host_cpu_percent || 0).toFixed(1)}%`, `CPU usage ${Number(node.host_cpu_percent || 0).toFixed(1)}%`));
+  if (memoryPercent(node) >= 90) reasons.push(t(`内存使用率 ${memoryPercent(node).toFixed(1)}%`, `Memory usage ${memoryPercent(node).toFixed(1)}%`));
+  const hotGPU = (node.gpu_devices || []).filter((gpu) => Number(gpu.temperature_c || 0) >= 85);
+  if (hotGPU.length) reasons.push(t(`GPU 温度偏高：${hotGPU.map((gpu) => `GPU ${gpu.index}`).join("、")}`, `High GPU temperature: ${hotGPU.map((gpu) => `GPU ${gpu.index}`).join(", ")}`));
+  return reasons.length ? reasons : [t("资源状态异常", "Resource health warning")];
 }
 
 function nodeState(node: NodeMonitorStatus): "online" | "warning" | "offline" | "pending" {
@@ -215,10 +238,10 @@ function nodeState(node: NodeMonitorStatus): "online" | "warning" | "offline" | 
 
 function nodeStateText(node: NodeMonitorStatus): string {
   const state = nodeState(node);
-  if (state === "offline") return "离线";
-  if (state === "warning") return "需关注";
-  if (state === "pending") return "等待指标";
-  return "运行正常";
+  if (state === "offline") return t("离线", "Offline");
+  if (state === "warning") return t("需关注", "Needs attention");
+  if (state === "pending") return t("等待指标", "Waiting for metrics");
+  return t("运行正常", "Healthy");
 }
 
 const onlineCount = computed(() => nodes.value.filter(isOnline).length);
@@ -233,11 +256,11 @@ const averageCPUText = computed(() => {
 });
 
 const filterOptions = computed(() => [
-  { value: "all" as FilterValue, label: "全部节点", count: nodes.value.length },
-  { value: "online" as FilterValue, label: "在线", count: onlineCount.value },
-  { value: "busy" as FilterValue, label: "GPU 活跃", count: nodes.value.filter((node) => (node.gpu_devices || []).some(isGPUActive)).length },
-  { value: "warning" as FilterValue, label: "需关注", count: warningCount.value },
-  { value: "offline" as FilterValue, label: "离线", count: nodes.value.length - onlineCount.value },
+  { value: "all" as FilterValue, label: t("全部节点", "All nodes"), count: nodes.value.length },
+  { value: "online" as FilterValue, label: t("在线", "Online"), count: onlineCount.value },
+  { value: "busy" as FilterValue, label: t("GPU 活跃", "GPU active"), count: nodes.value.filter((node) => (node.gpu_devices || []).some(isGPUActive)).length },
+  { value: "warning" as FilterValue, label: t("需关注", "Needs attention"), count: warningCount.value },
+  { value: "offline" as FilterValue, label: t("离线", "Offline"), count: nodes.value.length - onlineCount.value },
 ]);
 
 const filteredNodes = computed(() => {
@@ -259,8 +282,8 @@ const filteredNodes = computed(() => {
 });
 
 const lastRefreshText = computed(() => {
-  if (!lastRefreshAt.value) return "尚未刷新";
-  return new Date(lastRefreshAt.value).toLocaleTimeString("zh-CN", { hour12: false });
+  if (!lastRefreshAt.value) return t("尚未刷新", "Not refreshed");
+  return new Date(lastRefreshAt.value).toLocaleTimeString("en-GB", { hour12: false });
 });
 
 function displayGPUs(node: NodeMonitorStatus): DisplayGPU[] {
@@ -288,8 +311,8 @@ function gpuState(gpu: DisplayGPU): string {
 }
 
 function gpuStateText(gpu: DisplayGPU): string {
-  if (Number(gpu.temperature_c || 0) >= 85) return "温度偏高";
-  return isGPUActive(gpu) ? "运行中" : "空闲";
+  if (Number(gpu.temperature_c || 0) >= 85) return t("温度偏高", "Hot");
+  return isGPUActive(gpu) ? t("运行中", "Busy") : t("空闲", "Idle");
 }
 
 function barTone(value: number): string {
@@ -319,7 +342,7 @@ function formatMemory(mb: number): string {
 }
 
 function memoryUsageText(node: NodeMonitorStatus): string {
-  if (!node.monitor_metrics_available || !node.host_memory_total_mb) return "等待上报";
+  if (!node.monitor_metrics_available || !node.host_memory_total_mb) return t("等待上报", "Waiting for report");
   return `${formatMemory(node.host_memory_used_mb)} / ${formatMemory(node.host_memory_total_mb)}`;
 }
 
@@ -334,25 +357,25 @@ function diskText(node: NodeMonitorStatus): string {
 
 function uptimeText(seconds: number): string {
   const value = Number(seconds || 0);
-  if (!value) return "运行时间 --";
+  if (!value) return t("运行时间 --", "Uptime --");
   const days = Math.floor(value / 86400);
-  if (days > 0) return `运行 ${days} 天`;
-  return `运行 ${Math.max(1, Math.floor(value / 3600))} 小时`;
+  if (days > 0) return t(`运行 ${days} 天`, `Uptime ${days}d`);
+  return t(`运行 ${Math.max(1, Math.floor(value / 3600))} 小时`, `Uptime ${Math.max(1, Math.floor(value / 3600))}h`);
 }
 
 function heartbeatText(node: NodeMonitorStatus): string {
   const ts = Date.parse(String(node.last_seen_at || ""));
   if (!Number.isFinite(ts)) return "--";
   const seconds = Math.max(0, Math.floor((Date.now() - ts) / 1000));
-  if (seconds < 60) return `${seconds} 秒前`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分前`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小时前`;
-  return `${Math.floor(seconds / 86400)} 天前`;
+  if (seconds < 60) return t(`${seconds} 秒前`, `${seconds}s ago`);
+  if (seconds < 3600) return t(`${Math.floor(seconds / 60)} 分前`, `${Math.floor(seconds / 60)}m ago`);
+  if (seconds < 86400) return t(`${Math.floor(seconds / 3600)} 小时前`, `${Math.floor(seconds / 3600)}h ago`);
+  return t(`${Math.floor(seconds / 86400)} 天前`, `${Math.floor(seconds / 86400)}d ago`);
 }
 
 function temperatureText(gpu: DisplayGPU): string {
   const temp = Number(gpu.temperature_c || 0);
-  return temp > 0 ? `${round(temp)}℃` : "温度 --";
+  return temp > 0 ? `${round(temp)}℃` : t("温度 --", "Temp --");
 }
 
 function compactModel(value: string): string {
@@ -519,6 +542,8 @@ onBeforeUnmount(() => {
 .node-head-tags { gap: 4px; }
 .state-chip { padding: 4px 8px; font-size: 10px; }
 .heartbeat-chip { color: #929dab; font-size: 10px; white-space: nowrap; }
+.node-inline-alerts { display: flex; gap: 5px; margin-top: 8px; min-width: 0; }
+.node-inline-alerts span { overflow: hidden; max-width: 50%; padding: 3px 7px; border-radius: 999px; color: #a16207; background: rgba(254,243,199,.72); font-size: 9px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 
 .primary-metrics { flex: 0 0 auto; gap: 18px; margin: 16px 0; padding: 0; border-radius: 0; background: transparent; }
 .metric-panel { padding: 12px; border: 1px solid rgba(255,255,255,.74); border-radius: 12px; background: rgba(255,255,255,.42); box-shadow: inset 0 1px 0 rgba(255,255,255,.88); }
