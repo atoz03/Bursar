@@ -193,6 +193,8 @@ export type UsageMonthlySummary = {
   usage_records: number;
   gpu_process_records: number;
   cpu_process_records: number;
+  cpu_process_seconds: number;
+  gpu_process_seconds: number;
   total_cpu_percent: number;
   total_memory_mb: number;
   total_cost: number;
@@ -202,7 +204,21 @@ export type RechargeSummary = {
   username: string;
   recharge_count: number;
   recharge_total: number;
+  increase_count: number;
+  increase_total: number;
+  decrease_count: number;
+  decrease_total: number;
+  net_change: number;
   last_recharge: string;
+};
+
+export type UsageDailyOverview = {
+  date: string;
+  active_users: number;
+  usage_records: number;
+  cpu_process_seconds: number;
+  gpu_process_seconds: number;
+  total_cost: number;
 };
 
 export type NodeStatus = {
@@ -1080,10 +1096,16 @@ export type PlatformUsageUserSummary = {
   usage_records: number;
   cpu_usage_seconds: number;
   gpu_usage_seconds: number;
+  cpu_process_seconds: number;
+  gpu_process_seconds: number;
   cpu_util_percent: number;
   gpu_util_percent: number;
   total_cost: number;
   general_balance: number;
+  carryover_balance: number;
+  exclusive_balance: number;
+  total_balance: number;
+  last_usage_at?: string;
 };
 
 export type PlatformUsageNodeDetail = {
@@ -3425,6 +3447,13 @@ export class ApiClient {
     if (params.to) q.set("to", params.to);
     q.set("limit", String(params.limit ?? 2000));
     return await this.getJson(`/api/admin/stats/platform-users/${encodeURIComponent(username)}/nodes?${q.toString()}`, this.adminHeaders());
+  }
+
+  async adminStatsDaily(params: { from?: string; to?: string }): Promise<{ from: string; to: string; rows: UsageDailyOverview[] }> {
+    const q = new URLSearchParams();
+    if (params.from) q.set("from", params.from);
+    if (params.to) q.set("to", params.to);
+    return await this.getJson(`/api/admin/stats/daily?${q.toString()}`, this.adminHeaders());
   }
 
   async adminStatsMonthly(params: { from?: string; to?: string; limit?: number; offset?: number }): Promise<{ from: string; to: string; rows: UsageMonthlySummary[]; has_more?: boolean }> {

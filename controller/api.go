@@ -1289,6 +1289,7 @@ func (s *Server) RouterWeb() *gin.Engine {
 	admin.GET("/stats/users", s.requireBoardPermission(), s.handleAdminStatsUsers)
 	admin.GET("/stats/platform-users", s.requireBoardPermission(), s.handleAdminStatsPlatformUsers)
 	admin.GET("/stats/platform-users/:username/nodes", s.requireBoardPermission(), s.handleAdminStatsPlatformUserNodes)
+	admin.GET("/stats/daily", s.requireBoardPermission(), s.handleAdminStatsDaily)
 	admin.GET("/stats/monthly", s.requireBoardPermission(), s.handleAdminStatsMonthly)
 	admin.GET("/stats/recharges", s.requireBoardPermission(), s.handleAdminStatsRecharges)
 	admin.GET("/points/users", s.requirePointsUsersPermission(), s.handleAdminPointsUsers)
@@ -6697,6 +6698,33 @@ func (s *Server) handleAdminStatsPlatformUserNodes(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"from": formatRFC3339InBeijing(from), "to": formatRFC3339InBeijing(to), "username": username, "rows": rows})
 }
 
+func (s *Server) handleAdminStatsDaily(c *gin.Context) {
+	from, to, err := parseStatsRange(c, 30)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	visibleNodes, restricted, err := s.visibleNodeIDsForPowerUser(c)
+	if err != nil {
+		if strings.TrimSpace(err.Error()) == "forbidden" {
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if restricted && len(visibleNodes) == 0 {
+		c.JSON(http.StatusOK, gin.H{"from": formatRFC3339InBeijing(from), "to": formatRFC3339InBeijing(to), "rows": []UsageDailyOverview{}})
+		return
+	}
+	rows, err := s.store.ListUsageDailyOverview(c.Request.Context(), from, to, visibleNodes)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"from": formatRFC3339InBeijing(from), "to": formatRFC3339InBeijing(to), "rows": rows})
+}
+
 func (s *Server) handleAdminProfileChangeRequestsList(c *gin.Context) {
 	status := strings.TrimSpace(c.Query("status"))
 	username := strings.TrimSpace(c.Query("username"))
@@ -6795,7 +6823,20 @@ func (s *Server) handleAdminStatsRecharges(c *gin.Context) {
 		return
 	}
 	limit := parseLimit(c.Query("limit"), 1000, 10000)
-	rows, err := s.store.ListRechargeSummary(c.Request.Context(), from, to, limit)
+	visibleNodes, restricted, err := s.visibleNodeIDsForPowerUser(c)
+	if err != nil {
+		if strings.TrimSpace(err.Error()) == "forbidden" {
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if restricted && len(visibleNodes) == 0 {
+		c.JSON(http.StatusOK, gin.H{"from": formatRFC3339InBeijing(from), "to": formatRFC3339InBeijing(to), "rows": []RechargeSummary{}})
+		return
+	}
+	rows, err := s.store.ListRechargeSummary(c.Request.Context(), from, to, limit, visibleNodes)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

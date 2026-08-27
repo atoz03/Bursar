@@ -754,6 +754,8 @@ type UsageMonthlySummary struct {
 	UsageRecords      int     `json:"usage_records"`
 	GPUProcessRecords int     `json:"gpu_process_records"`
 	CPUProcessRecords int     `json:"cpu_process_records"`
+	CPUProcessSeconds int64   `json:"cpu_process_seconds"`
+	GPUProcessSeconds int64   `json:"gpu_process_seconds"`
 	TotalCPUPercent   float64 `json:"total_cpu_percent"`
 	TotalMemoryMB     float64 `json:"total_memory_mb"`
 	TotalCost         float64 `json:"total_cost"`
@@ -763,7 +765,21 @@ type RechargeSummary struct {
 	Username      string    `json:"username"`
 	RechargeCount int       `json:"recharge_count"`
 	RechargeTotal float64   `json:"recharge_total"`
+	IncreaseCount int       `json:"increase_count"`
+	IncreaseTotal float64   `json:"increase_total"`
+	DecreaseCount int       `json:"decrease_count"`
+	DecreaseTotal float64   `json:"decrease_total"`
+	NetChange     float64   `json:"net_change"`
 	LastRecharge  time.Time `json:"last_recharge"`
+}
+
+type UsageDailyOverview struct {
+	Date              string  `json:"date"`
+	ActiveUsers       int     `json:"active_users"`
+	UsageRecords      int     `json:"usage_records"`
+	CPUProcessSeconds int64   `json:"cpu_process_seconds"`
+	GPUProcessSeconds int64   `json:"gpu_process_seconds"`
+	TotalCost         float64 `json:"total_cost"`
 }
 
 type PointsOperationRecord struct {
@@ -900,14 +916,20 @@ type ProfileChangeRequest struct {
 }
 
 type PlatformUsageUserSummary struct {
-	PlatformUsername string  `json:"platform_username"`
-	UsageRecords     int     `json:"usage_records"`
-	CPUUsageSeconds  int64   `json:"cpu_usage_seconds"`
-	GPUUsageSeconds  int64   `json:"gpu_usage_seconds"`
-	CPUUtilPercent   float64 `json:"cpu_util_percent"`
-	GPUUtilPercent   float64 `json:"gpu_util_percent"`
-	TotalCost        float64 `json:"total_cost"`
-	GeneralBalance   float64 `json:"general_balance"`
+	PlatformUsername  string     `json:"platform_username"`
+	UsageRecords      int        `json:"usage_records"`
+	CPUUsageSeconds   int64      `json:"cpu_usage_seconds"`
+	GPUUsageSeconds   int64      `json:"gpu_usage_seconds"`
+	CPUProcessSeconds int64      `json:"cpu_process_seconds"`
+	GPUProcessSeconds int64      `json:"gpu_process_seconds"`
+	CPUUtilPercent    float64    `json:"cpu_util_percent"`
+	GPUUtilPercent    float64    `json:"gpu_util_percent"`
+	TotalCost         float64    `json:"total_cost"`
+	GeneralBalance    float64    `json:"general_balance"`
+	CarryoverBalance  float64    `json:"carryover_balance"`
+	ExclusiveBalance  float64    `json:"exclusive_balance"`
+	TotalBalance      float64    `json:"total_balance"`
+	LastUsageAt       *time.Time `json:"last_usage_at,omitempty"`
 }
 
 type PlatformUsageNodeDetail struct {
