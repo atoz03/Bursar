@@ -17,8 +17,8 @@
       </div>
     </section>
 
-    <el-alert v-if="error" :title="error" type="error" show-icon />
-    <el-alert v-if="success" :title="success" type="success" show-icon />
+    <el-alert v-if="error" :title="error" type="error" show-icon closable @close="error = ''" />
+    <el-alert v-if="success" :title="success" type="success" show-icon closable @close="success = ''" />
 
     <el-card class="section-card workspace-nav-card">
       <el-tabs v-model="activeSection" class="workspace-tabs" @tab-change="onSectionChange">
@@ -1338,6 +1338,7 @@ async function reload() {
     }
   } catch (e: any) {
     error.value = e?.message ?? String(e);
+    success.value = "";
   } finally {
     loading.value = false;
   }
@@ -1594,6 +1595,7 @@ async function deleteBlacklistSafe(nodeId: string, localUsername: string) {
 
 async function reloadRestrictedRows() {
   restrictedLoading.value = true;
+  error.value = "";
   try {
     const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
     const filters = currentMappingFilters();
@@ -1712,6 +1714,7 @@ async function reloadRestrictedRows() {
     restrictedRows.value = out;
   } catch (e: any) {
     error.value = e?.message ?? String(e);
+    success.value = "";
   } finally {
     restrictedLoading.value = false;
   }
@@ -1745,11 +1748,13 @@ async function saveRestrictedLimitForm() {
   const memory = Number(restrictedLimitForm.memory_limit_gb || 0);
   const gpuIndices = normalizeGPUIndexList((restrictedLimitForm.gpu_indices || []).map((x) => Number(x)));
   if (cpuEnabled && (!Number.isFinite(cpu) || cpu <= 0 || cpu > 100)) {
-    ElMessage.error("CPU 限制必须在 1~100 之间");
+    error.value = "CPU 限制必须在 1~100 之间";
+    success.value = "";
     return;
   }
   if (memoryEnabled && (!Number.isFinite(memory) || memory <= 0 || memory > 4096)) {
-    ElMessage.error("内存限制必须在 0~4096 GB 之间");
+    error.value = "内存限制必须在 0~4096 GB 之间";
+    success.value = "";
     return;
   }
   if (gpuEnabled && gpuIndices.length === 0) {
@@ -1793,6 +1798,7 @@ async function saveRestrictedLimitForm() {
     await reloadRestrictedRows();
   } catch (e: any) {
     error.value = e?.message ?? String(e);
+    success.value = "";
   } finally {
     restrictedActionKey.value = "";
     restrictedLimitSaving.value = false;
@@ -1943,6 +1949,7 @@ async function toggleRiskUserBlock(username: string, row: UserNodeAccountMapping
     await reload();
   } catch (e: any) {
     error.value = e?.message ?? String(e);
+    success.value = "";
   }
 }
 
