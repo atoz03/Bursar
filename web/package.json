@@ -20,7 +20,7 @@
     "dayjs": "^1.11.23",
     "element-plus": "^2.14.4",
     "vue": "^3.5.41",
-    "vue-router": "^5.2.0"
+    "vue-router": "^5.3.0"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^6.0.8",
