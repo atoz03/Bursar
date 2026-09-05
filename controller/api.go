@@ -546,6 +546,11 @@ func normalizeGPUIndices(indices []int) []int {
 	return out
 }
 
+// gpuVisibilityDenyAllSignature 是「完全不可见」的状态签名。
+// 取一个不可能由 gpuIndicesSignature 生成的值（后者只产出空串或数字串），
+// 以便与「无限制」（空串）区分开。
+const gpuVisibilityDenyAllSignature = "deny_all"
+
 func gpuIndicesSignature(indices []int) string {
 	if len(indices) == 0 {
 		return ""
@@ -557,14 +562,23 @@ func gpuIndicesSignature(indices []int) string {
 	return strings.Join(parts, ",")
 }
 
-func (s *Server) nextGPUVisibilityAction(nodeID, localUsername string, gpuIndices []int, reason string, force bool) (Action, bool) {
+// nextGPUVisibilityAction 计算是否需要向节点下发可见性变更。
+// denyAll=true 表示「完全不可见」；它与「解除限制」都不带 gpu_indices，
+// 因此状态签名用独立的哨兵值区分，避免两者互相覆盖后静默放行。
+func (s *Server) nextGPUVisibilityAction(nodeID, localUsername string, gpuIndices []int, denyAll bool, reason string, force bool) (Action, bool) {
 	nodeID = strings.TrimSpace(nodeID)
 	localUsername = strings.TrimSpace(localUsername)
 	if nodeID == "" || localUsername == "" {
 		return Action{}, false
 	}
 	normalized := normalizeGPUIndices(gpuIndices)
+	if denyAll {
+		normalized = nil
+	}
 	sig := gpuIndicesSignature(normalized)
+	if denyAll {
+		sig = gpuVisibilityDenyAllSignature
+	}
 	key := quotaStateKey(nodeID, localUsername)
 	s.gpuVisibilityMu.Lock()
 	prevSig, hadPrev := s.gpuVisibilityState[key]
@@ -588,6 +602,7 @@ func (s *Server) nextGPUVisibilityAction(nodeID, localUsername string, gpuIndice
 		Type:       "set_gpu_visibility",
 		Username:   localUsername,
 		GPUIndices: normalized,
+		GPUDenyAll: denyAll,
 		Reason:     reason,
 	}, true
 }
@@ -771,12 +786,25 @@ func (s *Server) applyManualMemoryLimitOverride(
 	return limit.MemoryLimitGB, manualMemoryLimitReason(*limit), nil
 }
 
+// hasManualGPUVisibilityPolicy 判断是否存在人工可见性策略。
+// 「完全不可见」的 GPUIndices 为空，只看长度会把它当成「无策略」从而恢复全可见，
+// 因此必须同时检查 DenyAll。
+func hasManualGPUVisibilityPolicy(limit NodeUserGPUVisibility) bool {
+	return limit.DenyAll || len(normalizeGPUIndices(limit.GPUIndices)) > 0
+}
+
 func manualGPUVisibilityReason(limit NodeUserGPUVisibility) string {
+	base := strings.TrimSpace(limit.Reason)
+	if limit.DenyAll {
+		if base == "" {
+			base = "管理员手动设置 GPU 完全不可见"
+		}
+		return fmt.Sprintf("管理员手动 GPU 可见限制优先（完全不可见）：%s", base)
+	}
 	indices := normalizeGPUIndices(limit.GPUIndices)
 	if len(indices) == 0 {
 		return "管理员手动 GPU 可见限制优先：解除限制"
 	}
-	base := strings.TrimSpace(limit.Reason)
 	if base == "" {
 		base = "管理员手动设置 GPU 可见限制"
 	}
@@ -992,12 +1020,12 @@ func (s *Server) queuePointsInterceptDisabledResets(
 		if action, ok := s.nextGPUAccessAction(nodeID, local, false, reasonPrefix+"：节点积分拦截关闭，恢复 GPU 可见性", false); ok {
 			actions = append(actions, action)
 		}
-		if manualGPU, hasManualGPU := manualGPUVisibility[local]; hasManualGPU && len(manualGPU.GPUIndices) > 0 {
-			if action, ok := s.nextGPUVisibilityAction(nodeID, local, manualGPU.GPUIndices, manualGPUVisibilityReason(manualGPU), false); ok {
+		if manualGPU, hasManualGPU := manualGPUVisibility[local]; hasManualGPU && hasManualGPUVisibilityPolicy(manualGPU) {
+			if action, ok := s.nextGPUVisibilityAction(nodeID, local, manualGPU.GPUIndices, manualGPU.DenyAll, manualGPUVisibilityReason(manualGPU), false); ok {
 				actions = append(actions, action)
 			}
 		} else {
-			if action, ok := s.nextGPUVisibilityAction(nodeID, local, nil, reasonPrefix+"：节点积分拦截关闭，恢复 GPU 全可见", false); ok {
+			if action, ok := s.nextGPUVisibilityAction(nodeID, local, nil, false, reasonPrefix+"：节点积分拦截关闭，恢复 GPU 全可见", false); ok {
 				actions = append(actions, action)
 			}
 		}
@@ -5895,7 +5923,7 @@ func (s *Server) enqueueExemptionClearActions(ctx context.Context, entries []ssh
 			if action, ok := s.nextGPUAccessAction(targetNode, localUsername, false, reason+"，解除欠费 GPU 限制", true); ok {
 				s.enqueueNodeAction(targetNode, action)
 			}
-			if action, ok := s.nextGPUVisibilityAction(targetNode, localUsername, nil, reason+"，恢复 GPU 全可见", true); ok {
+			if action, ok := s.nextGPUVisibilityAction(targetNode, localUsername, nil, false, reason+"，恢复 GPU 全可见", true); ok {
 				s.enqueueNodeAction(targetNode, action)
 			}
 		}
@@ -7569,13 +7597,13 @@ func (s *Server) handleAdminNodePointsInterceptSet(c *gin.Context) {
 					s.enqueueNodeAction(nodeID, action)
 					gpuResetQueued = true
 				}
-				if manualGPU, hasManualGPU := nodeManualGPUVisibility[local]; hasManualGPU && len(manualGPU.GPUIndices) > 0 {
-					if action, ok := s.nextGPUVisibilityAction(nodeID, local, manualGPU.GPUIndices, manualGPUVisibilityReason(manualGPU), true); ok {
+				if manualGPU, hasManualGPU := nodeManualGPUVisibility[local]; hasManualGPU && hasManualGPUVisibilityPolicy(manualGPU) {
+					if action, ok := s.nextGPUVisibilityAction(nodeID, local, manualGPU.GPUIndices, manualGPU.DenyAll, manualGPUVisibilityReason(manualGPU), true); ok {
 						s.enqueueNodeAction(nodeID, action)
 						gpuResetQueued = true
 					}
 				} else {
-					if action, ok := s.nextGPUVisibilityAction(nodeID, local, nil, fmt.Sprintf("管理员 %s 关闭积分拦截，恢复 GPU 全可见", operator), true); ok {
+					if action, ok := s.nextGPUVisibilityAction(nodeID, local, nil, false, fmt.Sprintf("管理员 %s 关闭积分拦截，恢复 GPU 全可见", operator), true); ok {
 						s.enqueueNodeAction(nodeID, action)
 						gpuResetQueued = true
 					}
@@ -8320,7 +8348,10 @@ func (s *Server) handleAdminMemoryLimits(c *gin.Context) {
 type adminNodeGPUVisibilityUpsertReq struct {
 	LocalUsername string `json:"local_username"`
 	GPUIndices    []int  `json:"gpu_indices"`
-	Reason        string `json:"reason"`
+	// DenyAll=true 表示「完全不可见」。它与「解除限制」都不带 gpu_indices，
+	// 解除限制请改用 DELETE 接口，避免空列表再次承担两种语义。
+	DenyAll bool   `json:"deny_all"`
+	Reason  string `json:"reason"`
 }
 
 func (s *Server) handleAdminNodeGPUVisibilityGet(c *gin.Context) {
@@ -8384,8 +8415,12 @@ func (s *Server) handleAdminNodeGPUVisibilityUpsert(c *gin.Context) {
 		return
 	}
 	gpuIndices := normalizeGPUIndices(req.GPUIndices)
-	if len(gpuIndices) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "gpu_indices 至少选择一个 GPU 编号"})
+	if req.DenyAll && len(gpuIndices) > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "完全不可见时不能同时选择 GPU 编号"})
+		return
+	}
+	if !req.DenyAll && len(gpuIndices) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "gpu_indices 至少选择一个 GPU 编号；如需完全不可见请设置 deny_all=true"})
 		return
 	}
 	if node.GPUCount > 0 {
@@ -8402,14 +8437,18 @@ func (s *Server) handleAdminNodeGPUVisibilityUpsert(c *gin.Context) {
 	}
 	reason := strings.TrimSpace(req.Reason)
 	if reason == "" {
-		reason = fmt.Sprintf("管理员 %s 设置 GPU 可见限制：仅可见 GPU %s", operator, gpuIndicesSignature(gpuIndices))
+		if req.DenyAll {
+			reason = fmt.Sprintf("管理员 %s 设置 GPU 完全不可见", operator)
+		} else {
+			reason = fmt.Sprintf("管理员 %s 设置 GPU 可见限制：仅可见 GPU %s", operator, gpuIndicesSignature(gpuIndices))
+		}
 	}
-	row, err := s.store.UpsertNodeUserGPUVisibility(c.Request.Context(), nodeID, localUsername, gpuIndices, reason, operator)
+	row, err := s.store.UpsertNodeUserGPUVisibility(c.Request.Context(), nodeID, localUsername, gpuIndices, req.DenyAll, reason, operator)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if action, ok := s.nextGPUVisibilityAction(nodeID, localUsername, gpuIndices, reason, true); ok {
+	if action, ok := s.nextGPUVisibilityAction(nodeID, localUsername, gpuIndices, req.DenyAll, reason, true); ok {
 		s.enqueueNodeAction(nodeID, action)
 	}
 	s.enqueueNodeAction(nodeID, Action{
@@ -8460,7 +8499,7 @@ func (s *Server) handleAdminNodeGPUVisibilityDelete(c *gin.Context) {
 	if operator == "" {
 		operator = "admin"
 	}
-	if action, ok := s.nextGPUVisibilityAction(nodeID, localUsername, nil, fmt.Sprintf("管理员 %s 解除 GPU 可见限制", operator), true); ok {
+	if action, ok := s.nextGPUVisibilityAction(nodeID, localUsername, nil, false, fmt.Sprintf("管理员 %s 解除 GPU 可见限制", operator), true); ok {
 		s.enqueueNodeAction(nodeID, action)
 	}
 	s.enqueueNodeAction(nodeID, Action{
@@ -10415,11 +10454,12 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 				if gpuAction, ok := s.nextGPUAccessAction(data.NodeID, localUsername, nowOverdraftExceeded, gpuReason, forceRuntimeSync); ok {
 					actions = append(actions, gpuAction)
 				}
-				if manualGPU, hasManualGPU := nodeManualGPUVisibility[localUsername]; hasManualGPU && len(manualGPU.GPUIndices) > 0 {
+				if manualGPU, hasManualGPU := nodeManualGPUVisibility[localUsername]; hasManualGPU && hasManualGPUVisibilityPolicy(manualGPU) {
 					if gpuVisAction, ok := s.nextGPUVisibilityAction(
 						data.NodeID,
 						localUsername,
 						manualGPU.GPUIndices,
+						manualGPU.DenyAll,
 						manualGPUVisibilityReason(manualGPU),
 						true,
 					); ok {
@@ -10430,7 +10470,7 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 					if !nowOverdraftExceeded {
 						reason = "agent 会话重建后恢复 GPU 全可见"
 					}
-					if gpuVisAction, ok := s.nextGPUVisibilityAction(data.NodeID, localUsername, nil, reason, true); ok {
+					if gpuVisAction, ok := s.nextGPUVisibilityAction(data.NodeID, localUsername, nil, false, reason, true); ok {
 						actions = append(actions, gpuVisAction)
 					}
 				}
@@ -10567,7 +10607,7 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 				_, hasManualCPU := nodeManualCPULimits[localUsername]
 				_, hasManualMemory := nodeManualMemoryLimits[localUsername]
 				manualGPU, hasManualGPU := nodeManualGPUVisibility[localUsername]
-				hasManualAny := hasManualCPU || hasManualMemory || (hasManualGPU && len(manualGPU.GPUIndices) > 0)
+				hasManualAny := hasManualCPU || hasManualMemory || (hasManualGPU && hasManualGPUVisibilityPolicy(manualGPU))
 				mapped, found, err := s.store.ResolveBillingUsernameTx(ctx, tx, data.NodeID, localUsername)
 				if err != nil {
 					return err
@@ -10602,11 +10642,12 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 			if action, ok := s.nextGPUAccessAction(data.NodeID, localUsername, gpuBlocked, gpuReason, forceRuntimeSync); ok {
 				actions = append(actions, action)
 			}
-			if manualGPU, hasManualGPU := nodeManualGPUVisibility[localUsername]; hasManualGPU && len(manualGPU.GPUIndices) > 0 {
+			if manualGPU, hasManualGPU := nodeManualGPUVisibility[localUsername]; hasManualGPU && hasManualGPUVisibilityPolicy(manualGPU) {
 				if gpuVisAction, ok := s.nextGPUVisibilityAction(
 					data.NodeID,
 					localUsername,
 					manualGPU.GPUIndices,
+					manualGPU.DenyAll,
 					manualGPUVisibilityReason(manualGPU),
 					true,
 				); ok {
@@ -10621,7 +10662,7 @@ func (s *Server) processMetrics(ctx context.Context, data MetricsData, reportTS 
 						reason = reasonPrefix + "：agent 会话重建后恢复 GPU 全可见"
 					}
 				}
-				if action, ok := s.nextGPUVisibilityAction(data.NodeID, localUsername, nil, reason, forceRuntimeSync); ok {
+				if action, ok := s.nextGPUVisibilityAction(data.NodeID, localUsername, nil, false, reason, forceRuntimeSync); ok {
 					actions = append(actions, action)
 				}
 			}

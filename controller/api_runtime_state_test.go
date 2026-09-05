@@ -16,7 +16,7 @@ func TestNodeRuntimePolicyStateClearedWhenAgentSessionChanges(t *testing.T) {
 	if _, ok := s.nextGPUAccessAction("node-01", "testuser", true, "blocked", false); !ok {
 		t.Fatal("expected initial gpu access action")
 	}
-	if _, ok := s.nextGPUVisibilityAction("node-01", "testuser", []int{0}, "manual", false); !ok {
+	if _, ok := s.nextGPUVisibilityAction("node-01", "testuser", []int{0}, false, "manual", false); !ok {
 		t.Fatal("expected initial gpu visibility action")
 	}
 
@@ -34,7 +34,7 @@ func TestNodeRuntimePolicyStateClearedWhenAgentSessionChanges(t *testing.T) {
 	if _, ok := s.nextGPUAccessAction("node-01", "testuser", true, "blocked", false); !ok {
 		t.Fatal("expected gpu access to be re-enqueued after session change")
 	}
-	if _, ok := s.nextGPUVisibilityAction("node-01", "testuser", []int{0}, "manual", false); !ok {
+	if _, ok := s.nextGPUVisibilityAction("node-01", "testuser", []int{0}, false, "manual", false); !ok {
 		t.Fatal("expected gpu visibility to be re-enqueued after session change")
 	}
 }
@@ -71,7 +71,7 @@ func TestNodeRuntimePolicyForceSyncCanSendClearActionsAfterSessionReset(t *testi
 	if _, ok := s.nextGPUAccessAction("node-01", "testuser", true, "blocked", false); !ok {
 		t.Fatal("expected initial gpu access action")
 	}
-	if _, ok := s.nextGPUVisibilityAction("node-01", "testuser", []int{0}, "manual", false); !ok {
+	if _, ok := s.nextGPUVisibilityAction("node-01", "testuser", []int{0}, false, "manual", false); !ok {
 		t.Fatal("expected initial gpu visibility action")
 	}
 
@@ -83,7 +83,7 @@ func TestNodeRuntimePolicyForceSyncCanSendClearActionsAfterSessionReset(t *testi
 	if _, ok := s.nextGPUAccessAction("node-01", "testuser", false, "unblock", false); ok {
 		t.Fatal("unexpected non-forced gpu unblock action after session reset")
 	}
-	if _, ok := s.nextGPUVisibilityAction("node-01", "testuser", nil, "clear", false); ok {
+	if _, ok := s.nextGPUVisibilityAction("node-01", "testuser", nil, false, "clear", false); ok {
 		t.Fatal("unexpected non-forced gpu visibility clear action after session reset")
 	}
 
@@ -93,7 +93,57 @@ func TestNodeRuntimePolicyForceSyncCanSendClearActionsAfterSessionReset(t *testi
 	if _, ok := s.nextGPUAccessAction("node-01", "testuser", false, "unblock", true); !ok {
 		t.Fatal("expected forced gpu unblock action after session reset")
 	}
-	if _, ok := s.nextGPUVisibilityAction("node-01", "testuser", nil, "clear", true); !ok {
+	if _, ok := s.nextGPUVisibilityAction("node-01", "testuser", nil, false, "clear", true); !ok {
 		t.Fatal("expected forced gpu visibility clear action after session reset")
+	}
+}
+
+// 「完全不可见」与「解除限制」都不带 gpu_indices。旧实现用空集合同时表示两者，
+// 会把「完全不可见」当作「无限制」而放行，这里锁住二者必须互相区分。
+func TestGPUVisibilityDenyAllIsDistinctFromClear(t *testing.T) {
+	s := NewServer(Config{}, nil)
+
+	action, ok := s.nextGPUVisibilityAction("node-01", "testuser", nil, true, "deny all", false)
+	if !ok {
+		t.Fatal("expected deny-all action to be enqueued")
+	}
+	if !action.GPUDenyAll {
+		t.Fatal("deny-all action must carry GPUDenyAll=true")
+	}
+	if len(action.GPUIndices) != 0 {
+		t.Fatalf("deny-all action must not carry gpu indices, got %v", action.GPUIndices)
+	}
+
+	// 重复下发同一策略应被去重。
+	if _, ok := s.nextGPUVisibilityAction("node-01", "testuser", nil, true, "deny all", false); ok {
+		t.Fatal("unexpected duplicate deny-all action")
+	}
+
+	// 从「完全不可见」切到「解除限制」必须产生一次真实变更，
+	// 否则节点会一直停留在拒绝状态。
+	clearAction, ok := s.nextGPUVisibilityAction("node-01", "testuser", nil, false, "clear", false)
+	if !ok {
+		t.Fatal("expected clear action when switching away from deny-all")
+	}
+	if clearAction.GPUDenyAll {
+		t.Fatal("clear action must carry GPUDenyAll=false")
+	}
+
+	// 反向切换同样必须被识别为变更。
+	if _, ok := s.nextGPUVisibilityAction("node-01", "testuser", nil, true, "deny all again", false); !ok {
+		t.Fatal("expected deny-all action when switching back from clear")
+	}
+}
+
+func TestHasManualGPUVisibilityPolicyDetectsDenyAll(t *testing.T) {
+	if hasManualGPUVisibilityPolicy(NodeUserGPUVisibility{}) {
+		t.Fatal("empty policy must not be treated as a manual policy")
+	}
+	// 关键回归：DenyAll 策略的 GPUIndices 为空，不能被当作「无策略」。
+	if !hasManualGPUVisibilityPolicy(NodeUserGPUVisibility{DenyAll: true}) {
+		t.Fatal("deny-all policy must be treated as a manual policy")
+	}
+	if !hasManualGPUVisibilityPolicy(NodeUserGPUVisibility{GPUIndices: []int{1}}) {
+		t.Fatal("allow-list policy must be treated as a manual policy")
 	}
 }

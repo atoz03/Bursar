@@ -129,6 +129,7 @@ type Action struct {
 	GPUExclusiveEnabled     bool                     `json:"gpu_exclusive_enabled,omitempty"`     // set_gpu_exclusive 使用
 	GPUExclusiveAssignments []GPUExclusiveAssignment `json:"gpu_exclusive_assignments,omitempty"` // set_gpu_exclusive 使用
 	GPUIndices              []int                    `json:"gpu_indices,omitempty"`               // set_gpu_visibility 使用（仅允许该用户访问这些 GPU）
+	GPUDenyAll              bool                     `json:"gpu_deny_all,omitempty"`              // set_gpu_visibility 使用（完全不可见，优先于 gpu_indices）
 }
 
 type User struct {
@@ -254,6 +255,7 @@ type NodeLocalUser struct {
 	MemoryLimitReason      string     `json:"memory_limit_reason,omitempty"`
 	MemoryLimitUpdatedAt   *time.Time `json:"memory_limit_updated_at,omitempty"`
 	GPUVisibleIndices      []int      `json:"gpu_visible_indices,omitempty"`
+	GPUVisibilityDenyAll   bool       `json:"gpu_visibility_deny_all"`
 	GPUVisibilityReason    string     `json:"gpu_visibility_reason,omitempty"`
 	GPUVisibilityUpdatedAt *time.Time `json:"gpu_visibility_updated_at,omitempty"`
 	HomeCreatedAt          *time.Time `json:"home_created_at,omitempty"`
@@ -311,6 +313,7 @@ type NodeUserGPUVisibility struct {
 	AdminMapping    bool      `json:"admin_mapping"`
 	AdminUsername   string    `json:"admin_username,omitempty"`
 	GPUIndices      []int     `json:"gpu_indices"`
+	DenyAll         bool      `json:"deny_all"`
 	Reason          string    `json:"reason,omitempty"`
 	UpdatedBy       string    `json:"updated_by,omitempty"`
 	UpdatedAt       time.Time `json:"updated_at"`

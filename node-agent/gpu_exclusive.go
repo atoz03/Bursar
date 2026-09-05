@@ -178,10 +178,11 @@ func (a *NodeAgent) writeGPUExclusiveState(st gpuExclusiveState) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
 		return err
 	}
-	return os.WriteFile(path, body, 0644)
+	// 0640：策略文件会暴露 GPU 分配情况，无需对普通用户可读。
+	return os.WriteFile(path, body, 0640)
 }
 
 func (a *NodeAgent) loadGPUExclusiveState() (gpuExclusiveState, bool, error) {
@@ -225,7 +226,10 @@ func (a *NodeAgent) setGPUExclusivePolicy(ctx context.Context, enabled bool, ass
 	prevState, _, _ := a.loadGPUExclusiveState()
 	devices := detectNvidiaIndexedDeviceNodes()
 	allIndices := listDeviceIndices(devices)
-	manualAllowMap := a.loadGPUVisibilityAllowMap()
+	manualAllowMap, manualTrusted := a.loadGPUVisibilityAllowMap()
+	if !manualTrusted {
+		return fmt.Errorf("GPU 可见限制状态不可信，拒绝重算独享策略以免放行受限用户")
+	}
 	exemptUsers := loadSSHExemptUsers()
 	overdraftBlocked := map[string]struct{}{}
 	for _, u := range loadGroupMembers(gpuOverdraftBlockedGroup) {
@@ -324,7 +328,9 @@ func (a *NodeAgent) setGPUExclusivePolicy(ctx context.Context, enabled bool, ass
 				deny[idx] = struct{}{}
 			}
 		}
-		if manualAllow, ok := manualAllowMap[u]; ok && len(manualAllow) > 0 {
+		// 注意用 comma-ok 而非 len(manualAllow) > 0：
+		// 「完全不可见」的允许集合就是空集，按长度判断会把它整个丢掉从而放行。
+		if manualAllow, ok := manualAllowMap[u]; ok {
 			manualDeny := denyByAllowSet(allIndices, manualAllow)
 			for idx := range manualDeny {
 				deny[idx] = struct{}{}

@@ -63,7 +63,7 @@ func (a *NodeAgent) ExecuteAction(ctx context.Context, action Action) error {
 	case "set_gpu_exclusive":
 		return a.setGPUExclusivePolicy(ctx, action.GPUExclusiveEnabled, action.GPUExclusiveAssignments, action.Reason)
 	case "set_gpu_visibility":
-		return a.setUserGPUVisibility(ctx, action.Username, action.GPUIndices, action.Reason)
+		return a.setUserGPUVisibility(ctx, action.Username, action.GPUIndices, action.GPUDenyAll, action.Reason)
 	case "kill_process":
 		return a.killProcesses(ctx, action.Username, action.PIDs, action.Reason)
 	case "kick_ssh_all":

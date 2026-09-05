@@ -125,6 +125,7 @@ type Action struct {
 	GPUExclusiveEnabled     bool                     `json:"gpu_exclusive_enabled,omitempty"`
 	GPUExclusiveAssignments []GPUExclusiveAssignment `json:"gpu_exclusive_assignments,omitempty"`
 	GPUIndices              []int                    `json:"gpu_indices,omitempty"`
+	GPUDenyAll              bool                     `json:"gpu_deny_all,omitempty"`
 }
 
 type NodeLocalUser struct {

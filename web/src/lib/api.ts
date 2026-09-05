@@ -432,6 +432,7 @@ export type NodeLocalUser = {
 	memory_limit_reason?: string;
 	memory_limit_updated_at?: string;
   gpu_visible_indices?: number[];
+  gpu_visibility_deny_all?: boolean;
   gpu_visibility_reason?: string;
   gpu_visibility_updated_at?: string;
   home_created_at?: string;
@@ -479,6 +480,8 @@ export type NodeUserGPUVisibility = {
   admin_mapping?: boolean;
   admin_username?: string;
   gpu_indices: number[];
+  /** true = 完全不可见（一张 GPU 都看不到）；此时 gpu_indices 为空。 */
+  deny_all?: boolean;
   reason?: string;
   updated_by?: string;
   updated_at: string;
@@ -2289,7 +2292,7 @@ export class ApiClient {
 
   async adminSetNodeUserGPUVisibility(
     nodeId: string,
-    payload: { local_username: string; gpu_indices: number[]; reason?: string },
+    payload: { local_username: string; gpu_indices: number[]; deny_all?: boolean; reason?: string },
   ): Promise<{
     ok: boolean;
     node_id: string;
@@ -2299,6 +2302,7 @@ export class ApiClient {
       node_id: string;
       local_username: string;
       gpu_indices: number[];
+      deny_all?: boolean;
       reason?: string;
       updated_by?: string;
       updated_at: string;

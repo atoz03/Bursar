@@ -650,10 +650,13 @@
                     <el-tag v-if="typeof row.memory_limit_gb === 'number' && Number(row.memory_limit_gb) > 0" type="danger" effect="dark">
                       内存 {{ Number(row.memory_limit_gb).toFixed(1) }} GB
                     </el-tag>
-                    <el-tag v-if="Array.isArray(row.gpu_visible_indices) && row.gpu_visible_indices.length > 0" type="primary" effect="dark">
+                    <el-tag v-if="row.gpu_visibility_deny_all" type="danger" effect="dark">
+                      GPU 完全不可见
+                    </el-tag>
+                    <el-tag v-else-if="Array.isArray(row.gpu_visible_indices) && row.gpu_visible_indices.length > 0" type="primary" effect="dark">
                       GPU 可见 {{ formatGPUIndices(row.gpu_visible_indices) }}
                     </el-tag>
-                    <el-tag v-if="!(typeof row.cpu_quota_percent === 'number' && Number(row.cpu_quota_percent) > 0) && !(typeof row.memory_limit_gb === 'number' && Number(row.memory_limit_gb) > 0) && !(Array.isArray(row.gpu_visible_indices) && row.gpu_visible_indices.length > 0)" type="info" effect="plain">
+                    <el-tag v-if="!hasManualRestriction(row)" type="info" effect="plain">
                       未限制
                     </el-tag>
                   </div>
@@ -1397,14 +1400,23 @@
           <el-text type="info" size="small" style="margin-left: 8px">单位：GB</el-text>
         </el-form-item>
         <el-form-item label="限制 GPU 可见">
-          <el-switch v-model="userLimitGPUEnabled" inline-prompt active-text="是" inactive-text="否" />
-          <div style="margin-left: 10px; width: calc(100% - 140px)">
-            <el-checkbox-group v-model="userLimitVisibleGPUIndices" :disabled="!userLimitGPUEnabled || userLimitGPUOptions.length === 0">
-              <el-checkbox v-for="idx in userLimitGPUOptions" :key="`limit-gpu-${idx}`" :label="idx">
-                GPU {{ idx }}
-              </el-checkbox>
-            </el-checkbox-group>
-            <el-text v-if="userLimitGPUOptions.length === 0" type="info" size="small">当前节点未检测到可配置的 GPU 编号</el-text>
+          <div style="width: 100%">
+            <el-radio-group v-model="userLimitGPUMode">
+              <el-radio label="unrestricted">全部可见</el-radio>
+              <el-radio label="allowlist">仅指定 GPU</el-radio>
+              <el-radio label="deny_all">完全不可见</el-radio>
+            </el-radio-group>
+            <div v-if="userLimitGPUMode === 'allowlist'" style="margin-top: 8px">
+              <el-checkbox-group v-model="userLimitVisibleGPUIndices" :disabled="userLimitGPUOptions.length === 0">
+                <el-checkbox v-for="idx in userLimitGPUOptions" :key="`limit-gpu-${idx}`" :label="idx">
+                  GPU {{ idx }}
+                </el-checkbox>
+              </el-checkbox-group>
+              <el-text v-if="userLimitGPUOptions.length === 0" type="info" size="small">当前节点未检测到可配置的 GPU 编号</el-text>
+            </div>
+            <el-text v-else-if="userLimitGPUMode === 'deny_all'" type="danger" size="small">
+              该用户将看不到任何 GPU。已在运行的任务不会被中断，限制对之后启动的进程生效。
+            </el-text>
           </div>
         </el-form-item>
         <el-form-item label="限制原因">
@@ -1470,7 +1482,11 @@ const userLimitCPUEnabled = ref(false);
 const userLimitCPUPercent = ref(50);
 const userLimitMemoryEnabled = ref(false);
 const userLimitMemoryGB = ref(8);
-const userLimitGPUEnabled = ref(false);
+// unrestricted=全部可见（无策略）；allowlist=仅指定 GPU；deny_all=完全不可见。
+// deny_all 与 unrestricted 都不带 gpu_indices，必须作为独立取值传给后端，
+// 否则空列表会被当成「解除限制」。
+type UserLimitGPUMode = "unrestricted" | "allowlist" | "deny_all";
+const userLimitGPUMode = ref<UserLimitGPUMode>("unrestricted");
 const userLimitVisibleGPUIndices = ref<number[]>([]);
 const userLimitReason = ref("");
 const syncingNodeId = ref("");
@@ -1783,7 +1799,9 @@ function hasManualRestriction(row: NodeLocalUser): boolean {
   const cpu = typeof row.cpu_quota_percent === "number" ? Number(row.cpu_quota_percent) : 0;
   const memory = typeof row.memory_limit_gb === "number" ? Number(row.memory_limit_gb) : 0;
   const gpu = Array.isArray(row.gpu_visible_indices) ? row.gpu_visible_indices.length : 0;
-  return cpu > 0 || memory > 0 || gpu > 0;
+  // 「完全不可见」的 gpu_visible_indices 为空，必须单独判断，
+  // 否则会被显示成「未限制」并让解除按钮消失。
+  return cpu > 0 || memory > 0 || gpu > 0 || !!row.gpu_visibility_deny_all;
 }
 
 function openDetailUserLimitDialog(row: NodeLocalUser) {
@@ -1804,7 +1822,11 @@ function openDetailUserLimitDialog(row: NodeLocalUser) {
   userLimitMemoryEnabled.value = memoryCurrent > 0;
   userLimitMemoryGB.value = Number((memoryCurrent > 0 ? memoryCurrent : 8).toFixed(1));
   const gpuCurrent = normalizeGPUIndexList((row.gpu_visible_indices || []).map((x) => Number(x)));
-  userLimitGPUEnabled.value = gpuCurrent.length > 0;
+  userLimitGPUMode.value = row.gpu_visibility_deny_all
+    ? "deny_all"
+    : gpuCurrent.length > 0
+      ? "allowlist"
+      : "unrestricted";
   userLimitVisibleGPUIndices.value = [...gpuCurrent];
   userLimitReason.value = String(row.cpu_quota_reason || row.memory_limit_reason || row.gpu_visibility_reason || "").trim();
   userLimitDialogVisible.value = true;
@@ -3128,7 +3150,7 @@ async function saveDetailUserLimitsFromDialog() {
   if (!nodeId || !local) return;
   const cpuEnabled = !!userLimitCPUEnabled.value;
   const memoryEnabled = !!userLimitMemoryEnabled.value;
-  const gpuEnabled = !!userLimitGPUEnabled.value;
+  const gpuMode = userLimitGPUMode.value;
   const cpuPercent = Number(userLimitCPUPercent.value || 0);
   const memoryGB = Number(userLimitMemoryGB.value || 0);
   const gpuIndices = normalizeGPUIndexList((userLimitVisibleGPUIndices.value || []).map((x) => Number(x)));
@@ -3142,8 +3164,8 @@ async function saveDetailUserLimitsFromDialog() {
     success.value = "";
     return;
   }
-  if (gpuEnabled && gpuIndices.length === 0) {
-    ElMessage.error("请至少选择一个可见 GPU");
+  if (gpuMode === "allowlist" && gpuIndices.length === 0) {
+    ElMessage.error("请至少选择一个可见 GPU；如需完全不可见请选择「完全不可见」");
     return;
   }
   userLimitSaving.value = true;
@@ -3170,10 +3192,20 @@ async function saveDetailUserLimitsFromDialog() {
     } else {
       await deleteMemoryUserLimitSafe(nodeId, local);
     }
-    if (gpuEnabled) {
+    if (gpuMode === "allowlist") {
       await client.adminSetNodeUserGPUVisibility(nodeId, {
         local_username: local,
         gpu_indices: gpuIndices,
+        deny_all: false,
+        reason,
+      });
+    } else if (gpuMode === "deny_all") {
+      // 完全不可见：不传 gpu_indices，用 deny_all 显式表达，
+      // 否则空列表会被后端当作「解除限制」。
+      await client.adminSetNodeUserGPUVisibility(nodeId, {
+        local_username: local,
+        gpu_indices: [],
+        deny_all: true,
         reason,
       });
     } else {

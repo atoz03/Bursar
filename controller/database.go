@@ -7411,6 +7411,17 @@ WHERE node_id=$1 AND local_username=$2`, nodeID, local); err != nil {
 		} else if affected > 0 {
 			clearedGPUVisibility += int(affected)
 		}
+		// 「完全不可见」只有策略行、没有允许列表行，必须一并清理，
+		// 否则解绑账号后残留策略会继续拦截同名新账号。
+		if res, err := tx.ExecContext(ctx, `
+DELETE FROM node_user_gpu_visibility_policy
+WHERE node_id=$1 AND local_username=$2`, nodeID, local); err != nil {
+			return 0, 0, 0, 0, err
+		} else if affected, err := res.RowsAffected(); err != nil {
+			return 0, 0, 0, 0, err
+		} else if affected > 0 {
+			clearedGPUVisibility += int(affected)
+		}
 	}
 	return removedMappings, clearedCPULimits, clearedMemoryLimits, clearedGPUVisibility, nil
 }
@@ -7562,8 +7573,9 @@ SELECT nlu.node_id,
        COALESCE(nml.reason, '') AS memory_limit_reason,
        nml.updated_at AS memory_limit_updated_at,
        nugv.gpu_indices,
-       COALESCE(nugv.reason, '') AS gpu_visibility_reason,
-       nugv.updated_at AS gpu_visibility_updated_at,
+       COALESCE(nugvp.deny_all, FALSE) AS gpu_visibility_deny_all,
+       COALESCE(nugvp.reason, nugv.reason, '') AS gpu_visibility_reason,
+       COALESCE(nugvp.updated_at, nugv.updated_at) AS gpu_visibility_updated_at,
        nlu.home_created_at,
        nlu.last_login_at,
        nlu.home_used_gb,
@@ -7593,6 +7605,9 @@ LEFT JOIN (
 ) nugv
   ON nugv.node_id=nlu.node_id
  AND nugv.local_username=nlu.local_username
+LEFT JOIN node_user_gpu_visibility_policy nugvp
+  ON nugvp.node_id=nlu.node_id
+ AND nugvp.local_username=nlu.local_username
 WHERE nlu.node_id=$1
 ORDER BY nlu.local_username
 LIMIT $2`, nodeID, limit)
@@ -7628,6 +7643,7 @@ LIMIT $2`, nodeID, limit)
 			&u.MemoryLimitReason,
 			&memoryLimitUpdatedAt,
 			&gpuVisibleIndicesRaw,
+			&u.GPUVisibilityDenyAll,
 			&u.GPUVisibilityReason,
 			&gpuVisibilityUpdatedAt,
 			&u.HomeCreatedAt,
@@ -8148,11 +8164,16 @@ func normalizeNodeUserGPUIndices(indices []int) ([]int, error) {
 	return out, nil
 }
 
+// UpsertNodeUserGPUVisibility 写入用户 GPU 可见性策略。
+// denyAll=true 表示「完全不可见」，此时 gpuIndices 必须为空；
+// denyAll=false 时 gpuIndices 至少包含一个编号——空列表请改用
+// DeleteNodeUserGPUVisibility 表达「解除限制」，避免空集合再次承担两种语义。
 func (s *Store) UpsertNodeUserGPUVisibility(
 	ctx context.Context,
 	nodeID string,
 	localUsername string,
 	gpuIndices []int,
+	denyAll bool,
 	reason string,
 	updatedBy string,
 ) (NodeUserGPUVisibility, error) {
@@ -8170,7 +8191,10 @@ func (s *Store) UpsertNodeUserGPUVisibility(
 	if err != nil {
 		return NodeUserGPUVisibility{}, err
 	}
-	if len(normalized) == 0 {
+	if denyAll && len(normalized) > 0 {
+		return NodeUserGPUVisibility{}, errors.New("完全不可见时不能同时指定 gpu_indices")
+	}
+	if !denyAll && len(normalized) == 0 {
 		return NodeUserGPUVisibility{}, errors.New("gpu_indices 至少包含一个 GPU 编号")
 	}
 	if err := s.WithTx(ctx, func(tx *sql.Tx) error {
@@ -8185,6 +8209,16 @@ INSERT INTO node_user_gpu_visibility(node_id, local_username, gpu_index, reason,
 VALUES($1,$2,$3,$4,$5,NOW())`, nodeID, localUsername, idx, reason, updatedBy); err != nil {
 				return err
 			}
+		}
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO node_user_gpu_visibility_policy(node_id, local_username, deny_all, reason, updated_by, updated_at)
+VALUES($1,$2,$3,$4,$5,NOW())
+ON CONFLICT (node_id, local_username)
+DO UPDATE SET deny_all=EXCLUDED.deny_all,
+              reason=EXCLUDED.reason,
+              updated_by=EXCLUDED.updated_by,
+              updated_at=NOW()`, nodeID, localUsername, denyAll, reason, updatedBy); err != nil {
+			return err
 		}
 		return nil
 	}); err != nil {
@@ -8206,17 +8240,29 @@ func (s *Store) DeleteNodeUserGPUVisibility(ctx context.Context, nodeID string, 
 	if nodeID == "" || localUsername == "" {
 		return errors.New("node_id/local_username 不能为空")
 	}
-	res, err := s.db.ExecContext(ctx, `
-DELETE FROM node_user_gpu_visibility
-WHERE node_id=$1 AND local_username=$2`, nodeID, localUsername)
-	if err != nil {
+	total := int64(0)
+	if err := s.WithTx(ctx, func(tx *sql.Tx) error {
+		// 「完全不可见」在允许列表里没有任何行，只存在策略行，
+		// 因此两张表都要清理，且任意一张有删除都算解除成功。
+		for _, stmt := range []string{
+			`DELETE FROM node_user_gpu_visibility WHERE node_id=$1 AND local_username=$2`,
+			`DELETE FROM node_user_gpu_visibility_policy WHERE node_id=$1 AND local_username=$2`,
+		} {
+			res, err := tx.ExecContext(ctx, stmt, nodeID, localUsername)
+			if err != nil {
+				return err
+			}
+			affected, err := res.RowsAffected()
+			if err != nil {
+				return err
+			}
+			total += affected
+		}
+		return nil
+	}); err != nil {
 		return err
 	}
-	affected, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if affected <= 0 {
+	if total <= 0 {
 		return sql.ErrNoRows
 	}
 	return nil
@@ -8230,9 +8276,11 @@ func (s *Store) GetNodeUserGPUVisibility(ctx context.Context, nodeID string, loc
 	}
 	var out NodeUserGPUVisibility
 	var gpuIndicesRaw pq.Int64Array
+	// 以策略表为驱动表：「完全不可见」在允许列表里没有任何行，
+	// 若仍从 node_user_gpu_visibility 出发会把它误判为「无限制」。
 	if err := s.db.QueryRowContext(ctx, `
-SELECT l.node_id,
-       l.local_username,
+SELECT p.node_id,
+       p.local_username,
        COALESCE(una.billing_username, '') AS billing_username,
        (una.billing_username IS NOT NULL) AS mapping_exists,
        (
@@ -8242,18 +8290,27 @@ SELECT l.node_id,
        ) AS platform_exists,
        (adm.username IS NOT NULL) AS admin_mapping,
        COALESCE(adm.username, '') AS admin_username,
-       array_agg(l.gpu_index ORDER BY l.gpu_index)::BIGINT[] AS gpu_indices,
-       (array_agg(l.reason ORDER BY l.updated_at DESC, l.gpu_index ASC))[1] AS reason,
-       (array_agg(l.updated_by ORDER BY l.updated_at DESC, l.gpu_index ASC))[1] AS updated_by,
-       MAX(l.updated_at) AS updated_at
-FROM node_user_gpu_visibility l
+       COALESCE(l.gpu_indices, ARRAY[]::BIGINT[]) AS gpu_indices,
+       p.deny_all,
+       p.reason,
+       p.updated_by,
+       p.updated_at
+FROM node_user_gpu_visibility_policy p
+LEFT JOIN (
+  SELECT node_id,
+         local_username,
+         array_agg(gpu_index ORDER BY gpu_index)::BIGINT[] AS gpu_indices
+  FROM node_user_gpu_visibility
+  GROUP BY node_id, local_username
+) l
+  ON l.node_id=p.node_id
+ AND l.local_username=p.local_username
 LEFT JOIN user_node_accounts una
-  ON una.node_id=l.node_id
- AND una.local_username=l.local_username
+  ON una.node_id=p.node_id
+ AND una.local_username=p.local_username
 LEFT JOIN admin_accounts adm
   ON adm.username=una.billing_username
-WHERE l.node_id=$1 AND l.local_username=$2
-GROUP BY l.node_id, l.local_username, una.billing_username, adm.username`, nodeID, localUsername).Scan(
+WHERE p.node_id=$1 AND p.local_username=$2`, nodeID, localUsername).Scan(
 		&out.NodeID,
 		&out.LocalUsername,
 		&out.BillingUsername,
@@ -8262,6 +8319,7 @@ GROUP BY l.node_id, l.local_username, una.billing_username, adm.username`, nodeI
 		&out.AdminMapping,
 		&out.AdminUsername,
 		&gpuIndicesRaw,
+		&out.DenyAll,
 		&out.Reason,
 		&out.UpdatedBy,
 		&out.UpdatedAt,
@@ -8296,8 +8354,8 @@ func (s *Store) ListNodeUserGPUVisibilityByNodeTx(
 		limit = 5000
 	}
 	rows, err := tx.QueryContext(ctx, `
-SELECT l.node_id,
-       l.local_username,
+SELECT p.node_id,
+       p.local_username,
        COALESCE(una.billing_username, '') AS billing_username,
        (una.billing_username IS NOT NULL) AS mapping_exists,
        (
@@ -8307,19 +8365,28 @@ SELECT l.node_id,
        ) AS platform_exists,
        (adm.username IS NOT NULL) AS admin_mapping,
        COALESCE(adm.username, '') AS admin_username,
-       array_agg(l.gpu_index ORDER BY l.gpu_index)::BIGINT[] AS gpu_indices,
-       (array_agg(l.reason ORDER BY l.updated_at DESC, l.gpu_index ASC))[1] AS reason,
-       (array_agg(l.updated_by ORDER BY l.updated_at DESC, l.gpu_index ASC))[1] AS updated_by,
-       MAX(l.updated_at) AS updated_at
-FROM node_user_gpu_visibility l
+       COALESCE(l.gpu_indices, ARRAY[]::BIGINT[]) AS gpu_indices,
+       p.deny_all,
+       p.reason,
+       p.updated_by,
+       p.updated_at
+FROM node_user_gpu_visibility_policy p
+LEFT JOIN (
+  SELECT node_id,
+         local_username,
+         array_agg(gpu_index ORDER BY gpu_index)::BIGINT[] AS gpu_indices
+  FROM node_user_gpu_visibility
+  GROUP BY node_id, local_username
+) l
+  ON l.node_id=p.node_id
+ AND l.local_username=p.local_username
 LEFT JOIN user_node_accounts una
-  ON una.node_id=l.node_id
- AND una.local_username=l.local_username
+  ON una.node_id=p.node_id
+ AND una.local_username=p.local_username
 LEFT JOIN admin_accounts adm
   ON adm.username=una.billing_username
-WHERE l.node_id=$1
-GROUP BY l.node_id, l.local_username, una.billing_username, adm.username
-ORDER BY l.local_username
+WHERE p.node_id=$1
+ORDER BY p.local_username
 LIMIT $2`, nodeID, limit)
 	if err != nil {
 		return nil, err
@@ -8338,6 +8405,7 @@ LIMIT $2`, nodeID, limit)
 			&x.AdminMapping,
 			&x.AdminUsername,
 			&gpuIndicesRaw,
+			&x.DenyAll,
 			&x.Reason,
 			&x.UpdatedBy,
 			&x.UpdatedAt,
@@ -8375,7 +8443,7 @@ func (s *Store) ListNodeUserGPUVisibility(
 		return fmt.Sprintf("$%d", len(args))
 	}
 	if nodeID != "" {
-		conds = append(conds, "l.node_id="+addArg(nodeID))
+		conds = append(conds, "p.node_id="+addArg(nodeID))
 	}
 	if billingUsername != "" {
 		conds = append(conds, "una.billing_username="+addArg(billingUsername))
@@ -8385,8 +8453,8 @@ func (s *Store) ListNodeUserGPUVisibility(
 		where = "WHERE " + strings.Join(conds, " AND ")
 	}
 	query := `
-SELECT l.node_id,
-       l.local_username,
+SELECT p.node_id,
+       p.local_username,
        COALESCE(una.billing_username, '') AS billing_username,
        (una.billing_username IS NOT NULL) AS mapping_exists,
        (
@@ -8396,19 +8464,28 @@ SELECT l.node_id,
        ) AS platform_exists,
        (adm.username IS NOT NULL) AS admin_mapping,
        COALESCE(adm.username, '') AS admin_username,
-       array_agg(l.gpu_index ORDER BY l.gpu_index)::BIGINT[] AS gpu_indices,
-       (array_agg(l.reason ORDER BY l.updated_at DESC, l.gpu_index ASC))[1] AS reason,
-       (array_agg(l.updated_by ORDER BY l.updated_at DESC, l.gpu_index ASC))[1] AS updated_by,
-       MAX(l.updated_at) AS updated_at
-FROM node_user_gpu_visibility l
+       COALESCE(l.gpu_indices, ARRAY[]::BIGINT[]) AS gpu_indices,
+       p.deny_all,
+       p.reason,
+       p.updated_by,
+       p.updated_at
+FROM node_user_gpu_visibility_policy p
+LEFT JOIN (
+  SELECT node_id,
+         local_username,
+         array_agg(gpu_index ORDER BY gpu_index)::BIGINT[] AS gpu_indices
+  FROM node_user_gpu_visibility
+  GROUP BY node_id, local_username
+) l
+  ON l.node_id=p.node_id
+ AND l.local_username=p.local_username
 LEFT JOIN user_node_accounts una
-  ON una.node_id=l.node_id
- AND una.local_username=l.local_username
+  ON una.node_id=p.node_id
+ AND una.local_username=p.local_username
 LEFT JOIN admin_accounts adm
   ON adm.username=una.billing_username
 ` + where + `
-GROUP BY l.node_id, l.local_username, una.billing_username, adm.username
-ORDER BY MAX(l.updated_at) DESC, l.node_id ASC, l.local_username ASC
+ORDER BY p.updated_at DESC, p.node_id ASC, p.local_username ASC
 LIMIT ` + addArg(limit)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -8428,6 +8505,7 @@ LIMIT ` + addArg(limit)
 			&x.AdminMapping,
 			&x.AdminUsername,
 			&gpuIndicesRaw,
+			&x.DenyAll,
 			&x.Reason,
 			&x.UpdatedBy,
 			&x.UpdatedAt,
