@@ -17,16 +17,19 @@ if [[ -n "$(git -c safe.directory="${ROOT_DIR}" -C "${ROOT_DIR}" status --porcel
   GIT_DIRTY="true"
 fi
 
+controller_ldflags="-X main.controllerBuildAt=${BUILD_AT}"
 agent_ldflags="-X main.agentBuildAt=${BUILD_AT}"
 if [[ -n "${GIT_COMMIT}" ]]; then
+  controller_ldflags="${controller_ldflags} -X main.controllerCommit=${GIT_COMMIT}"
   agent_ldflags="${agent_ldflags} -X main.agentCommit=${GIT_COMMIT}"
 fi
 if [[ -n "${GIT_DIRTY}" ]]; then
+  controller_ldflags="${controller_ldflags} -X main.controllerVCSModified=${GIT_DIRTY}"
   agent_ldflags="${agent_ldflags} -X main.agentVCSModified=${GIT_DIRTY}"
 fi
 
 echo "==> 构建 controller (${GOOS}/${GOARCH})"
-(cd "${ROOT_DIR}/controller" && GOOS="${GOOS}" GOARCH="${GOARCH}" go build -buildvcs=false -o "${OUT_DIR}/controller" .)
+(cd "${ROOT_DIR}/controller" && GOOS="${GOOS}" GOARCH="${GOARCH}" go build -buildvcs=false -ldflags "${controller_ldflags}" -o "${OUT_DIR}/controller" .)
 
 echo "==> 构建 node-agent (${GOOS}/${GOARCH})"
 (cd "${ROOT_DIR}/node-agent" && GOOS="${GOOS}" GOARCH="${GOARCH}" go build -buildvcs=false -ldflags "${agent_ldflags}" -o "${OUT_DIR}/node-agent" .)

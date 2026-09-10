@@ -13,10 +13,11 @@ import (
 )
 
 var (
-	controllerVersion = "v3.2"
-	controllerCommit  = ""
-	controllerBuildAt = ""
-	controllerStartAt = time.Now()
+	controllerVersion     = "v3.2"
+	controllerCommit      = ""
+	controllerBuildAt     = ""
+	controllerVCSModified = ""
+	controllerStartAt     = time.Now()
 
 	buildInfoOnce   sync.Once
 	cachedBuildInfo controllerBuildInfo
@@ -34,10 +35,11 @@ type controllerBuildInfo struct {
 func initControllerBuildInfo() {
 	buildInfoOnce.Do(func() {
 		out := controllerBuildInfo{
-			Version:   strings.TrimSpace(controllerVersion),
-			Commit:    strings.TrimSpace(controllerCommit),
-			BuildAt:   strings.TrimSpace(controllerBuildAt),
-			StartedAt: controllerStartAt,
+			Version:     strings.TrimSpace(controllerVersion),
+			Commit:      strings.TrimSpace(controllerCommit),
+			BuildAt:     strings.TrimSpace(controllerBuildAt),
+			VCSModified: strings.TrimSpace(controllerVCSModified),
+			StartedAt:   controllerStartAt,
 		}
 		if bi, ok := debug.ReadBuildInfo(); ok {
 			if out.Version == "" || out.Version == "dev" {
@@ -57,7 +59,9 @@ func initControllerBuildInfo() {
 						out.BuildAt = strings.TrimSpace(s.Value)
 					}
 				case "vcs.modified":
-					out.VCSModified = strings.TrimSpace(s.Value)
+					if out.VCSModified == "" {
+						out.VCSModified = strings.TrimSpace(s.Value)
+					}
 				}
 			}
 		}

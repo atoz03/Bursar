@@ -45,11 +45,24 @@ SUDOERS_PATH="/etc/sudoers.d/${SERVICE_NAME}-shared-workspace"
 echo "[1/6] 编译 controller"
 TMP_BIN="$(mktemp /tmp/gpu-controller.XXXXXX)"
 trap 'rm -f "${TMP_BIN}"' EXIT
+BUILD_AT="$(date -u '+%Y%m%dT%H%M%SZ')"
+GIT_COMMIT="$(git -c safe.directory="${ROOT_DIR}" -C "${ROOT_DIR}" rev-parse --short=12 HEAD 2>/dev/null || true)"
+GIT_DIRTY=""
+if [[ -n "$(git -c safe.directory="${ROOT_DIR}" -C "${ROOT_DIR}" status --porcelain --untracked-files=no 2>/dev/null || true)" ]]; then
+  GIT_DIRTY="true"
+fi
+CONTROLLER_LDFLAGS="-X main.controllerBuildAt=${BUILD_AT}"
+if [[ -n "${GIT_COMMIT}" ]]; then
+  CONTROLLER_LDFLAGS="${CONTROLLER_LDFLAGS} -X main.controllerCommit=${GIT_COMMIT}"
+fi
+if [[ -n "${GIT_DIRTY}" ]]; then
+  CONTROLLER_LDFLAGS="${CONTROLLER_LDFLAGS} -X main.controllerVCSModified=${GIT_DIRTY}"
+fi
 (
   cd "${CONTROLLER_DIR}"
   # 共享工作区可能由其他账号持有；禁用 Go 的隐式 VCS 探测，避免
   # safe.directory 校验阻断本地发布。版本信息由应用自身维护。
-  go build -buildvcs=false -o "${TMP_BIN}" .
+  go build -buildvcs=false -ldflags "${CONTROLLER_LDFLAGS}" -o "${TMP_BIN}" .
 )
 
 if [[ "${BUILD_WEB}" == "1" ]]; then

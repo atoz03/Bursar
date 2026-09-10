@@ -10,10 +10,12 @@ if [[ -f "${ROOT_DIR}/config/controller.local.yaml" ]]; then
 fi
 LOCAL_CONFIG_PATH="${LOCAL_CONFIG_PATH:-${DEFAULT_LOCAL_CONFIG_PATH}}"
 LOCAL_WEB_DIST="${LOCAL_WEB_DIST:-${ROOT_DIR}/web/dist/}"
+LOCAL_MIGRATIONS_DIR="${LOCAL_MIGRATIONS_DIR:-${ROOT_DIR}/database/migrations/}"
 REMOTE_PROJECT_DIR="${REMOTE_PROJECT_DIR:-/home/${DR_SSH_USER:-gpuops}/gpu-ops}"
 REMOTE_BIN="${REMOTE_BIN:-/usr/local/bin/gpu-controller}"
 REMOTE_CONFIG_PATH="${REMOTE_CONFIG_PATH:-${REMOTE_PROJECT_DIR}/config/controller.yaml}"
 REMOTE_WEB_DIST="${REMOTE_WEB_DIST:-${REMOTE_PROJECT_DIR}/web/dist/}"
+REMOTE_MIGRATIONS_DIR="${REMOTE_MIGRATIONS_DIR:-${REMOTE_PROJECT_DIR}/database/migrations/}"
 REMOTE_SERVICE_NAME="${REMOTE_SERVICE_NAME:-gpu-controller}"
 LOCAL_SERVICE_NAME="${LOCAL_SERVICE_NAME:-gpu-controller}"
 REMOTE_APPLY_HELPER="${REMOTE_APPLY_HELPER:-/usr/local/sbin/gpuops-ha-apply}"
@@ -31,6 +33,7 @@ DR_CONTROLLER_PORT="${DR_CONTROLLER_PORT:-8080}"
 PRIMARY_HOST="${PRIMARY_HOST:-127.0.0.1}"
 PRIMARY_CONTROLLER_PORT="${PRIMARY_CONTROLLER_PORT:-8080}"
 SYNC_WEB_DIST="${SYNC_WEB_DIST:-1}"
+SYNC_MIGRATIONS="${SYNC_MIGRATIONS:-1}"
 SYNC_DATABASE="${SYNC_DATABASE:-1}"
 VERIFY_TOOL_VERSIONS="${VERIFY_TOOL_VERSIONS:-0}"
 ALLOW_VERSION_MISMATCH="${ALLOW_VERSION_MISMATCH:-0}"
@@ -292,6 +295,44 @@ sync_p2s_web() {
   step_result "sync_web_dist" "ok" "主->备 web/dist 同步完成"
 }
 
+sync_p2s_migrations() {
+  if [[ "${SYNC_MIGRATIONS}" != "1" ]]; then
+    step_result "sync_migrations" "ok" "已跳过（SYNC_MIGRATIONS=${SYNC_MIGRATIONS}）"
+    return 0
+  fi
+  if [[ ! -d "${LOCAL_MIGRATIONS_DIR}" ]]; then
+    die_step "sync_migrations" "本机迁移目录不存在：${LOCAL_MIGRATIONS_DIR}"
+  fi
+  if ! ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "mkdir -p '${REMOTE_MIGRATIONS_DIR}'"; then
+    die_step "sync_migrations" "创建容灾迁移目录失败"
+  fi
+  if command -v rsync >/dev/null 2>&1; then
+    # 历史迁移可能已经在数据库中登记，不能删除远端额外文件；若两端仍有
+    # 差异，下面的内容清单校验会中止同步并要求人工处理。
+    if ! rsync -az -e "ssh -i ${TMP_KEY} -p ${DR_SSH_PORT} -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${KNOWN_HOSTS_FILE} -o ConnectTimeout=${SSH_TIMEOUT}" "${LOCAL_MIGRATIONS_DIR}" "${REMOTE}:${REMOTE_MIGRATIONS_DIR}"; then
+      die_step "sync_migrations" "主->备数据库迁移文件同步失败"
+    fi
+  else
+    if ! tar -C "${LOCAL_MIGRATIONS_DIR}" -cf - . | ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "tar -C '${REMOTE_MIGRATIONS_DIR}' -xf -"; then
+      die_step "sync_migrations" "主->备数据库迁移文件同步失败"
+    fi
+  fi
+
+  local_manifest="$(
+    cd "${LOCAL_MIGRATIONS_DIR}"
+    find . -maxdepth 1 -type f -name '*.sql' -print0 \
+      | sort -z \
+      | xargs -0 -r sha256sum \
+      | sha256sum \
+      | awk '{print $1}'
+  )"
+  remote_manifest="$(ssh -n "${SSH_OPTS[@]}" "${REMOTE}" "cd '${REMOTE_MIGRATIONS_DIR}' && find . -maxdepth 1 -type f -name '*.sql' -print0 | sort -z | xargs -0 -r sha256sum | sha256sum | awk '{print \$1}'" | xargs)"
+  if [[ -z "${local_manifest}" || "${local_manifest}" != "${remote_manifest}" ]]; then
+    die_step "sync_migrations" "迁移文件内容清单不一致 local=${local_manifest:-missing} remote=${remote_manifest:-missing}"
+  fi
+  step_result "sync_migrations" "ok" "主->备数据库迁移文件同步完成 manifest=${local_manifest}"
+}
+
 sync_s2p_web() {
   if [[ "${SYNC_WEB_DIST}" != "1" ]]; then
     step_result "sync_web_dist" "ok" "已跳过（SYNC_WEB_DIST=${SYNC_WEB_DIST}）"
@@ -382,6 +423,7 @@ restart_local_service() {
 
 case "${HA_SYNC_DIRECTION}" in
   primary_to_standby|p2s|primary2standby)
+    sync_p2s_migrations
     sync_p2s_binary
     sync_p2s_web
     sync_p2s_database
