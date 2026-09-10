@@ -98,6 +98,14 @@ fi
 
 init_node_filter
 
+report_parent="$(dirname "${REPORT_FILE}")"
+mkdir -p "${report_parent}"
+if [[ -f "${REPORT_FILE}" ]]; then
+  report_archive="${report_parent}/node-deployment-report-$(date '+%Y%m%d-%H%M%S').txt"
+  cp -p "${REPORT_FILE}" "${report_archive}"
+  echo "上一份部署报告已归档：${report_archive}"
+fi
+
 echo "SOURCE_DIR=${SOURCE_DIR}"
 echo "MAP_FILE=${MAP_FILE}"
 echo "TARGET=<${TARGET_BASE}>/<用户名>/${PROJECT_DIR_NAME}"
@@ -200,6 +208,7 @@ target='${target_dir}'
 mkdir -p "\${target}"
 rm -rf -- \
   "\${target}/config" \
+  "\${target}/docs" \
   "\${target}/my_ssh_keys" \
   "\${target}/.codex" \
   "\${target}/README.md" \
@@ -228,6 +237,7 @@ copy_workspace() {
     --exclude='.codex' \
     --exclude='.netcatty-paste-images' \
     --exclude='config' \
+    --exclude='docs' \
     --exclude='README.md' \
     --exclude='node-deployment-report.txt' \
     --exclude='go.work.sum' \

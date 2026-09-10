@@ -48,6 +48,7 @@ target='${target_dir}'
 mkdir -p "\${target}"
 rm -rf -- \
   "\${target}/config" \
+  "\${target}/docs" \
   "\${target}/my_ssh_keys" \
   "\${target}/.codex" \
   "\${target}/README.md" \
@@ -169,6 +170,7 @@ copy_one() {
     --exclude='.git' \
     --exclude='.codex' \
     --exclude='config' \
+    --exclude='docs' \
     --exclude='README.md' \
     --exclude='node-deployment-report.txt' \
     --exclude='go.work.sum' \

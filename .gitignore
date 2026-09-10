@@ -10,7 +10,7 @@ node-agent/node-agent
 **/*.log
 **/state/
 **/tmp/
-node-deployment-report.txt
+node-deployment-report*.txt
 *.dump
 *.dump.gz
 
