@@ -60,6 +60,9 @@ done
 [[ -f "${DR_KEY_FILE}" ]] || die "容灾节点私钥不存在：${DR_KEY_FILE}"
 [[ "$(git -C "${ROOT_DIR}" rev-parse --short=12 HEAD)" == "${EXPECTED_COMMIT}" ]] \
   || die "当前 commit 与待发布 commit 不一致"
+[[ -z "$(git -C "${ROOT_DIR}" status --porcelain --untracked-files=no)" ]] \
+  || die "存在未提交的受跟踪文件改动，拒绝构建生产 Controller"
+[[ -f "${ROOT_DIR}/web/dist/index.html" ]] || die "前端产物不存在，请先执行 pnpm -C web build"
 LATEST_MIGRATION="$(find "${ROOT_DIR}/database/migrations" -maxdepth 1 -type f -name '*.sql' -printf '%f\n' | sort | tail -n 1)"
 [[ -n "${LATEST_MIGRATION}" ]] || die "未找到数据库迁移文件"
 [[ "${LATEST_MIGRATION}" =~ ^[0-9A-Za-z._-]+$ ]] || die "迁移文件名不合法：${LATEST_MIGRATION}"
