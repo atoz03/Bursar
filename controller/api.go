@@ -315,12 +315,32 @@ func (s *Server) isNodeLocalIdentityAlignedWithPlatformUID(ctx context.Context, 
 	return localUID == platformUID && localGID == platformUID, platformUID, nil
 }
 
+func (s *Server) ensureTargetPlatformUIDAvailable(ctx context.Context, nodeID string, localUsername string, platformUID int) (string, error) {
+	owner, found, err := s.store.GetNodeLocalUsernameByUID(ctx, nodeID, platformUID)
+	if err != nil {
+		return "", err
+	}
+	owner = strings.TrimSpace(owner)
+	if found && owner != "" && owner != strings.TrimSpace(localUsername) {
+		return owner, nil
+	}
+	return "", nil
+}
+
 func (s *Server) enqueueNodeIdentitySyncWithDelay(nodeID, localUsername string, platformUID int, sharedWorkspaceUsername string, reason string, delaySeconds int) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := s.queueNodeIdentitySyncWithDelay(ctx, nodeID, localUsername, platformUID, sharedWorkspaceUsername, reason, delaySeconds); err != nil {
+		log.Printf("[warn] 持久化节点身份对齐任务失败：node=%s local=%s billing=%s uid=%d err=%v", nodeID, localUsername, sharedWorkspaceUsername, platformUID, err)
+	}
+}
+
+func (s *Server) queueNodeIdentitySyncWithDelay(ctx context.Context, nodeID, localUsername string, platformUID int, sharedWorkspaceUsername string, reason string, delaySeconds int) error {
 	nodeID = strings.TrimSpace(nodeID)
 	localUsername = strings.TrimSpace(localUsername)
 	sharedWorkspaceUsername = strings.TrimSpace(sharedWorkspaceUsername)
 	if nodeID == "" || localUsername == "" || platformUID <= 0 {
-		return
+		return errors.New("node_id/local_username/platform_uid 不能为空")
 	}
 	if sharedWorkspaceUsername != "" {
 		if err := s.ensureSharedWorkspaceDirsOnControllerWithTimeout(nodeID, sharedWorkspaceUsername, platformUID, 20*time.Second); err != nil {
@@ -338,7 +358,7 @@ func (s *Server) enqueueNodeIdentitySyncWithDelay(nodeID, localUsername string, 
 		Username: localUsername,
 		Reason:   reason + "；对齐 UID/GID 前先断开该账号 SSH 会话",
 	})
-	s.enqueueNodeAction(nodeID, Action{
+	_, err := s.store.QueueNodeAccountAction(ctx, nodeID, localUsername, sharedWorkspaceUsername, Action{
 		Type:                    "create_local_account",
 		Username:                localUsername,
 		SharedWorkspaceUsername: sharedWorkspaceUsername,
@@ -346,6 +366,7 @@ func (s *Server) enqueueNodeIdentitySyncWithDelay(nodeID, localUsername string, 
 		TargetPrimaryGID:        platformUID,
 		Reason:                  reason,
 	})
+	return err
 }
 
 func (s *Server) enqueueNodeIdentitySync(nodeID, localUsername string, platformUID int, sharedWorkspaceUsername string, reason string) {
@@ -1386,6 +1407,7 @@ func (s *Server) registerInternalAPIRoutes(api *gin.RouterGroup) {
 	nodeInternal.Use(s.authNodeAgent())
 	nodeInternal.POST("/metrics", s.handleMetrics)
 	nodeInternal.GET("/node/actions", s.handleNodeActions)
+	nodeInternal.POST("/node/actions/:id/result", s.handleNodeActionResult)
 	nodeInternal.GET("/registry/resolve", s.handleRegistryResolve)
 	nodeInternal.GET("/registry/nodes/:node_id/guard-state", s.handleRegistryNodeGuardState)
 	nodeInternal.GET("/registry/nodes/:node_id/users.txt", s.handleRegistryNodeUsersTxt)
@@ -3965,28 +3987,120 @@ func (s *Server) annotateUserNodeAccountsIdentityState(ctx context.Context, rows
 			rows[i].NodePrimaryGID = &gid
 		}
 		rows[i].IdentityAligned = found && foundLocal && platformUID > 0 && localUID == platformUID && localGID == platformUID
-		snapshotReady := false
-		if rows[i].NodeLocalUpdatedAt != nil {
-			referenceAt := rows[i].UpdatedAt
-			if rows[i].CreatedAt.After(referenceAt) {
-				referenceAt = rows[i].CreatedAt
-			}
-			snapshotReady = !rows[i].NodeLocalUpdatedAt.Before(referenceAt)
-		}
-		loginReady := false
-		if rows[i].NodeLastLoginAt != nil {
-			referenceAt := rows[i].UpdatedAt
-			if rows[i].CreatedAt.After(referenceAt) {
-				referenceAt = rows[i].CreatedAt
-			}
-			loginReady = !rows[i].NodeLastLoginAt.Before(referenceAt)
-		}
-		rows[i].IdentityInitializing = found && platformUID > 0 && !rows[i].IdentityAligned && !snapshotReady && !loginReady
+		classifyUserNodeAccountIdentity(&rows[i], found && platformUID > 0, time.Now())
 	}
 	return nil
 }
 
+func classifyUserNodeAccountIdentity(row *UserNodeAccount, platformIdentityFound bool, now time.Time) {
+	if row == nil {
+		return
+	}
+	row.IdentityInitializing = false
+	row.IdentityError = ""
+	if row.IdentityAligned {
+		row.IdentityState = "ready"
+		return
+	}
+	if !platformIdentityFound {
+		row.IdentityState = "failed"
+		row.IdentityError = "平台账号缺少有效的统一 UID，无法对齐节点身份"
+		return
+	}
+
+	referenceAt := row.UpdatedAt
+	if row.CreatedAt.After(referenceAt) {
+		referenceAt = row.CreatedAt
+	}
+	jobStatus := strings.TrimSpace(row.ProvisionJobStatus)
+	// 旧任务不得解释一次较新的映射变更。
+	if row.ProvisionJobUpdatedAt != nil && row.ProvisionJobUpdatedAt.Before(referenceAt) {
+		jobStatus = ""
+	}
+	switch jobStatus {
+	case "pending":
+		// 节点持续上报却在两分钟内一次都未领取动作，通常表示 agent
+		// 版本过旧或动作接口异常。不要再永久显示“初始化中”。
+		if row.ProvisionAttempts == 0 && row.ProvisionJobUpdatedAt != nil &&
+			row.NodeSnapshotUpdatedAt != nil && !row.NodeSnapshotUpdatedAt.Before(*row.ProvisionJobUpdatedAt) &&
+			now.Sub(*row.ProvisionJobUpdatedAt) >= 2*time.Minute {
+			row.IdentityState = "failed"
+			row.IdentityError = "节点持续上报但未领取账号初始化任务，请检查或升级 node-agent"
+			return
+		}
+		if row.ProvisionJobUpdatedAt != nil && now.Sub(*row.ProvisionJobUpdatedAt) >= 10*time.Minute {
+			row.IdentityState = "failed"
+			row.IdentityError = strings.TrimSpace(row.ProvisionLastError)
+			if row.IdentityError == "" {
+				row.IdentityError = "初始化任务已等待超过 10 分钟仍未再次投递，请检查节点在线状态和动作接口"
+			}
+			return
+		}
+		row.IdentityState = "initializing"
+		row.IdentityInitializing = true
+		return
+	case "leased":
+		if row.ProvisionLeaseUntil != nil && now.After(row.ProvisionLeaseUntil.Add(2*time.Minute)) {
+			row.IdentityState = "failed"
+			row.IdentityError = "节点领取初始化任务后租约已超时，且控制器未能重新投递"
+			return
+		}
+		row.IdentityState = "initializing"
+		row.IdentityInitializing = true
+		return
+	case "failed", "cancelled":
+		row.IdentityState = "failed"
+		row.IdentityError = strings.TrimSpace(row.ProvisionLastError)
+		if row.IdentityError == "" {
+			row.IdentityError = "节点账号初始化任务未成功完成"
+		}
+		return
+	case "succeeded":
+		if row.ProvisionCompletedAt == nil {
+			row.IdentityState = "initializing"
+			row.IdentityInitializing = true
+			return
+		}
+		if now.Before(row.ProvisionCompletedAt.Add(2 * time.Minute)) {
+			row.IdentityState = "initializing"
+			row.IdentityInitializing = true
+			return
+		}
+		if row.NodeSnapshotUpdatedAt == nil || row.NodeSnapshotUpdatedAt.Before(*row.ProvisionCompletedAt) {
+			if now.Before(row.ProvisionCompletedAt.Add(10 * time.Minute)) {
+				row.IdentityState = "initializing"
+				row.IdentityInitializing = true
+				return
+			}
+			row.IdentityState = "failed"
+			row.IdentityError = "节点已回执初始化成功，但超过 10 分钟仍未回传新的用户快照"
+			return
+		}
+		row.IdentityState = "failed"
+		row.IdentityError = "节点已回执初始化成功，但最新用户快照中目标账号不存在或 UID/GID 不一致"
+		return
+	}
+
+	// 没有与本次映射对应的任务时，只等待映射之后的第一份节点快照。
+	// 一旦节点已经上报过仍找不到精确的 node/local 身份，就明确失败。
+	if row.NodeSnapshotUpdatedAt == nil || row.NodeSnapshotUpdatedAt.Before(referenceAt) {
+		if now.Sub(referenceAt) >= 10*time.Minute {
+			row.IdentityState = "failed"
+			row.IdentityError = "映射变更后超过 10 分钟仍未收到节点用户快照"
+			return
+		}
+		row.IdentityState = "initializing"
+		row.IdentityInitializing = true
+		return
+	}
+	row.IdentityState = "failed"
+	row.IdentityError = "节点最新用户快照中不存在该精确账号，编辑映射不会创建或重命名 Linux 用户"
+}
+
 func classifyUserNodeAccountReadiness(row UserNodeAccount) string {
+	if state := strings.TrimSpace(row.IdentityState); state != "" {
+		return state
+	}
 	if row.IdentityAligned {
 		return "ready"
 	}
@@ -4684,17 +4798,18 @@ func (s *Server) handleAdminAccountsUpsert(c *gin.Context) {
 		})
 		return
 	}
-	operator := s.currentOperator(c)
-	if err := s.store.UpsertUserNodeAccountWithAudit(
-		c.Request.Context(),
-		req.NodeID,
-		req.LocalUsername,
-		req.BillingUsername,
-		operator,
-		"admin",
-		"管理员新增/更新节点账号映射",
-	); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	localUserKnown, err := s.store.IsNodeLocalUserKnown(c.Request.Context(), req.NodeID, req.LocalUsername)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "校验节点本地账号失败: " + err.Error()})
+		return
+	}
+	if !localUserKnown {
+		c.JSON(http.StatusConflict, gin.H{
+			"error":          fmt.Sprintf("节点 %s 的最新快照中不存在账号 %s。新增映射不会创建 Linux 账号，请使用“账号开通”生成密钥并创建账号。", req.NodeID, req.LocalUsername),
+			"reason":         "target_local_user_missing",
+			"node_id":        req.NodeID,
+			"local_username": req.LocalUsername,
+		})
 		return
 	}
 	platformUID, err := s.ensureBillingPlatformUID(c.Request.Context(), req.BillingUsername)
@@ -4702,17 +4817,46 @@ func (s *Server) handleAdminAccountsUpsert(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "分配平台 UID 失败: " + err.Error()})
 		return
 	}
+	if owner, err := s.ensureTargetPlatformUIDAvailable(c.Request.Context(), req.NodeID, req.LocalUsername, platformUID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "校验节点 UID 占用失败: " + err.Error()})
+		return
+	} else if owner != "" {
+		c.JSON(http.StatusConflict, gin.H{
+			"error": fmt.Sprintf(
+				"平台 UID %d 在节点 %s 上仍属于账号 %s，不能把映射直接改为 %s。请先处理旧节点账号，或为目标账号选择未冲突的统一 UID。",
+				platformUID, req.NodeID, owner, req.LocalUsername,
+			),
+			"reason":             "target_uid_owned_by_other_local_user",
+			"platform_uid":       platformUID,
+			"uid_owner_username": owner,
+		})
+		return
+	}
 	if err := s.ensureSharedWorkspaceDirsOnController(c.Request.Context(), req.NodeID, req.BillingUsername, platformUID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "准备共享工作目录失败: " + err.Error()})
 		return
 	}
-	s.enqueueNodeIdentitySync(
+	operator := s.currentOperator(c)
+	if _, err = s.store.UpsertUserNodeAccountAndQueueActionWithAudit(
+		c.Request.Context(),
 		req.NodeID,
 		req.LocalUsername,
-		platformUID,
 		req.BillingUsername,
-		fmt.Sprintf("管理员 %s 新增/更新映射后对齐节点账号 UID/GID", operator),
-	)
+		operator,
+		"admin",
+		"管理员新增/更新节点账号映射",
+		Action{
+			Type:                    nodeAccountActionType,
+			Username:                req.LocalUsername,
+			SharedWorkspaceUsername: req.BillingUsername,
+			TargetUID:               platformUID,
+			TargetPrimaryGID:        platformUID,
+			Reason:                  fmt.Sprintf("管理员 %s 新增/更新映射后对齐节点账号 UID/GID", operator),
+		},
+	); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	if err := s.enqueueDefaultNodeDiskQuotaForMapping(
 		c.Request.Context(),
 		req.NodeID,
@@ -4758,12 +4902,63 @@ func (s *Server) handleAdminAccountsUpdate(c *gin.Context) {
 		})
 		return
 	}
+	localUserKnown, err := s.store.IsNodeLocalUserKnown(c.Request.Context(), req.NewNodeID, req.NewLocalUsername)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "校验目标节点账号失败: " + err.Error()})
+		return
+	}
+	if !localUserKnown {
+		c.JSON(http.StatusConflict, gin.H{
+			"error": fmt.Sprintf(
+				"节点 %s 的最新快照中不存在账号 %s。编辑映射只会改数据库，不会把 %s 重命名成 %s；旧映射未修改。请先使用“账号开通”创建 %s。",
+				req.NewNodeID, req.NewLocalUsername, req.OldLocalUsername, req.NewLocalUsername, req.NewLocalUsername,
+			),
+			"reason":             "target_local_user_missing",
+			"old_node_id":        req.OldNodeID,
+			"old_local_username": req.OldLocalUsername,
+			"node_id":            req.NewNodeID,
+			"local_username":     req.NewLocalUsername,
+		})
+		return
+	}
+	platformUID, err := s.ensureBillingPlatformUID(c.Request.Context(), req.NewBillingUsername)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "分配平台 UID 失败: " + err.Error()})
+		return
+	}
+	if owner, err := s.ensureTargetPlatformUIDAvailable(c.Request.Context(), req.NewNodeID, req.NewLocalUsername, platformUID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "校验目标节点 UID 占用失败: " + err.Error()})
+		return
+	} else if owner != "" {
+		c.JSON(http.StatusConflict, gin.H{
+			"error": fmt.Sprintf(
+				"平台 UID %d 在节点 %s 上仍属于账号 %s，不能把 %s 直接改映射为 %s；旧映射未修改。Linux 上同一 UID 不能同时属于两个节点账号，请先处理旧账号。",
+				platformUID, req.NewNodeID, owner, req.OldLocalUsername, req.NewLocalUsername,
+			),
+			"reason":             "target_uid_owned_by_other_local_user",
+			"platform_uid":       platformUID,
+			"uid_owner_username": owner,
+		})
+		return
+	}
+	if err := s.ensureSharedWorkspaceDirsOnController(c.Request.Context(), req.NewNodeID, req.NewBillingUsername, platformUID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "准备共享工作目录失败: " + err.Error()})
+		return
+	}
 	operator := s.currentOperator(c)
-	if err := s.store.UpdateUserNodeAccountWithAudit(
+	if _, err := s.store.UpdateUserNodeAccountAndQueueActionWithAudit(
 		c.Request.Context(),
 		req.OldNodeID, req.OldLocalUsername, req.OldBillingUsername,
 		req.NewNodeID, req.NewLocalUsername, req.NewBillingUsername,
 		operator, "admin", "管理员修改节点账号映射",
+		Action{
+			Type:                    nodeAccountActionType,
+			Username:                req.NewLocalUsername,
+			SharedWorkspaceUsername: req.NewBillingUsername,
+			TargetUID:               platformUID,
+			TargetPrimaryGID:        platformUID,
+			Reason:                  fmt.Sprintf("管理员 %s 修改映射后对齐节点账号 UID/GID", operator),
+		},
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "记录不存在"})
@@ -4772,22 +4967,6 @@ func (s *Server) handleAdminAccountsUpdate(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	platformUID, err := s.ensureBillingPlatformUID(c.Request.Context(), req.NewBillingUsername)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "分配平台 UID 失败: " + err.Error()})
-		return
-	}
-	if err := s.ensureSharedWorkspaceDirsOnController(c.Request.Context(), req.NewNodeID, req.NewBillingUsername, platformUID); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "准备共享工作目录失败: " + err.Error()})
-		return
-	}
-	s.enqueueNodeIdentitySync(
-		req.NewNodeID,
-		req.NewLocalUsername,
-		platformUID,
-		req.NewBillingUsername,
-		fmt.Sprintf("管理员 %s 修改映射后对齐节点账号 UID/GID", operator),
-	)
 	if err := s.enqueueDefaultNodeDiskQuotaForMapping(
 		c.Request.Context(),
 		req.NewNodeID,
@@ -5063,6 +5242,21 @@ func (s *Server) handleAdminAccountProvision(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "分配平台 UID 失败: " + err.Error()})
 		return
 	}
+	if owner, err := s.ensureTargetPlatformUIDAvailable(c.Request.Context(), req.NodeID, req.LocalUsername, platformUID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "校验节点 UID 占用失败: " + err.Error()})
+		return
+	} else if owner != "" {
+		c.JSON(http.StatusConflict, gin.H{
+			"error": fmt.Sprintf(
+				"平台 UID %d 在节点 %s 上仍属于账号 %s，无法创建或对齐 %s。若这是账号改名（例如 alice → alice2），请先在节点上安全迁移/删除旧账号，再重新开通。",
+				platformUID, req.NodeID, owner, req.LocalUsername,
+			),
+			"reason":             "target_uid_owned_by_other_local_user",
+			"platform_uid":       platformUID,
+			"uid_owner_username": owner,
+		})
+		return
+	}
 	if err := s.ensureSharedWorkspaceDirsOnController(c.Request.Context(), req.NodeID, req.BillingUsername, platformUID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "准备共享工作目录失败: " + err.Error()})
 		return
@@ -5221,20 +5415,8 @@ func (s *Server) handleAdminAccountProvision(c *gin.Context) {
 	if wasReissued {
 		upsertReason = "管理员重新生成密钥并刷新节点账号映射"
 	}
-	if err := s.store.UpsertUserNodeAccountWithAudit(
-		c.Request.Context(),
-		req.NodeID,
-		req.LocalUsername,
-		req.BillingUsername,
-		operator,
-		"admin",
-		upsertReason,
-	); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	s.enqueueNodeAction(req.NodeID, Action{
-		Type:                    "create_local_account",
+	provisionAction := Action{
+		Type:                    nodeAccountActionType,
 		Username:                req.LocalUsername,
 		PublicKey:               publicKey,
 		SharedWorkspaceUsername: req.BillingUsername,
@@ -5246,7 +5428,21 @@ func (s *Server) handleAdminAccountProvision(c *gin.Context) {
 			}
 			return fmt.Sprintf("管理员 %s 开通节点账号，并分配给平台账号 %s", operator, req.BillingUsername)
 		}(),
-	})
+	}
+	var provisionJobID int64
+	if provisionJobID, err = s.store.UpsertUserNodeAccountAndQueueActionWithAudit(
+		c.Request.Context(),
+		req.NodeID,
+		req.LocalUsername,
+		req.BillingUsername,
+		operator,
+		"admin",
+		upsertReason,
+		provisionAction,
+	); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	if err := s.enqueueDefaultNodeDiskQuotaForMapping(
 		c.Request.Context(),
 		req.NodeID,
@@ -5344,6 +5540,7 @@ func (s *Server) handleAdminAccountProvision(c *gin.Context) {
 		"local_username":     req.LocalUsername,
 		"billing_username":   req.BillingUsername,
 		"platform_uid":       platformUID,
+		"provision_job_id":   provisionJobID,
 		"reissued_key":       wasReissued,
 		"local_user_existed": localUserKnown,
 		"email":              userEmail,
@@ -9803,6 +10000,17 @@ func (s *Server) handleMetrics(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	if reconciled, reconcileErr := s.store.ReconcileNodeAccountActionsFromSnapshot(ctx, data.NodeID, data.LocalUsers); reconcileErr != nil {
+		log.Printf("[warn] 使用节点快照确认账号动作失败：node=%s err=%v", data.NodeID, reconcileErr)
+	} else if reconciled > 0 {
+		log.Printf("节点账号动作由最新快照确认完成：node=%s jobs=%d", data.NodeID, reconciled)
+	}
+	durableActions, leaseErr := s.store.LeaseNodeAccountActions(ctx, data.NodeID, nodeActionDispatchBatch)
+	if leaseErr != nil {
+		log.Printf("[warn] 节点账号持久化动作租约失败：node=%s err=%v", data.NodeID, leaseErr)
+	} else {
+		actions = append(actions, durableActions...)
+	}
 	c.JSON(http.StatusOK, ControllerResponse{Actions: actions})
 }
 
@@ -9817,7 +10025,62 @@ func (s *Server) handleNodeActions(c *gin.Context) {
 	}
 	s.sweepNodeBindFailures(c.Request.Context(), nodeID)
 	actions := s.popNodeActions(nodeID)
+	durableActions, err := s.store.LeaseNodeAccountActions(c.Request.Context(), nodeID, nodeActionDispatchBatch)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取持久化节点动作失败: " + err.Error()})
+		return
+	}
+	actions = append(actions, durableActions...)
 	c.JSON(http.StatusOK, ControllerResponse{Actions: actions})
+}
+
+type nodeActionResultReq struct {
+	NodeID      string `json:"node_id"`
+	ActionToken string `json:"action_token"`
+	Success     bool   `json:"success"`
+	Error       string `json:"error"`
+}
+
+func (s *Server) handleNodeActionResult(c *gin.Context) {
+	jobID, err := strconv.ParseInt(strings.TrimSpace(c.Param("id")), 10, 64)
+	if err != nil || jobID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "action id 不合法"})
+		return
+	}
+	var req nodeActionResultReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	req.NodeID = strings.TrimSpace(req.NodeID)
+	req.ActionToken = strings.TrimSpace(req.ActionToken)
+	if req.NodeID == "" || req.ActionToken == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id/action_token 不能为空"})
+		return
+	}
+	if !s.authorizeAgentNode(c, req.NodeID) {
+		return
+	}
+	result, err := s.store.CompleteNodeAccountAction(
+		c.Request.Context(), jobID, req.NodeID, req.ActionToken, req.Success, req.Error,
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !result.Accepted {
+		// 回执可能因网络延迟晚于租约或密钥重发；返回 200 让 agent
+		// 停止重发，但绝不让过期 token 改变当前任务状态。
+		c.JSON(http.StatusOK, gin.H{"ok": true, "accepted": false, "status": result.Status})
+		return
+	}
+	if req.Success {
+		s.enqueueNodeAction(req.NodeID, Action{
+			Type:   "force_sync",
+			Reason: fmt.Sprintf("持久化节点账号动作 %d 执行成功，刷新本地用户快照", jobID),
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "accepted": true, "status": result.Status})
 }
 
 type haSummary struct {

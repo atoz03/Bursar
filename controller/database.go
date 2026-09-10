@@ -1889,12 +1889,31 @@ SELECT una.node_id,
        una.billing_username,
        nlu.last_login_at,
        nlu.updated_at,
+       n.updated_at,
+       naj.status,
+       naj.attempt_count,
+       naj.last_error,
+       naj.created_at,
+       naj.updated_at,
+       naj.lease_until,
+       naj.completed_at,
        una.created_at,
        una.updated_at
 FROM user_node_accounts una
 LEFT JOIN node_local_users nlu
   ON nlu.node_id=una.node_id
  AND nlu.local_username=una.local_username
+LEFT JOIN nodes n ON n.node_id=una.node_id
+LEFT JOIN LATERAL (
+  SELECT status, attempt_count, last_error, created_at, updated_at, lease_until, completed_at
+  FROM node_action_jobs
+  WHERE node_id=una.node_id
+    AND local_username=una.local_username
+    AND billing_username=una.billing_username
+    AND action_type='create_local_account'
+  ORDER BY job_id DESC
+  LIMIT 1
+) naj ON TRUE
 WHERE una.billing_username=$1
 ORDER BY una.node_id, una.local_username
 LIMIT $2`, billingUsername, limit)
@@ -1907,7 +1926,21 @@ LIMIT $2`, billingUsername, limit)
 		var v UserNodeAccount
 		var lastLoginAt sql.NullTime
 		var nodeLocalUpdatedAt sql.NullTime
-		if err := rows.Scan(&v.NodeID, &v.LocalUsername, &v.BillingUsername, &lastLoginAt, &nodeLocalUpdatedAt, &v.CreatedAt, &v.UpdatedAt); err != nil {
+		var nodeSnapshotUpdatedAt sql.NullTime
+		var provisionStatus sql.NullString
+		var provisionAttempts sql.NullInt64
+		var provisionLastError sql.NullString
+		var provisionCreatedAt sql.NullTime
+		var provisionUpdatedAt sql.NullTime
+		var provisionLeaseUntil sql.NullTime
+		var provisionCompletedAt sql.NullTime
+		if err := rows.Scan(
+			&v.NodeID, &v.LocalUsername, &v.BillingUsername,
+			&lastLoginAt, &nodeLocalUpdatedAt, &nodeSnapshotUpdatedAt,
+			&provisionStatus, &provisionAttempts, &provisionLastError,
+			&provisionCreatedAt, &provisionUpdatedAt, &provisionLeaseUntil, &provisionCompletedAt,
+			&v.CreatedAt, &v.UpdatedAt,
+		); err != nil {
 			return nil, err
 		}
 		if lastLoginAt.Valid {
@@ -1918,6 +1951,10 @@ LIMIT $2`, billingUsername, limit)
 			t := asBeijingWallTime(nodeLocalUpdatedAt.Time)
 			v.NodeLocalUpdatedAt = &t
 		}
+		applyUserNodeAccountJobMetadata(
+			&v, nodeSnapshotUpdatedAt, provisionStatus, provisionAttempts, provisionLastError,
+			provisionCreatedAt, provisionUpdatedAt, provisionLeaseUntil, provisionCompletedAt,
+		)
 		out = append(out, v)
 	}
 	return out, rows.Err()
@@ -1961,12 +1998,31 @@ SELECT una.node_id,
        una.billing_username,
        nlu.last_login_at,
        nlu.updated_at,
+       n.updated_at,
+       naj.status,
+       naj.attempt_count,
+       naj.last_error,
+       naj.created_at,
+       naj.updated_at,
+       naj.lease_until,
+       naj.completed_at,
        una.created_at,
        una.updated_at
 FROM user_node_accounts una
 LEFT JOIN node_local_users nlu
   ON nlu.node_id=una.node_id
  AND nlu.local_username=una.local_username
+LEFT JOIN nodes n ON n.node_id=una.node_id
+LEFT JOIN LATERAL (
+  SELECT status, attempt_count, last_error, created_at, updated_at, lease_until, completed_at
+  FROM node_action_jobs
+  WHERE node_id=una.node_id
+    AND local_username=una.local_username
+    AND billing_username=una.billing_username
+    AND action_type='create_local_account'
+  ORDER BY job_id DESC
+  LIMIT 1
+) naj ON TRUE
 ` + where + `
 ORDER BY una.billing_username, una.node_id, una.local_username
 LIMIT ` + addArg(limit)
@@ -1980,7 +2036,21 @@ LIMIT ` + addArg(limit)
 		var v UserNodeAccount
 		var lastLoginAt sql.NullTime
 		var nodeLocalUpdatedAt sql.NullTime
-		if err := rows.Scan(&v.NodeID, &v.LocalUsername, &v.BillingUsername, &lastLoginAt, &nodeLocalUpdatedAt, &v.CreatedAt, &v.UpdatedAt); err != nil {
+		var nodeSnapshotUpdatedAt sql.NullTime
+		var provisionStatus sql.NullString
+		var provisionAttempts sql.NullInt64
+		var provisionLastError sql.NullString
+		var provisionCreatedAt sql.NullTime
+		var provisionUpdatedAt sql.NullTime
+		var provisionLeaseUntil sql.NullTime
+		var provisionCompletedAt sql.NullTime
+		if err := rows.Scan(
+			&v.NodeID, &v.LocalUsername, &v.BillingUsername,
+			&lastLoginAt, &nodeLocalUpdatedAt, &nodeSnapshotUpdatedAt,
+			&provisionStatus, &provisionAttempts, &provisionLastError,
+			&provisionCreatedAt, &provisionUpdatedAt, &provisionLeaseUntil, &provisionCompletedAt,
+			&v.CreatedAt, &v.UpdatedAt,
+		); err != nil {
 			return nil, err
 		}
 		if lastLoginAt.Valid {
@@ -1991,6 +2061,10 @@ LIMIT ` + addArg(limit)
 			t := asBeijingWallTime(nodeLocalUpdatedAt.Time)
 			v.NodeLocalUpdatedAt = &t
 		}
+		applyUserNodeAccountJobMetadata(
+			&v, nodeSnapshotUpdatedAt, provisionStatus, provisionAttempts, provisionLastError,
+			provisionCreatedAt, provisionUpdatedAt, provisionLeaseUntil, provisionCompletedAt,
+		)
 		out = append(out, v)
 	}
 	return out, rows.Err()
@@ -1998,6 +2072,51 @@ LIMIT ` + addArg(limit)
 
 func (s *Store) ListUserNodeAccounts(ctx context.Context, billingUsername string, limit int) ([]UserNodeAccount, error) {
 	return s.ListUserNodeAccountsWithFilter(ctx, billingUsername, "", "", limit)
+}
+
+func applyUserNodeAccountJobMetadata(
+	v *UserNodeAccount,
+	nodeSnapshotUpdatedAt sql.NullTime,
+	provisionStatus sql.NullString,
+	provisionAttempts sql.NullInt64,
+	provisionLastError sql.NullString,
+	provisionCreatedAt sql.NullTime,
+	provisionUpdatedAt sql.NullTime,
+	provisionLeaseUntil sql.NullTime,
+	provisionCompletedAt sql.NullTime,
+) {
+	if v == nil {
+		return
+	}
+	if nodeSnapshotUpdatedAt.Valid {
+		t := asBeijingWallTime(nodeSnapshotUpdatedAt.Time)
+		v.NodeSnapshotUpdatedAt = &t
+	}
+	if provisionStatus.Valid {
+		v.ProvisionJobStatus = strings.TrimSpace(provisionStatus.String)
+	}
+	if provisionAttempts.Valid {
+		v.ProvisionAttempts = int(provisionAttempts.Int64)
+	}
+	if provisionLastError.Valid {
+		v.ProvisionLastError = strings.TrimSpace(provisionLastError.String)
+	}
+	if provisionCreatedAt.Valid {
+		t := asBeijingWallTime(provisionCreatedAt.Time)
+		v.ProvisionJobCreatedAt = &t
+	}
+	if provisionUpdatedAt.Valid {
+		t := asBeijingWallTime(provisionUpdatedAt.Time)
+		v.ProvisionJobUpdatedAt = &t
+	}
+	if provisionLeaseUntil.Valid {
+		t := asBeijingWallTime(provisionLeaseUntil.Time)
+		v.ProvisionLeaseUntil = &t
+	}
+	if provisionCompletedAt.Valid {
+		t := asBeijingWallTime(provisionCompletedAt.Time)
+		v.ProvisionCompletedAt = &t
+	}
 }
 
 func (s *Store) ListUserNodeAccountMappingRisks(ctx context.Context, days int, minSwitches int, limit int) ([]UserNodeAccountMappingRisk, error) {
@@ -2704,6 +2823,13 @@ WHERE node_id=$1 AND local_username=$2 AND billing_username=$3`, nodeID, localUs
 		if affected == 0 {
 			return sql.ErrNoRows
 		}
+		if _, err := tx.ExecContext(ctx, `
+UPDATE node_action_jobs
+SET status='cancelled', lease_until=NULL, delivery_token='', last_error='账号映射已删除', updated_at=NOW(), completed_at=NOW()
+WHERE node_id=$1 AND local_username=$2 AND billing_username=$3
+  AND status IN ('pending','leased')`, nodeID, localUsername, oldBilling); err != nil {
+			return err
+		}
 		return s.insertUserNodeAccountAuditTx(ctx, tx, nodeID, localUsername, oldBilling, "", "mapping_delete", operator, source, reason)
 	})
 }
@@ -2755,6 +2881,13 @@ WHERE node_id=$1 AND local_username=$2 AND billing_username=$3`, nodeID, localUs
 		}
 		if affected == 0 {
 			return sql.ErrNoRows
+		}
+		if _, err := tx.ExecContext(ctx, `
+UPDATE node_action_jobs
+SET status='cancelled', lease_until=NULL, delivery_token='', last_error='账号映射已强制解绑', updated_at=NOW(), completed_at=NOW()
+WHERE node_id=$1 AND local_username=$2 AND billing_username=$3
+  AND status IN ('pending','leased')`, nodeID, localUsername, oldBilling); err != nil {
+			return err
 		}
 		if err := s.insertUserNodeAccountAuditTx(
 			ctx, tx,
@@ -2921,6 +3054,29 @@ func (s *Store) UpdateUserNodeAccountWithAudit(
 	source string,
 	reason string,
 ) error {
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		return s.updateUserNodeAccountWithAuditTx(
+			ctx, tx,
+			oldNodeID, oldLocalUsername, oldBillingUsername,
+			newNodeID, newLocalUsername, newBillingUsername,
+			operator, source, reason,
+		)
+	})
+}
+
+func (s *Store) updateUserNodeAccountWithAuditTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	oldNodeID string,
+	oldLocalUsername string,
+	oldBillingUsername string,
+	newNodeID string,
+	newLocalUsername string,
+	newBillingUsername string,
+	operator string,
+	source string,
+	reason string,
+) error {
 	oldNodeID = strings.TrimSpace(oldNodeID)
 	oldLocalUsername = strings.TrimSpace(oldLocalUsername)
 	oldBillingUsername = strings.TrimSpace(oldBillingUsername)
@@ -2931,82 +3087,80 @@ func (s *Store) UpdateUserNodeAccountWithAudit(
 		newNodeID == "" || newLocalUsername == "" || newBillingUsername == "" {
 		return errors.New("参数不能为空")
 	}
-	return s.WithTx(ctx, func(tx *sql.Tx) error {
-		oldBilling, existed, err := s.getUserNodeAccountBillingTx(ctx, tx, oldNodeID, oldLocalUsername)
-		if err != nil {
-			return err
-		}
-		if !existed || oldBilling != oldBillingUsername {
-			return sql.ErrNoRows
-		}
+	oldBilling, existed, err := s.getUserNodeAccountBillingTx(ctx, tx, oldNodeID, oldLocalUsername)
+	if err != nil {
+		return err
+	}
+	if !existed || oldBilling != oldBillingUsername {
+		return sql.ErrNoRows
+	}
 
-		newOldBilling, newExisted, err := s.getUserNodeAccountBillingTx(ctx, tx, newNodeID, newLocalUsername)
-		if err != nil {
-			return err
+	newOldBilling, newExisted, err := s.getUserNodeAccountBillingTx(ctx, tx, newNodeID, newLocalUsername)
+	if err != nil {
+		return err
+	}
+	if newExisted && newOldBilling != newBillingUsername {
+		return &NodeAccountOwnershipConflictError{
+			NodeID:          newNodeID,
+			LocalUsername:   newLocalUsername,
+			ExistingBilling: newOldBilling,
+			RequestedBy:     newBillingUsername,
 		}
-		if newExisted && newOldBilling != newBillingUsername {
-			return &NodeAccountOwnershipConflictError{
-				NodeID:          newNodeID,
-				LocalUsername:   newLocalUsername,
-				ExistingBilling: newOldBilling,
-				RequestedBy:     newBillingUsername,
-			}
-		}
+	}
 
-		res, err := tx.ExecContext(ctx, `
+	res, err := tx.ExecContext(ctx, `
 DELETE FROM user_node_accounts
 WHERE node_id=$1 AND local_username=$2 AND billing_username=$3`, oldNodeID, oldLocalUsername, oldBillingUsername)
-		if err != nil {
-			return err
-		}
-		affected, err := res.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if affected == 0 {
-			return sql.ErrNoRows
-		}
-		if err := s.UpsertUserNodeAccountTx(ctx, tx, newNodeID, newLocalUsername, newBillingUsername); err != nil {
-			return err
-		}
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	if err := s.UpsertUserNodeAccountTx(ctx, tx, newNodeID, newLocalUsername, newBillingUsername); err != nil {
+		return err
+	}
 
-		if oldNodeID == newNodeID && oldLocalUsername == newLocalUsername {
-			if oldBillingUsername != newBillingUsername {
-				return s.insertUserNodeAccountAuditTx(
-					ctx, tx,
-					newNodeID, newLocalUsername,
-					oldBillingUsername, newBillingUsername,
-					"mapping_rebind",
-					operator, source, reason,
-				)
-			}
-			return nil
+	if oldNodeID == newNodeID && oldLocalUsername == newLocalUsername {
+		if oldBillingUsername != newBillingUsername {
+			return s.insertUserNodeAccountAuditTx(
+				ctx, tx,
+				newNodeID, newLocalUsername,
+				oldBillingUsername, newBillingUsername,
+				"mapping_rebind",
+				operator, source, reason,
+			)
 		}
+		return nil
+	}
 
-		if err := s.insertUserNodeAccountAuditTx(
-			ctx, tx,
-			oldNodeID, oldLocalUsername,
-			oldBillingUsername, "",
-			"mapping_delete",
-			operator, source, reason,
-		); err != nil {
-			return err
-		}
-		if newExisted && newOldBilling == newBillingUsername {
-			return nil
-		}
-		action := "mapping_create"
-		if newExisted {
-			action = "mapping_rebind"
-		}
-		return s.insertUserNodeAccountAuditTx(
-			ctx, tx,
-			newNodeID, newLocalUsername,
-			newOldBilling, newBillingUsername,
-			action,
-			operator, source, reason,
-		)
-	})
+	if err := s.insertUserNodeAccountAuditTx(
+		ctx, tx,
+		oldNodeID, oldLocalUsername,
+		oldBillingUsername, "",
+		"mapping_delete",
+		operator, source, reason,
+	); err != nil {
+		return err
+	}
+	if newExisted && newOldBilling == newBillingUsername {
+		return nil
+	}
+	action := "mapping_create"
+	if newExisted {
+		action = "mapping_rebind"
+	}
+	return s.insertUserNodeAccountAuditTx(
+		ctx, tx,
+		newNodeID, newLocalUsername,
+		newOldBilling, newBillingUsername,
+		action,
+		operator, source, reason,
+	)
 }
 
 func (s *Store) ResolveBillingUsernameTx(ctx context.Context, tx *sql.Tx, nodeID string, localUsername string) (string, bool, error) {
@@ -3175,6 +3329,27 @@ WHERE node_id=$1 AND local_username=$2`, nodeID, localUsername).Scan(&uid, &gid)
 		return 0, 0, false, err
 	}
 	return int(uid.Int64), int(gid.Int64), true, nil
+}
+
+func (s *Store) GetNodeLocalUsernameByUID(ctx context.Context, nodeID string, uid int) (string, bool, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" || uid <= 0 {
+		return "", false, errors.New("node_id/uid 不能为空")
+	}
+	var localUsername string
+	err := s.db.QueryRowContext(ctx, `
+SELECT local_username
+FROM node_local_users
+WHERE node_id=$1 AND uid=$2
+ORDER BY local_username
+LIMIT 1`, nodeID, uid).Scan(&localUsername)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return strings.TrimSpace(localUsername), true, nil
 }
 
 func (s *Store) IsNodeLocalMappedToAdmin(ctx context.Context, nodeID string, localUsername string) (bool, string, error) {
@@ -4805,6 +4980,13 @@ WHERE node_id=$1 AND local_username=$2 AND billing_username=$3`, r.NodeID, r.Loc
 		}
 		if affected == 0 {
 			return UserRequest{}, sql.ErrNoRows
+		}
+		if _, err := tx.ExecContext(ctx, `
+UPDATE node_action_jobs
+SET status='cancelled', lease_until=NULL, delivery_token='', last_error='账号映射解绑申请已通过', updated_at=NOW(), completed_at=NOW()
+WHERE node_id=$1 AND local_username=$2 AND billing_username=$3
+  AND status IN ('pending','leased')`, r.NodeID, r.LocalUsername, r.BillingUsername); err != nil {
+			return UserRequest{}, err
 		}
 		if err := s.insertUserNodeAccountAuditTx(
 			ctx, tx,
@@ -7367,6 +7549,13 @@ WHERE node_id=$1 AND local_username=$2 AND billing_username=$3`, nodeID, local, 
 				return 0, 0, 0, 0, err
 			}
 			if affected > 0 {
+				if _, err := tx.ExecContext(ctx, `
+UPDATE node_action_jobs
+SET status='cancelled', lease_until=NULL, delivery_token='', last_error='节点快照确认本地账号已不存在', updated_at=NOW(), completed_at=NOW()
+WHERE node_id=$1 AND local_username=$2 AND billing_username=$3
+  AND status IN ('pending','leased')`, nodeID, local, oldBilling); err != nil {
+					return 0, 0, 0, 0, err
+				}
 				if err := s.insertUserNodeAccountAuditTx(
 					ctx,
 					tx,
@@ -11894,6 +12083,12 @@ RETURNING deleted_id, username, email, student_id, real_name, advisor, expected_
 		return DeletedUserAccount{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM recharge_records WHERE username=$1`, username); err != nil {
+		return DeletedUserAccount{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE node_action_jobs
+SET status='cancelled', lease_until=NULL, delivery_token='', last_error='平台账号已删除', updated_at=NOW(), completed_at=NOW()
+WHERE billing_username=$1 AND status IN ('pending','leased')`, username); err != nil {
 		return DeletedUserAccount{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM user_node_accounts WHERE billing_username=$1`, username); err != nil {

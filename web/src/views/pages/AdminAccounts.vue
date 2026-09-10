@@ -731,6 +731,11 @@
             <span v-else>-</span>
           </template>
         </el-table-column>
+        <el-table-column label="说明" min-width="300">
+          <template #default="{ row }">
+            <span>{{ row.identity_error || row.provision_last_error || (row.identity_initializing ? "等待节点执行并回传最新用户快照" : "-") }}</span>
+          </template>
+        </el-table-column>
         <el-table-column label="更新时间" min-width="170">
           <template #default="{ row }">{{ fmtTime(row.updated_at) }}</template>
         </el-table-column>
@@ -746,6 +751,14 @@
       width="620px"
       destroy-on-close
     >
+      <el-alert
+        v-if="editMode === 'edit'"
+        title="编辑映射不是 Linux 账号改名。目标节点账号必须已经存在；若要把 alice 改为一个尚不存在的 alice2，请关闭本窗口并使用“账号开通”。"
+        type="warning"
+        :closable="false"
+        show-icon
+        class="mb"
+      />
       <el-form label-width="100px">
         <el-form-item label="平台账号">
           <el-autocomplete
@@ -866,7 +879,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref } from "vue";
+import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
   type AdminUserNodeBindCooldownRow,
@@ -1326,9 +1339,7 @@ async function reload() {
       rows.value = r.accounts ?? [];
       refreshLocalOptions(rows.value);
       mergeBillingOptions(rows.value, platformUsers.value);
-      if (!accountReadinessLoaded.value && !accountReadinessLoading.value) {
-        void reloadAccountReadiness();
-      }
+      if (!accountReadinessLoading.value) await reloadAccountReadiness();
     } else if (activeSection.value === "security") {
       await Promise.all([reloadBindPolicy(), reloadBindCooldowns(), reloadMappingRisks(), reloadBlockedIdentities()]);
     } else if (activeSection.value === "restricted") {
@@ -1373,7 +1384,7 @@ async function reloadAccountReadiness() {
 function openAccountReadinessDialog(status: "all" | "initializing" | "failed") {
   accountReadinessDialogStatus.value = status;
   accountReadinessVisible.value = true;
-  if (!accountReadinessLoading.value && !accountReadinessLoaded.value) {
+  if (!accountReadinessLoading.value) {
     void reloadAccountReadiness();
   }
 }
@@ -2109,6 +2120,21 @@ async function save() {
   }
   saving.value = true;
   try {
+    if (
+      editMode.value === "edit" &&
+      old.value &&
+      (old.value.node !== node || old.value.local !== local)
+    ) {
+      await ElMessageBox.confirm(
+        `这是重新指向节点身份 ${node}/${local}，不会把 ${old.value.node}/${old.value.local} 在 Linux 上改名。目标账号必须已存在，是否继续？`,
+        "确认重新映射",
+        {
+          type: "warning",
+          confirmButtonText: "目标已存在，继续",
+          cancelButtonText: "取消",
+        },
+      );
+    }
     const client = new ApiClient(settingsState.baseUrl, { csrfToken: authState.csrfToken });
     if (editMode.value === "edit" && old.value) {
       await client.adminUpdateAccount({
@@ -2132,6 +2158,7 @@ async function save() {
     clearEditForm();
     await reload();
   } catch (e: any) {
+    if (e === "cancel" || e === "close") return;
     error.value = e?.message ?? String(e);
   } finally {
     saving.value = false;
@@ -2254,6 +2281,22 @@ async function init() {
   }
   await reload();
 }
+
+let accountReadinessPollTimer: number | undefined;
+onMounted(() => {
+  accountReadinessPollTimer = window.setInterval(() => {
+    if (
+      activeSection.value === "mapping" &&
+      accountReadinessInitializingCount.value > 0 &&
+      !accountReadinessLoading.value
+    ) {
+      void reloadAccountReadiness();
+    }
+  }, 5000);
+});
+onUnmounted(() => {
+  if (accountReadinessPollTimer !== undefined) window.clearInterval(accountReadinessPollTimer);
+});
 
 init();
 </script>

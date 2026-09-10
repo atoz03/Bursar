@@ -111,7 +111,9 @@ type GPUExclusiveAssignment struct {
 
 // Action 为控制器下发到节点的动作。
 type Action struct {
-	Type                    string                   `json:"type"` // notify, block_user, unblock_user, kill_process, kick_ssh_all, kick_ssh_user, kill_all_processes, force_sync, create_local_account, set_cpu_quota, set_memory_limit, set_disk_quota, set_gpu_exclusive, set_gpu_visibility
+	ActionID                int64                    `json:"action_id,omitempty"`    // 持久化动作 ID；节点执行后必须回执
+	ActionToken             string                   `json:"action_token,omitempty"` // 单次投递令牌；防止过期回执误完成新任务
+	Type                    string                   `json:"type"`                   // notify, block_user, unblock_user, kill_process, kick_ssh_all, kick_ssh_user, kill_all_processes, force_sync, create_local_account, set_cpu_quota, set_memory_limit, set_disk_quota, set_gpu_exclusive, set_gpu_visibility
 	Username                string                   `json:"username"`
 	PIDs                    []int32                  `json:"pids,omitempty"`
 	Reason                  string                   `json:"reason,omitempty"`
@@ -370,18 +372,28 @@ type NodeMonthlyUserCost struct {
 // UserNodeAccount 表示“节点本地账号”到“计费账号”的映射。
 // 约定：node_id 为机器编号（可用端口号，例如 60000）；local_username 为该节点上的 Linux 用户名。
 type UserNodeAccount struct {
-	NodeID               string     `json:"node_id"`
-	LocalUsername        string     `json:"local_username"`
-	BillingUsername      string     `json:"billing_username"`
-	PlatformUID          *int       `json:"platform_uid,omitempty"`
-	NodeUID              *int       `json:"node_uid,omitempty"`
-	NodePrimaryGID       *int       `json:"node_primary_gid,omitempty"`
-	NodeLastLoginAt      *time.Time `json:"node_last_login_at,omitempty"`
-	NodeLocalUpdatedAt   *time.Time `json:"node_local_updated_at,omitempty"`
-	IdentityAligned      bool       `json:"identity_aligned"`
-	IdentityInitializing bool       `json:"identity_initializing"`
-	CreatedAt            time.Time  `json:"created_at"`
-	UpdatedAt            time.Time  `json:"updated_at"`
+	NodeID                string     `json:"node_id"`
+	LocalUsername         string     `json:"local_username"`
+	BillingUsername       string     `json:"billing_username"`
+	PlatformUID           *int       `json:"platform_uid,omitempty"`
+	NodeUID               *int       `json:"node_uid,omitempty"`
+	NodePrimaryGID        *int       `json:"node_primary_gid,omitempty"`
+	NodeLastLoginAt       *time.Time `json:"node_last_login_at,omitempty"`
+	NodeLocalUpdatedAt    *time.Time `json:"node_local_updated_at,omitempty"`
+	NodeSnapshotUpdatedAt *time.Time `json:"node_snapshot_updated_at,omitempty"`
+	IdentityAligned       bool       `json:"identity_aligned"`
+	IdentityInitializing  bool       `json:"identity_initializing"`
+	IdentityState         string     `json:"identity_state,omitempty"`
+	IdentityError         string     `json:"identity_error,omitempty"`
+	ProvisionJobStatus    string     `json:"provision_job_status,omitempty"`
+	ProvisionAttempts     int        `json:"provision_attempts,omitempty"`
+	ProvisionLastError    string     `json:"provision_last_error,omitempty"`
+	ProvisionJobCreatedAt *time.Time `json:"provision_job_created_at,omitempty"`
+	ProvisionJobUpdatedAt *time.Time `json:"provision_job_updated_at,omitempty"`
+	ProvisionLeaseUntil   *time.Time `json:"provision_lease_until,omitempty"`
+	ProvisionCompletedAt  *time.Time `json:"provision_completed_at,omitempty"`
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
 }
 
 type UserMappedNodeInfo struct {

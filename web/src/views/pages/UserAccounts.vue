@@ -162,7 +162,7 @@
                     <el-tag v-else-if="row.identity_initializing" type="warning" effect="light">初始化中</el-tag>
                     <el-tag v-else type="info" effect="light">待同步</el-tag>
                     <div v-if="row.identity_initializing" class="mini mapping-state-tip">正在同步 UID/GID，完成前无法 SSH 登录</div>
-                    <div v-else-if="!row.identity_aligned" class="mini mapping-state-tip">节点尚未回传最新 UID/GID 快照，请稍后自动刷新</div>
+                    <div v-else-if="!row.identity_aligned" class="mini mapping-state-tip">{{ row.identity_error || row.provision_last_error || "节点账号初始化失败，请联系管理员" }}</div>
                   </div>
                 </template>
               </el-table-column>

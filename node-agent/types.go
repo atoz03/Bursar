@@ -1,4 +1,5 @@
 package main
+
 // 注意：这些结构体与 controller/models.go 的 JSON 字段保持一致，便于直接通信。
 
 type MetricsData struct {
@@ -107,6 +108,8 @@ type GPUExclusiveAssignment struct {
 }
 
 type Action struct {
+	ActionID                int64                    `json:"action_id,omitempty"`
+	ActionToken             string                   `json:"action_token,omitempty"`
 	Type                    string                   `json:"type"`
 	Username                string                   `json:"username"`
 	PIDs                    []int32                  `json:"pids,omitempty"`

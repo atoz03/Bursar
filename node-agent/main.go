@@ -279,10 +279,18 @@ func (a *NodeAgent) actionTick(ctx context.Context) error {
 func (a *NodeAgent) executeActions(ctx context.Context, actions []Action) {
 	for _, act := range actions {
 		actCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		if err := a.ExecuteAction(actCtx, act); err != nil {
-			a.logger.Printf("执行 action 失败：type=%s user=%s err=%v", act.Type, act.Username, err)
+		actionErr := a.ExecuteAction(actCtx, act)
+		if actionErr != nil {
+			a.logger.Printf("执行 action 失败：id=%d type=%s user=%s err=%v", act.ActionID, act.Type, act.Username, actionErr)
 		}
 		cancel()
+		if act.ActionID > 0 {
+			ackCtx, ackCancel := context.WithTimeout(ctx, 5*time.Second)
+			if err := a.ReportActionResult(ackCtx, act, actionErr); err != nil {
+				a.logger.Printf("上报 action 回执失败（控制器将在租约到期后重试）：id=%d type=%s user=%s err=%v", act.ActionID, act.Type, act.Username, err)
+			}
+			ackCancel()
+		}
 	}
 }
 

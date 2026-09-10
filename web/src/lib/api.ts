@@ -631,8 +631,18 @@ export type UserNodeAccount = {
   platform_uid?: number;
   node_uid?: number;
   node_primary_gid?: number;
+  node_snapshot_updated_at?: string;
   identity_aligned?: boolean;
   identity_initializing?: boolean;
+  identity_state?: "ready" | "initializing" | "failed" | string;
+  identity_error?: string;
+  provision_job_status?: string;
+  provision_attempts?: number;
+  provision_last_error?: string;
+  provision_job_created_at?: string;
+  provision_job_updated_at?: string;
+  provision_lease_until?: string;
+  provision_completed_at?: string;
   created_at: string;
   updated_at: string;
 };
@@ -743,6 +753,8 @@ export type AdminAccountProvisionResp = {
   node_id: string;
   local_username: string;
   billing_username: string;
+  platform_uid?: number;
+  provision_job_id?: number;
   reissued_key?: boolean;
   local_user_existed?: boolean;
   email: string;

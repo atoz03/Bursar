@@ -91,6 +91,50 @@ func (a *NodeAgent) FetchActions(ctx context.Context) (*ControllerResponse, erro
 	return &cr, nil
 }
 
+func (a *NodeAgent) ReportActionResult(ctx context.Context, action Action, actionErr error) error {
+	if action.ActionID <= 0 {
+		return nil
+	}
+	payload := struct {
+		NodeID      string `json:"node_id"`
+		ActionToken string `json:"action_token"`
+		Success     bool   `json:"success"`
+		Error       string `json:"error,omitempty"`
+	}{
+		NodeID:      a.nodeID,
+		ActionToken: strings.TrimSpace(action.ActionToken),
+		Success:     actionErr == nil,
+	}
+	if actionErr != nil {
+		payload.Error = actionErr.Error()
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	u := fmt.Sprintf(
+		"%s/api/node/actions/%d/result",
+		strings.TrimRight(a.controllerURL, "/"),
+		action.ActionID,
+	)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Agent-Token", a.agentToken)
+	res, err := a.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(res.Body, 16*1024))
+		return fmt.Errorf("动作回执返回非 2xx：code=%d body=%s", res.StatusCode, strings.TrimSpace(string(b)))
+	}
+	return nil
+}
+
 func (a *NodeAgent) appendPending(metrics *MetricsData) error {
 	if err := os.MkdirAll(a.stateDir, 0755); err != nil {
 		return err

@@ -96,6 +96,52 @@ func TestFlushPendingRetainsOnlyLatestFailures(t *testing.T) {
 	}
 }
 
+func TestReportActionResult(t *testing.T) {
+	t.Parallel()
+
+	var gotMethod string
+	var gotPath string
+	var gotToken string
+	var got struct {
+		NodeID      string `json:"node_id"`
+		ActionToken string `json:"action_token"`
+		Success     bool   `json:"success"`
+		Error       string `json:"error"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotToken = r.Header.Get("X-Agent-Token")
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode result: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	agent := newReportTestAgent(t, server.URL, server.Client())
+	agent.nodeID = "60010"
+	err := agent.ReportActionResult(context.Background(), Action{
+		ActionID:    81,
+		ActionToken: "delivery-token",
+		Type:        "create_local_account",
+		Username:    "alice2",
+	}, io.EOF)
+	if err != nil {
+		t.Fatalf("ReportActionResult() error = %v", err)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/api/node/actions/81/result" {
+		t.Fatalf("unexpected request: %s %s", gotMethod, gotPath)
+	}
+	if gotToken != "test-token" {
+		t.Fatalf("unexpected agent token: %q", gotToken)
+	}
+	if got.NodeID != "60010" || got.ActionToken != "delivery-token" || got.Success || got.Error != io.EOF.Error() {
+		t.Fatalf("unexpected result payload: %+v", got)
+	}
+}
+
 func newReportTestAgent(t *testing.T, controllerURL string, client *http.Client) *NodeAgent {
 	t.Helper()
 

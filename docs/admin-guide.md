@@ -98,7 +98,11 @@ Every points operation is recorded with timestamp, operation, target, delta, and
 
 **Account mapping.** Maintains `(node_id, local_username) → platform user`. The rebinding monitor flags a local account that rebinds frequently within a time window or that has been associated with several platform accounts. Flagged accounts carry a red dot and can be blocked directly from the risk panel.
 
+Mapping identity is matched exactly on node ID plus node account. Editing a mapping from `alice` to `alice2` points it at a different node identity; it does not rename the Linux account. Adding or editing a mapping only accepts a target account that already exists in the node's latest snapshot; use account provisioning when the account does not exist yet. If an old account still holds the user's platform-wide UID, direct mapping or provisioning is refused until the old account is migrated or removed on the node.
+
 **Account provisioning.** Provisions a node account and delivers credentials as ciphertext in the platform plus an extraction code by email. If the account is already mapped to the same platform user, a second confirmation allows regenerating and resending.
+
+Account creation and UID/GID alignment actions are persisted, retried under a lease, and complete only when the node acknowledges them. Failure reasons are shown in the not-ready account details.
 
 **SSH lists.** Allow, deny, and exemption lists in one place, with a reason and source recorded per entry.
 

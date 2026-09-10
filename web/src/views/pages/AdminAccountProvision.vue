@@ -372,6 +372,7 @@
           <el-descriptions-item label="通知邮箱">{{ provisionResult.email }}</el-descriptions-item>
           <el-descriptions-item label="节点编号">{{ provisionResult.node_id }}</el-descriptions-item>
           <el-descriptions-item label="节点账号">{{ provisionResult.local_username }}</el-descriptions-item>
+          <el-descriptions-item label="初始化任务">#{{ provisionResult.provision_job_id || "-" }}</el-descriptions-item>
           <el-descriptions-item label="建议文件名">{{ provisionResult.download_filename }}</el-descriptions-item>
           <el-descriptions-item label="SSH 地址">{{ provisionResult.ssh_host }}:{{ provisionResult.ssh_port }}</el-descriptions-item>
         </el-descriptions>
