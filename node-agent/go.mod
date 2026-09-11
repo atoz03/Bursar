@@ -6,7 +6,7 @@ toolchain go1.26.6
 
 require (
 	github.com/shirou/gopsutil/v3 v3.24.5
-	golang.org/x/sys v0.47.0
+	golang.org/x/sys v0.48.0
 )
 
 require (
