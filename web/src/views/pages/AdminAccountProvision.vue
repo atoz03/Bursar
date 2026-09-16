@@ -87,6 +87,68 @@
           </el-col>
         </el-row>
       </el-form>
+      <div class="provision-recommendation">
+        <div class="preview-head recommendation-head">
+          <div class="section-title-wrap">
+            <span class="section-icon tone-recommend">荐</span>
+            <span>节点智能推荐 Demo</span>
+          </div>
+          <el-tag type="info" effect="plain" size="small">仅管理员可见</el-tag>
+        </div>
+        <el-empty
+          v-if="!provisionForm.billing_username.trim()"
+          description="选择平台账号或从申请列表点击“带入开通”后生成推荐"
+          :image-size="48"
+        />
+        <template v-else>
+          <div class="recommendation-context">
+            <span>导师：{{ currentProvisionAdvisor || "未填写" }}</span>
+            <span>申请：{{ currentProvisionOpenRequest ? `#${currentProvisionOpenRequest.request_id}` : "未找到" }}</span>
+            <span>依据：现有节点状态、账号分布、同导师组和申请理由</span>
+          </div>
+          <el-alert
+            v-if="!currentProvisionReason"
+            title="没有找到该用户的开通理由，本次只按节点负载、账号分布和导师信息评分。"
+            type="warning"
+            :closable="false"
+            show-icon
+            class="mb"
+          />
+          <div v-if="nodeRecommendations.length" class="recommendation-grid">
+            <article
+              v-for="(item, index) in nodeRecommendations"
+              :key="item.node.node_id"
+              :class="['recommendation-item', { 'is-selected': provisionForm.node_id.trim() === item.node.node_id }]"
+            >
+              <div class="recommendation-title">
+                <div>
+                  <el-tag :type="index === 0 ? 'success' : 'info'" size="small">推荐 {{ index + 1 }}</el-tag>
+                  <strong>节点 {{ item.node.node_id }}</strong>
+                </div>
+                <div class="recommendation-score"><b>{{ item.score }}</b><span>分</span></div>
+              </div>
+              <div class="recommendation-metrics">
+                <span>SSH {{ item.sshCount }}</span>
+                <span>GPU进程 {{ item.gpuProcessCount }}</span>
+                <span>已分配 {{ item.accountCount }}</span>
+                <span>同导师 {{ item.sameAdvisorCount }}</span>
+                <span>理由匹配 {{ item.reasonMatchPercent }}%</span>
+              </div>
+              <p>{{ item.explanation }}</p>
+              <el-button
+                size="small"
+                type="primary"
+                plain
+                :disabled="provisionForm.node_id.trim() === item.node.node_id"
+                @click="selectRecommendedNode(item.node.node_id)"
+              >
+                {{ provisionForm.node_id.trim() === item.node.node_id ? "当前已选" : "选择此节点" }}
+              </el-button>
+            </article>
+          </div>
+          <el-empty v-else description="暂无可推荐的在线节点" :image-size="48" />
+        </template>
+      </div>
       <div class="provision-node-preview">
         <div class="preview-head">
           <div class="section-title-wrap">
@@ -453,6 +515,7 @@ const provisionLogsLoading = ref(false);
 const provisionLogs = ref<AdminAccountProvisionLog[]>([]);
 const openRequestsLoading = ref(false);
 const openRequests = ref<UserRequest[]>([]);
+const allOpenRequests = ref<UserRequest[]>([]);
 const openRejectHistoryVisible = ref(false);
 const openRejectHistoryLoading = ref(false);
 const openRejectHistoryRows = ref<UserRequest[]>([]);
@@ -465,9 +528,23 @@ const provisionActionError = ref("");
 const provisionActionSuccess = ref("");
 const provisionUserDetail = ref<PlatformUserDetail | null>(null);
 const provisionUserLastFetched = ref("");
+const selectedOpenRequestID = ref(0);
 let provisionUserFetchSeq = 0;
 
 const PROVISION_SSH_HOST_STORAGE_KEY = "gpuops.provision.last_ssh_host";
+// 不参与智能推荐的节点 ID（例如专用或保留节点）；管理员仍可手动选择并开通。
+const PROVISION_BLOCKED_NODE_IDS = new Set<string>([]);
+
+type NodeRecommendation = {
+  node: NodeStatus;
+  score: number;
+  sshCount: number;
+  gpuProcessCount: number;
+  accountCount: number;
+  sameAdvisorCount: number;
+  reasonMatchPercent: number;
+  explanation: string;
+};
 
 const provisionForm = reactive({
   billing_username: "",
@@ -482,6 +559,155 @@ const selectedProvisionNode = computed<NodeStatus | null>(() => {
   const nodeID = String(provisionForm.node_id || "").trim();
   if (!nodeID) return null;
   return nodeDetailByID.value[nodeID] || null;
+});
+
+const currentProvisionOpenRequest = computed<UserRequest | null>(() => {
+  const billing = String(provisionForm.billing_username || "").trim();
+  if (!billing) return null;
+  const explicit = allOpenRequests.value.find(
+    (row) => Number(row.request_id || 0) === selectedOpenRequestID.value && String(row.billing_username || "").trim() === billing,
+  );
+  if (explicit) return explicit;
+  return allOpenRequests.value.find(
+    (row) => String(row.billing_username || "").trim() === billing && String(row.status || "").trim() !== "rejected",
+  ) || null;
+});
+
+const currentProvisionReason = computed(() => String(currentProvisionOpenRequest.value?.message || "").trim());
+const currentProvisionAdvisor = computed(() => {
+  const billing = String(provisionForm.billing_username || "").trim();
+  const user = platformUsers.value.find((row) => String(row.username || "").trim() === billing);
+  return String(user?.advisor || provisionUserDetail.value?.advisor || "").trim();
+});
+
+const REASON_TOPIC_WORDS = [
+  "深度学习", "机器学习", "大模型", "计算机视觉", "自然语言", "目标检测", "图像处理", "视频处理",
+  "强化学习", "机器人", "无人机", "点云", "雷达", "语音", "信号处理", "模型训练", "模型推理",
+  "数据处理", "仿真", "分割", "分类", "生成", "控制", "优化", "推荐系统", "时序",
+];
+
+function normalizeAdvisor(value: string): string {
+  return String(value || "").trim().replace(/\s+/g, "").toLowerCase();
+}
+
+function reasonTokens(value: string): Set<string> {
+  let text = String(value || "").toLowerCase();
+  text = text.replace(/研究方向|研究课题|课题方向|当前课题|项目名称|预计使用|主要使用场景|开通理由|节点账号|申请开通/g, " ");
+  const tokens = new Set<string>();
+  for (const topic of REASON_TOPIC_WORDS) {
+    if (text.includes(topic.toLowerCase())) tokens.add(topic.toLowerCase());
+  }
+  for (const token of text.match(/[a-z][a-z0-9+_.-]{1,24}/g) || []) tokens.add(token);
+  for (const chunk of text.match(/[\u4e00-\u9fff]{2,}/g) || []) {
+    const maxN = Math.min(4, chunk.length);
+    for (let size = 2; size <= maxN; size += 1) {
+      for (let i = 0; i + size <= chunk.length; i += 1) tokens.add(chunk.slice(i, i + size));
+    }
+  }
+  return tokens;
+}
+
+function reasonSimilarity(left: string, right: string): number {
+  const a = reasonTokens(left);
+  const b = reasonTokens(right);
+  if (!a.size || !b.size) return 0;
+  let intersection = 0;
+  for (const token of a) {
+    if (b.has(token)) intersection += 1;
+  }
+  return (2 * intersection) / (a.size + b.size);
+}
+
+function isProvisionNodeOnline(node: NodeStatus): boolean {
+  const seenAt = toServerEpochMs(node.last_seen_at);
+  if (!Number.isFinite(seenAt)) return false;
+  const intervalMs = Math.max(30, Number(node.interval_seconds || 0)) * 1000;
+  const allowedAgeMs = Math.min(10 * 60 * 1000, Math.max(2 * 60 * 1000, intervalMs * 4));
+  const ageMs = Date.now() - seenAt;
+  return ageMs >= -5 * 60 * 1000 && ageMs <= allowedAgeMs;
+}
+
+function latestOpenReasonForBilling(billing: string): string {
+  const row = allOpenRequests.value.find(
+    (item) => String(item.billing_username || "").trim() === billing && String(item.status || "").trim() !== "rejected",
+  );
+  return String(row?.message || "").trim();
+}
+
+const nodeRecommendations = computed<NodeRecommendation[]>(() => {
+  const billing = String(provisionForm.billing_username || "").trim();
+  if (!billing) return [];
+  const advisor = normalizeAdvisor(currentProvisionAdvisor.value);
+  const reason = currentProvisionReason.value;
+  const recommendations: NodeRecommendation[] = [];
+
+  for (const node of Object.values(nodeDetailByID.value)) {
+    const nodeID = String(node.node_id || "").trim();
+    if (!nodeID || PROVISION_BLOCKED_NODE_IDS.has(nodeID) || !isProvisionNodeOnline(node)) continue;
+
+    const peers = platformUsers.value.filter((user) => {
+      if (String(user.username || "").trim() === billing) return false;
+      return (user.node_accounts || []).some((account) => String(account.node_id || "").trim() === nodeID);
+    });
+    const accountCount = platformUsers.value.reduce((count, user) => (
+      count + (user.node_accounts || []).filter((account) => String(account.node_id || "").trim() === nodeID).length
+    ), 0);
+    const sameAdvisorPeers = advisor
+      ? peers.filter((user) => normalizeAdvisor(user.advisor) === advisor)
+      : [];
+
+    let bestReasonMatch = 0;
+    let bestReasonPeer = "";
+    if (reason) {
+      for (const peer of peers) {
+        const peerReason = latestOpenReasonForBilling(String(peer.username || "").trim());
+        const similarity = reasonSimilarity(reason, peerReason);
+        if (similarity > bestReasonMatch) {
+          bestReasonMatch = similarity;
+          bestReasonPeer = String(peer.real_name || peer.username || "").trim();
+        }
+      }
+    }
+
+    const sshCount = Math.max(0, Number(node.ssh_active_count || 0));
+    const gpuProcessCount = Math.max(0, Number(node.gpu_process_count || 0));
+    const cpuProcessCount = Math.max(0, Number(node.cpu_process_count || 0));
+    const loadPenalty = Math.min(30, sshCount * 4 + gpuProcessCount * 2.5 + cpuProcessCount * 0.35);
+    const loadScore = Math.max(0, 30 - loadPenalty);
+    const totalDisk = Math.max(0, Number(node.disk_total_gb || 0));
+    const usedDisk = Math.max(0, Number(node.disk_used_gb || 0));
+    const diskScore = totalDisk > 0 ? Math.max(0, Math.min(10, ((totalDisk - usedDisk) / totalDisk) * 10)) : 5;
+    const balanceScore = Math.max(0, 10 - accountCount * 0.5);
+    const advisorScore = Math.min(15, sameAdvisorPeers.length * 5);
+    const reasonScore = Math.min(15, bestReasonMatch * 15);
+    const score = Math.max(0, Math.min(100, Math.round(20 + loadScore + diskScore + balanceScore + advisorScore + reasonScore)));
+
+    const explanationParts: string[] = [];
+    if (sameAdvisorPeers.length > 0) {
+      const names = sameAdvisorPeers.slice(0, 3).map((user) => String(user.real_name || user.username || "").trim()).filter(Boolean);
+      explanationParts.push(`同导师组已有 ${sameAdvisorPeers.length} 人${names.length ? `（${names.join("、")}）` : ""}`);
+    }
+    if (bestReasonMatch > 0 && bestReasonPeer) {
+      explanationParts.push(`与 ${bestReasonPeer} 的申请理由相似 ${Math.round(bestReasonMatch * 100)}%`);
+    }
+    explanationParts.push(sshCount + gpuProcessCount === 0 ? "当前登录和 GPU 任务较少" : `当前 SSH ${sshCount} 人、GPU 进程 ${gpuProcessCount}`);
+    explanationParts.push(`已分配 ${accountCount} 个账号`);
+
+    recommendations.push({
+      node,
+      score,
+      sshCount,
+      gpuProcessCount,
+      accountCount,
+      sameAdvisorCount: sameAdvisorPeers.length,
+      reasonMatchPercent: Math.round(bestReasonMatch * 100),
+      explanation: explanationParts.join("；"),
+    });
+  }
+
+  return recommendations
+    .sort((a, b) => b.score - a.score || a.accountCount - b.accountCount || a.node.node_id.localeCompare(b.node.node_id, "zh-Hans-CN", { numeric: true }))
+    .slice(0, 3);
 });
 
 function client() {
@@ -748,6 +974,7 @@ async function fetchProvisionUserDetail(force: boolean) {
 
 function onProvisionBillingSelect(item: { value?: string }) {
   provisionForm.billing_username = String(item?.value || "").trim();
+  selectedOpenRequestID.value = 0;
   provisionActionError.value = "";
   provisionActionSuccess.value = "";
   syncProvisionUserPreviewFromLocal();
@@ -755,6 +982,7 @@ function onProvisionBillingSelect(item: { value?: string }) {
 }
 
 function onProvisionBillingChange() {
+  selectedOpenRequestID.value = 0;
   provisionActionError.value = "";
   provisionActionSuccess.value = "";
   syncProvisionUserPreviewFromLocal();
@@ -779,6 +1007,13 @@ function onProvisionNodeChange() {
 
 function onProvisionNodeBlur() {
   applyProvisionNodeDefaults(provisionForm.node_id);
+}
+
+function selectRecommendedNode(nodeID: string) {
+  provisionForm.node_id = String(nodeID || "").trim();
+  applyProvisionNodeDefaults(provisionForm.node_id);
+  provisionActionError.value = "";
+  provisionActionSuccess.value = `已选择推荐节点 ${provisionForm.node_id}，请继续核对节点信息`;
 }
 
 function buildProvisionNodeDescription(node: NodeStatus): string {
@@ -844,16 +1079,14 @@ async function openProvisionHistory() {
 async function reloadOpenRequests() {
   openRequestsLoading.value = true;
   try {
-    const r = await client().adminRequests({ status: openRequestStatus.value || "", limit: 5000 });
-    const allCurrent = r.requests ?? [];
-    openRequests.value = allCurrent.filter((x) => String(x.request_type || "").trim() === "open");
-    if (!openRequestStatus.value || openRequestStatus.value === "pending") {
-      pendingOpenRequests.value = allCurrent.filter((x) => String(x.request_type || "").trim() === "open" && String(x.status || "").trim() === "pending");
-      return;
-    }
-    const pendingResp = await client().adminRequests({ status: "pending", limit: 5000 });
-    pendingOpenRequests.value = (pendingResp.requests ?? []).filter((x) => String(x.request_type || "").trim() === "open");
+    const r = await client().adminRequests({ status: "", limit: 5000 });
+    allOpenRequests.value = (r.requests ?? []).filter((x) => String(x.request_type || "").trim() === "open");
+    openRequests.value = openRequestStatus.value
+      ? allOpenRequests.value.filter((x) => String(x.status || "").trim() === openRequestStatus.value)
+      : allOpenRequests.value;
+    pendingOpenRequests.value = allOpenRequests.value.filter((x) => String(x.status || "").trim() === "pending");
   } catch (e: any) {
+    allOpenRequests.value = [];
     pendingOpenRequests.value = [];
     error.value = e?.message ?? String(e);
   } finally {
@@ -894,6 +1127,7 @@ function applyOpenRequestToProvision(row: UserRequest) {
   const billing = String(row.billing_username || "").trim();
   if (!billing) return;
   provisionForm.billing_username = billing;
+  selectedOpenRequestID.value = Number(row.request_id || 0);
   const node = String(row.node_id || "").trim();
   const local = String(row.local_username || "").trim();
   if (node && node !== "待分配") {
@@ -1247,6 +1481,12 @@ reloadAll();
   color: var(--el-color-primary);
 }
 
+.tone-recommend {
+  color: var(--el-color-success);
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .mb {
   margin-bottom: 12px;
 }
@@ -1257,10 +1497,90 @@ reloadAll();
 }
 
 .preview-desc,
+.provision-recommendation,
 .provision-node-preview,
 .provision-user-preview,
 .note-user-detail {
   margin-bottom: 12px;
+}
+
+.provision-recommendation {
+  padding: 14px;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 10px;
+  background: var(--el-fill-color-extra-light);
+}
+
+.recommendation-head {
+  margin-bottom: 10px;
+}
+
+.recommendation-context,
+.recommendation-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.recommendation-context {
+  margin-bottom: 10px;
+}
+
+.recommendation-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.recommendation-item {
+  padding: 12px;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 9px;
+  background: var(--el-bg-color);
+}
+
+.recommendation-item.is-selected {
+  border-color: var(--el-color-primary);
+  box-shadow: 0 0 0 1px var(--el-color-primary-light-7);
+}
+
+.recommendation-title,
+.recommendation-title > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.recommendation-score b {
+  color: var(--el-color-success);
+  font-size: 24px;
+}
+
+.recommendation-score span {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.recommendation-metrics {
+  margin-top: 10px;
+  gap: 5px;
+}
+
+.recommendation-metrics span {
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: var(--el-fill-color-light);
+}
+
+.recommendation-item p {
+  min-height: 48px;
+  margin: 9px 0;
+  color: var(--el-text-color-regular);
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 .node-option-item {
@@ -1302,6 +1622,10 @@ reloadAll();
 }
 
 @media (max-width: 900px) {
+  .recommendation-grid {
+    grid-template-columns: 1fr;
+  }
+
   .kv-row {
     flex-direction: column;
     align-items: stretch;

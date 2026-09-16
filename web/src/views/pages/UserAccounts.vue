@@ -273,12 +273,39 @@
               class="mb"
             />
             <el-form label-position="top">
-              <el-form-item label="开通理由">
+              <div class="open-request-grid">
+                <el-form-item label="研究方向">
+                  <el-input
+                    v-model="openResearchDirection"
+                    maxlength="120"
+                    show-word-limit
+                    placeholder="例如：计算机视觉与目标检测"
+                  />
+                </el-form-item>
+                <el-form-item label="主要任务">
+                  <el-select v-model="openTaskType" placeholder="请选择" style="width: 100%">
+                    <el-option label="代码开发与课程实验" value="代码开发与课程实验" />
+                    <el-option label="数据处理与仿真" value="数据处理与仿真" />
+                    <el-option label="模型训练" value="模型训练" />
+                    <el-option label="模型推理" value="模型推理" />
+                    <el-option label="图像或视频处理" value="图像或视频处理" />
+                    <el-option label="其他科研任务" value="其他科研任务" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item label="使用强度">
+                  <el-select v-model="openUsageIntensity" placeholder="请选择" style="width: 100%">
+                    <el-option label="偶尔使用" value="偶尔使用" />
+                    <el-option label="日常使用" value="日常使用" />
+                    <el-option label="经常运行长时间任务" value="经常运行长时间任务" />
+                  </el-select>
+                </el-form-item>
+              </div>
+              <el-form-item label="补充说明（选填）">
                 <el-input
                   v-model="openReason"
                   type="textarea"
-                  :rows="5"
-                  maxlength="800"
+                  :rows="3"
+                  maxlength="400"
                   show-word-limit
                   :placeholder="openReasonPlaceholder"
                 />
@@ -359,19 +386,16 @@ const decryptVisible = ref(false);
 const selectedPayload = ref("");
 const selectedCode = ref("");
 const openRequesting = ref(false);
+const openResearchDirection = ref("");
+const openTaskType = ref("");
+const openUsageIntensity = ref("");
 const openReason = ref("");
 const firstGuideRead = ref(false);
 const accountMode = ref<"existing" | "open">("existing");
 let challengeCountdownTimer: ReturnType<typeof setInterval> | null = null;
 let autoRefreshTimer: ReturnType<typeof setInterval> | null = null;
 const USER_ACCOUNTS_GUIDE_KEY_PREFIX = "gpuops.user_accounts.guide_seen";
-const openReasonPlaceholder = [
-  "请详细填写（至少 20 字）：",
-  "1) 研究方向：请直接写出“研究方向”这四个字，再写具体方向",
-  "2) 当前课题/项目名称",
-  "3) 预计使用时长与频率",
-  "4) 主要使用场景（训练/推理/数据处理等）",
-].join("\n");
+const openReasonPlaceholder = "可填写课题名称、特殊软件需求或其他需要管理员了解的信息。";
 
 function userAccountsGuideStorageKey(): string {
   const username = String(authState.username || "").trim().toLowerCase();
@@ -735,19 +759,35 @@ async function submitOpenRequest() {
     error.value = "你已有待审核的节点开通申请，请勿重复提交";
     return;
   }
-  const reason = openReason.value.trim();
-  if (reason.length < 20) {
-    error.value = "请详细填写开通理由（至少 20 个字，且必须包含“研究方向”四个字）";
+  const direction = openResearchDirection.value.trim();
+  const taskType = openTaskType.value.trim();
+  const intensity = openUsageIntensity.value.trim();
+  if (direction.length < 2) {
+    error.value = "请填写具体研究方向";
     return;
   }
-  if (!reason.includes("研究方向")) {
-    error.value = "开通理由必须原文包含“研究方向”这四个字";
+  if (!taskType) {
+    error.value = "请选择主要任务";
     return;
   }
+  if (!intensity) {
+    error.value = "请选择使用强度";
+    return;
+  }
+  const note = openReason.value.trim();
+  const reason = [
+    `研究方向：${direction}`,
+    `主要任务：${taskType}`,
+    `使用强度：${intensity}`,
+    note ? `补充说明：${note}` : "",
+  ].filter(Boolean).join("；");
   openRequesting.value = true;
   try {
     await client().createOpenRequest(reason);
     success.value = "节点开通申请已提交，等待管理员审核";
+    openResearchDirection.value = "";
+    openTaskType.value = "";
+    openUsageIntensity.value = "";
     openReason.value = "";
     await reload();
   } catch (e: any) {
@@ -1001,6 +1041,11 @@ reload();
   grid-template-columns: 1fr 1fr;
   gap: 12px;
 }
+.open-request-grid {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr 1fr;
+  gap: 12px;
+}
 .challenge-command-box {
   display: flex;
   flex-direction: column;
@@ -1129,7 +1174,8 @@ reload();
     padding: 10px;
   }
   .path-grid,
-  .form-row {
+  .form-row,
+  .open-request-grid {
     grid-template-columns: 1fr;
   }
   .panel-head,
