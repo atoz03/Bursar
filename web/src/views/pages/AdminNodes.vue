@@ -2849,7 +2849,9 @@ function escapeHTML(raw: string): string {
   return String(raw || "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 function normalizeSecurityReasonForSummary(reason: string): string {
@@ -2864,7 +2866,7 @@ function isSummaryMatchedEvent(event: NodeSecurityEvent, summary: NodeSecurityEv
 
 async function showSecurityEventDetail(row: NodeSecurityEvent) {
   await ElMessageBox.alert(
-    `<pre style="white-space: pre-wrap;word-break: break-all;margin:0">${formatSecurityDetails(row.details)}</pre>`,
+    `<pre style="white-space: pre-wrap;word-break: break-all;margin:0">${escapeHTML(formatSecurityDetails(row.details))}</pre>`,
     `事件详情：${row.event_type}`,
     { dangerouslyUseHTMLString: true, confirmButtonText: "关闭" },
   );
@@ -2907,7 +2909,7 @@ async function showSuspiciousDetail(row: NodeSuspiciousUser) {
     "最近事件：",
   ];
   const text = head.concat(lines.length ? lines : ["未找到该账号的详细事件"]).join("\n");
-  await ElMessageBox.alert(`<pre style="white-space: pre-wrap;margin:0">${text}</pre>`, `可疑账号：${row.username}`, {
+  await ElMessageBox.alert(`<pre style="white-space: pre-wrap;margin:0">${escapeHTML(text)}</pre>`, `可疑账号：${row.username}`, {
     dangerouslyUseHTMLString: true,
     confirmButtonText: "关闭",
   });
