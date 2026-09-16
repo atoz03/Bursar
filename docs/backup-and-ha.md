@@ -104,6 +104,19 @@ sudo bash scripts/bootstrap_dr_standby_local.sh
 
 `scripts/ha_sync_worker.sh` runs the synchronisation loop. `scripts/gpuops_ha_apply.sh` is a restricted root helper that applies synchronised artifacts; it validates file ownership and refuses unexpected paths.
 
+In the primary-to-standby direction the worker also copies `database/migrations/` to the standby before the binary, and aborts if a checksum manifest of the `*.sql` files differs between the two hosts. It never deletes extra migration files on the standby, because they may already be recorded as applied. Set `SYNC_MIGRATIONS=0` to skip this step.
+
+### Release to primary and standby
+
+After the node agents have been updated, `scripts/finish_pending_release.sh` completes a release in one pass. It refuses to run if tracked files have uncommitted changes or `web/dist` has not been built. It then takes an immediate backup, installs and restarts the primary controller, checks that the installed binary reports the expected commit, checks that the newest migration in `database/migrations/` has been applied, runs a primary-to-standby sync, and waits until the HA status reports a reachable peer with a matching version.
+
+```bash
+DR_HOST=192.0.2.20 DR_SSH_USER=gpuops DR_KEY_FILE=/etc/gpu-ops/standby_ed25519 \
+PRIMARY_HOST=192.0.2.10 bash scripts/finish_pending_release.sh
+```
+
+Optional variables include `CONTROLLER_URL`, `CONFIG_PATH`, `POSTGRES_CONTAINER`, `DR_CONTROLLER_PORT`, `PRIMARY_CONTROLLER_PORT`, `REMOTE_CONFIG_PATH`, and `DR_RUN_USER` (the local account that runs the sync worker).
+
 ### Failover
 
 Failover is manual and deliberate:

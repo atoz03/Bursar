@@ -104,6 +104,19 @@ sudo bash scripts/bootstrap_dr_standby_local.sh
 
 `scripts/ha_sync_worker.sh` 运行同步循环。`scripts/gpuops_ha_apply.sh` 是受限的 root helper，用于应用同步产物；它会校验文件属主并拒绝非预期路径。
 
+主→备方向同步时，worker 会先于二进制把 `database/migrations/` 复制到备机，若两端 `*.sql` 文件的校验清单不一致则中止。它不会删除备机上多出的迁移文件，因为这些文件可能已登记为已执行。设置 `SYNC_MIGRATIONS=0` 可跳过此步骤。
+
+### 发布到主备
+
+节点 Agent 更新完成后，`scripts/finish_pending_release.sh` 可一次完成发布。若受跟踪文件存在未提交改动，或 `web/dist` 尚未构建，它会拒绝执行。随后依次：生成即时备份，安装并重启主控制器，确认已安装二进制报告的 commit 与预期一致，确认 `database/migrations/` 中最新的迁移已执行，执行主→备同步，并等待 HA 状态显示对端可达且版本一致。
+
+```bash
+DR_HOST=192.0.2.20 DR_SSH_USER=gpuops DR_KEY_FILE=/etc/gpu-ops/standby_ed25519 \
+PRIMARY_HOST=192.0.2.10 bash scripts/finish_pending_release.sh
+```
+
+可选变量包括 `CONTROLLER_URL`、`CONFIG_PATH`、`POSTGRES_CONTAINER`、`DR_CONTROLLER_PORT`、`PRIMARY_CONTROLLER_PORT`、`REMOTE_CONFIG_PATH`，以及 `DR_RUN_USER`（运行同步 worker 的本机账号）。
+
 ### 接管
 
 接管是手动且需要明确确认的：

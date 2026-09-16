@@ -106,6 +106,16 @@
 
 需要 `X-Agent-Token`。返回该节点的待执行动作。
 
+### `POST /api/node/actions/:id/result`
+
+需要 `X-Agent-Token`，且令牌须与 `node_id` 绑定。用于回执持久化的节点账号动作（创建账号或 UID/GID 对齐）。这类动作带有仅对单次投递有效的 `action_token`。
+
+```json
+{"node_id":"node-01","action_token":"<delivery token>","success":true,"error":""}
+```
+
+令牌已过期或已被新投递取代的回执返回 `200` 且 `"accepted": false`，不会改变动作状态。60 秒租约内未回执的投递会重新下发，直至达到该动作的重试上限。
+
 ## 用户接口
 
 ### `GET /api/users/:username/balance`
@@ -244,6 +254,30 @@ CPU 计费使用保留型号名 `CPU_CORE`，按核分钟计价（100% CPU ≈ 1
 `GET /api/admin/nodes` 返回上报状态——最近上报时间、GPU 与 CPU 进程数、最近一次上报的成本。`limit` 默认 200，最大 2000。
 
 按节点的路由涵盖详情、价格、CPU 限制、内存限制、GPU 可见性、磁盘配额、SSH 独享、查看权限、积分拦截与安全事件。
+
+`POST /api/admin/nodes/:id/gpu-visibility` 可把本地用户限制为 `gpu_indices` 中的 GPU，或用 `deny_all` 隐藏全部 GPU。对同一路由执行 `DELETE` 即解除限制。
+
+```json
+{"local_username":"alice","gpu_indices":[0,1],"reason":"..."}
+```
+
+```json
+{"local_username":"alice","deny_all":true,"reason":"..."}
+```
+
+`GET /api/admin/stats/daily` 返回运营看板使用的每日活动数据，仅包含调用者有权查看的节点。`from` 与 `to` 接受 RFC 3339 或 `YYYY-MM-DD`（仅日期的 `to` 包含当天）；默认范围为最近 30 天。
+
+### 机柜功率
+
+以下路由均需要超级管理员。
+
+| 路由 | 用途 |
+| --- | --- |
+| `GET /api/admin/power-racks` | 机柜、槽位分配、GPU 实时功耗与配置问题 |
+| `POST /api/admin/power-racks` | 新建或更新机柜（`rack_code`、`name`、`capacity_w`、`slot_count`、`location`、`note`、`sort_order`） |
+| `DELETE /api/admin/power-racks/:code` | 删除机柜及其槽位分配 |
+| `POST /api/admin/power-racks/:code/nodes` | 把节点放入槽位（`node_id`、`slot_number`、`allocated_power_w`、`device_label`、`note`） |
+| `DELETE /api/admin/power-racks/:code/nodes/:node_id` | 把节点移出机柜 |
 
 ### HA 与备份
 

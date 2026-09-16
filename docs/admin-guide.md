@@ -35,6 +35,7 @@ Requests authenticated with `admin_token` bypass all of these checks. See [Secur
 | --- | --- |
 | Operations dashboard | `/admin/board` |
 | Cluster overview | `/admin/status` |
+| Rack power | `/admin/racks` |
 
 ### Resources and billing
 
@@ -75,10 +76,17 @@ Per-node policy switches:
 - **Pricing** — GPU price and CPU core-minute price, set per node.
 - **Exclusive users** — reserve a node for specific users.
 - **Visibility** — restrict which power users can see the node.
+- **GPU visibility** — per user, choose all GPUs, only selected GPUs, or none. The restriction is enforced through device ACLs when a process opens a GPU, so it applies to processes started afterwards and does not interrupt running jobs.
 
 Remote actions: sync now, disconnect SSH sessions, and terminate a user's processes. These act on the node immediately. Validate with `dry_run: true` before relying on them.
 
 The node list flags risk with an emoji next to the node ID, and a banner summarises nodes with security events in the last 7 days.
+
+Disk capacity alerts are latched per node and mount point. A mount raises one critical event when it crosses the threshold, and re-arms only after it has stayed below the threshold for 30 minutes, so repeated reports and controller restarts do not duplicate the event. Disk capacity events are not counted in the suspected-user summaries or node risk counts.
+
+## Rack power
+
+The rack power page records racks (capacity in watts and slot count) and places nodes into slots with an allocated power budget. Racks start empty; administrators maintain them on the page. For each rack it shows allocated power against capacity, live GPU power draw and GPU power limits reported by the agents, and an estimate of whole-node power. It flags nodes that are placed but not reporting, and nodes whose allocated budget is below the sum of their GPU power limits, with a suggested budget of the GPU limits plus a 500 W host reserve.
 
 ## Points management
 
@@ -92,6 +100,8 @@ Deduction order is **node-exclusive → carryover → general**. Node-exclusive 
 
 Every points operation is recorded with timestamp, operation, target, delta, and points type.
 
+**Low-balance email.** Mail settings holds a points warning threshold; until one is saved, the controller's `warning_threshold` applies, and `0` disables the alert. When a user's available points (general plus carryover, excluding node-exclusive points) cross from above the threshold to at or below it — through billing or a manual adjustment — one email is queued and delivered by the scheduler with retries. The alert re-arms once the balance rises above the threshold again.
+
 ## Accounts and access
 
 **Platform users.** Status, block and unblock, delete and restore, duplicate-identity detection.
@@ -103,6 +113,8 @@ Mapping identity is matched exactly on node ID plus node account. Editing a mapp
 **Account provisioning.** Provisions a node account and delivers credentials as ciphertext in the platform plus an extraction code by email. If the account is already mapped to the same platform user, a second confirmation allows regenerating and resending.
 
 Account creation and UID/GID alignment actions are persisted, retried under a lease, and complete only when the node acknowledges them. Failure reasons are shown in the not-ready account details.
+
+While provisioning, a recommendation panel ranks online nodes by current SSH and GPU load, free disk, accounts already assigned, users with the same advisor, and similarity between the applicant's request and those of existing users on the node. It is advisory; the administrator still chooses the node. To keep specific nodes out of the ranking, list their IDs in `PROVISION_BLOCKED_NODE_IDS` in `web/src/views/pages/AdminAccountProvision.vue`.
 
 **SSH lists.** Allow, deny, and exemption lists in one place, with a reason and source recorded per entry.
 

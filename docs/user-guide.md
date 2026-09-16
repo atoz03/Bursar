@@ -75,7 +75,7 @@ When the cluster blocks SSH for unregistered accounts, register before you can l
 2. Go to **User → Register**.
 3. Choose one:
    - **Bind an existing account** — declare which nodes you already have accounts on and the local username on each.
-   - **Request a new account** — ask an administrator to create one on a node where you have none.
+   - **Request a new account** — ask an administrator to create one on a node where you have none. The form asks for your research direction, main workload, and expected usage intensity, plus optional notes.
 4. Track the outcome under **My requests** (`pending` / `approved` / `rejected`).
 
 Registration may be restricted to specific email domains and may require email verification.

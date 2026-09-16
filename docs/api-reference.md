@@ -106,6 +106,16 @@ Response:
 
 Requires `X-Agent-Token`. Returns pending actions for the calling node.
 
+### `POST /api/node/actions/:id/result`
+
+Requires `X-Agent-Token`, bound to `node_id`. Acknowledges a durable node account action (account creation or UID/GID alignment). Such actions carry an `action_token` that is valid for one delivery.
+
+```json
+{"node_id":"node-01","action_token":"<delivery token>","success":true,"error":""}
+```
+
+A receipt whose token has expired or been superseded returns `200` with `"accepted": false` and does not change the action. A delivery that is not acknowledged within its 60-second lease is offered again until the action's attempt limit is reached.
+
 ## User endpoints
 
 ### `GET /api/users/:username/balance`
@@ -244,6 +254,30 @@ Delete request and response:
 `GET /api/admin/nodes` returns reporting state — last seen, GPU and CPU process counts, cost from the latest report. `limit` defaults to 200, maximum 2000.
 
 Per-node routes cover detail, price, CPU limits, memory limits, GPU visibility, disk quota, SSH exclusivity, view access, points interception, and security events.
+
+`POST /api/admin/nodes/:id/gpu-visibility` restricts a local user to `gpu_indices`, or hides every GPU with `deny_all`. `DELETE` on the same route removes the restriction.
+
+```json
+{"local_username":"alice","gpu_indices":[0,1],"reason":"..."}
+```
+
+```json
+{"local_username":"alice","deny_all":true,"reason":"..."}
+```
+
+`GET /api/admin/stats/daily` returns per-day activity for the operations dashboard, limited to the nodes the caller may view. `from` and `to` accept RFC 3339 or `YYYY-MM-DD` (a date-only `to` is inclusive); the default range is the last 30 days.
+
+### Rack power
+
+All routes require a super administrator.
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/admin/power-racks` | Racks, slot assignments, live GPU power, and configuration issues |
+| `POST /api/admin/power-racks` | Create or update a rack (`rack_code`, `name`, `capacity_w`, `slot_count`, `location`, `note`, `sort_order`) |
+| `DELETE /api/admin/power-racks/:code` | Delete a rack and its slot assignments |
+| `POST /api/admin/power-racks/:code/nodes` | Place a node in a slot (`node_id`, `slot_number`, `allocated_power_w`, `device_label`, `note`) |
+| `DELETE /api/admin/power-racks/:code/nodes/:node_id` | Remove a node from the rack |
 
 ### HA and backup
 

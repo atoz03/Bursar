@@ -4,6 +4,41 @@
 
 Notable changes are recorded here. Releases follow [Semantic Versioning](https://semver.org/); GitHub Releases and their Git tags are the authoritative release artifacts.
 
+## [Unreleased]
+
+### Added
+
+- **Rack power dashboard** (`/admin/racks`) — racks, slot assignments, allocated power budgets, live GPU power draw, and flags for unreported or under-budgeted nodes. Racks start empty.
+- **Low-balance email alerts** — a points warning threshold in Mail settings; one email per downward crossing, queued transactionally and retried.
+- **GPU visibility "none"** — a node-user GPU policy can now hide every GPU instead of only restricting to a subset (`deny_all`).
+- **Durable node account actions** — account creation and UID/GID alignment are persisted, leased, retried, and completed only by a node receipt (`POST /api/node/actions/:id/result`).
+- **Node recommendation panel** in account provisioning, and a structured new-account request form (research direction, workload, usage intensity).
+- **`scripts/finish_pending_release.sh`** — backup, primary install, commit and migration verification, and primary-to-standby sync in one pass. The HA sync worker now also synchronises and verifies migration files.
+
+### Changed
+
+- The operations dashboard is reorganised around user activity, process time, balances, and daily trends, scoped to the nodes the viewer may see.
+- Cluster status, node management, and the interface demo are localised.
+- Workspace distribution to compute nodes no longer copies `docs/`, and the previous node deployment report is archived instead of overwritten.
+- Controller builds embed the commit, build time, and dirty-tree flag.
+
+### Fixed
+
+- Disk capacity alerts are latched per mount point, so repeated reports and restarts no longer duplicate critical events, and they no longer inflate suspected-user summaries.
+- Date-only `to` filters include the whole day at PostgreSQL microsecond precision.
+- Queued node actions use the same normalised payload as immediately delivered ones.
+- An empty GPU allow-list was treated as "no restriction" at several layers; a corrupted agent policy state file now keeps existing restrictions instead of lifting them.
+- Leftover deployment-specific branding was removed from the interface demo.
+
+### Security
+
+- Node action delivery tokens are compared in constant time.
+
+### Upgrade notes
+
+- Migrations `0081`–`0086` run automatically at startup.
+- Roll out node agents before the controller. An older agent does not understand `deny_all` GPU policies or durable action receipts.
+
 ## [3.2.0] — 2026-08-14
 
 First public release. The version number continues the internal series this project was developed under; there are no earlier public releases.
