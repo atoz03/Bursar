@@ -132,7 +132,9 @@ admin_token="$(awk '$1=="admin_token:" {v=$2; gsub(/\042/, "", v); print v; exit
 version_match=""
 peer_reachable=""
 for _ in $(seq 1 30); do
-  ha_status="$(curl -fsS --max-time 10 -H "Authorization: Bearer ${admin_token}" "${CONTROLLER_URL}/api/admin/ha/status")"
+  # 通过标准输入传递请求头，避免 admin_token 出现在其他本机账号可见的进程参数中。
+  ha_status="$(curl -fsS --max-time 10 -H @- "${CONTROLLER_URL}/api/admin/ha/status" <<<"Authorization: Bearer ${admin_token}")" \
+    || ha_status=""
   version_match="$(jq -r '.version_match // false' <<<"${ha_status}")"
   peer_reachable="$(jq -r '.peer.reachable // false' <<<"${ha_status}")"
   if [[ "${version_match}" == "true" && "${peer_reachable}" == "true" ]]; then
