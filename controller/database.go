@@ -14857,7 +14857,13 @@ WITH platform_users AS (
 exclusive_agg AS (
   SELECT ep.username, COALESCE(SUM(ep.balance), 0) AS exclusive_balance
   FROM user_node_exclusive_points ep
-  JOIN platform_users pu ON pu.username = ep.username
+  JOIN platform_users pu ON pu.username = ep.username`
+	if len(cleaned) > 0 {
+		// 节点受限的查看者只能看到其可见节点上的专属积分。
+		query += `
+  WHERE ep.node_id = ANY($4)`
+	}
+	query += `
   GROUP BY ep.username
 ),
 agg AS (
@@ -15123,7 +15129,8 @@ WHERE rr.created_at >= $1 AND rr.created_at <= $2
   AND EXISTS (
     SELECT 1 FROM user_node_accounts una
     WHERE una.billing_username = rr.username AND una.node_id = ANY($4)
-  )`
+  )
+  AND (COALESCE(rr.node_id, '') = '' OR rr.node_id = ANY($4))`
 		args = append(args, pq.Array(cleaned))
 	}
 	query += `
