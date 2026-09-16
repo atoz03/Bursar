@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestAdvancePointsBalanceEmailAlertState_CrossingThreshold(t *testing.T) {
 	tests := []struct {
@@ -88,5 +91,16 @@ func TestParsePointsWarningEmailThreshold(t *testing.T) {
 		if _, err := parsePointsWarningEmailThreshold(raw); err == nil {
 			t.Fatalf("expected invalid threshold for %q", raw)
 		}
+	}
+}
+
+func TestPointsBalanceEmailAlertsAreNotDeliveredByHAStandby(t *testing.T) {
+	standby := NewServer(Config{HAEnabled: true, HARole: "standby"}, nil)
+	if err := standby.deliverPendingPointsBalanceEmailAlerts(context.Background()); err != nil {
+		t.Fatalf("standby must skip delivery without touching the database, got %v", err)
+	}
+	primary := NewServer(Config{HAEnabled: true, HARole: "primary"}, nil)
+	if err := primary.deliverPendingPointsBalanceEmailAlerts(context.Background()); err == nil {
+		t.Fatal("primary must attempt delivery (and fail here without a database)")
 	}
 }

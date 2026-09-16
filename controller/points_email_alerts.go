@@ -288,7 +288,17 @@ func pointsBalanceEmailAlertRetryDelay(attempts int) time.Duration {
 	}
 }
 
+// isHAStandbyController 表示本控制器按配置处于 HA 备机角色。
+func (s *Server) isHAStandbyController() bool {
+	return s.cfg.HAEnabled && strings.EqualFold(strings.TrimSpace(s.cfg.HARole), "standby")
+}
+
 func (s *Server) deliverPendingPointsBalanceEmailAlerts(ctx context.Context) error {
+	if s != nil && s.isHAStandbyController() {
+		// 备机数据库是主控的完整副本，包含尚未发送或发送中的预警；由备机投递会重复发信。
+		// 接管时按运维流程把 ha_role 改为 primary 并重启，积压的预警届时再发送。
+		return nil
+	}
 	if s == nil || s.store == nil {
 		return errors.New("database unavailable")
 	}
