@@ -64,7 +64,7 @@
           <template v-if="activePage.kind === 'login'">
             <div class="auth-preview">
               <section class="auth-intro">
-                <el-tag effect="dark" type="success">HIT AIOT LAB</el-tag>
+                <el-tag effect="dark" type="success">{{ authState.platformName }}</el-tag>
                 <h2>{{ t("GPU / CPU", "GPU / CPU") }}<br />{{ t("集群管理平台", "Cluster Platform") }}</h2>
                 <p>{{ t("统一管理计算资源、节点账号与积分。", "Manage compute resources, node accounts, and points in one place.") }}</p>
               </section>
@@ -94,7 +94,7 @@
               <el-alert :title="t('所有字段均为必填；用户名、学号和邮箱必须保持全平台唯一。', 'All fields are required; username, student ID, and email must be unique.')" type="warning" :closable="false" show-icon />
               <div class="register-rule-chips">
                 <span>{{ t("用户名：姓名缩写 + 邮箱前缀", "Username: initials + email prefix") }}</span>
-                <span>{{ t("邮箱：仅限 HIT 校园邮箱", "Email: HIT campus address only") }}</span>
+                <span>{{ t("邮箱：域名由管理员配置", "Email: domains set by the administrator") }}</span>
                 <span>{{ t("资料：请填写真实信息", "Profile: use real information") }}</span>
               </div>
 
@@ -239,6 +239,7 @@ import { computed, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { Cpu, View } from "@element-plus/icons-vue";
+import { authState } from "../../lib/authStore";
 import { pickText } from "../../lib/uiLocale";
 
 type DemoRole = "admin" | "power_user" | "user" | "guest";
@@ -368,7 +369,7 @@ const mockForm = reactive({
   captchaOption: "15",
   acceptedGuideline: true,
   enabled: true,
-  title: "HIT AIOT 演示配置",
+  title: "演示配置",
   note: "此处内容仅用于预览页面排版。",
 });
 
