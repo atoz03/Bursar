@@ -572,6 +572,11 @@ func normalizeGPUIndices(indices []int) []int {
 // 以便与「无限制」（空串）区分开。
 const gpuVisibilityDenyAllSignature = "deny_all"
 
+// legacyGPUDenyAllSentinelIndex 随「完全不可见」动作一并下发，使不认识 gpu_deny_all 的
+// 旧版 agent 也失败关闭：旧版把空 gpu_indices 当作解除限制，但会拒绝所有不在允许集合中的
+// 真实设备，而任何节点都不存在该编号的 GPU。新版 agent 在 gpu_deny_all=true 时忽略 gpu_indices。
+const legacyGPUDenyAllSentinelIndex = 65535
+
 func gpuIndicesSignature(indices []int) string {
 	if len(indices) == 0 {
 		return ""
@@ -619,6 +624,9 @@ func (s *Server) nextGPUVisibilityAction(nodeID, localUsername string, gpuIndice
 		s.gpuVisibilityState[key] = sig
 	}
 	s.gpuVisibilityMu.Unlock()
+	if denyAll {
+		normalized = []int{legacyGPUDenyAllSentinelIndex}
+	}
 	return Action{
 		Type:       "set_gpu_visibility",
 		Username:   localUsername,

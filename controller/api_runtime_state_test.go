@@ -111,8 +111,10 @@ func TestGPUVisibilityDenyAllIsDistinctFromClear(t *testing.T) {
 	if !action.GPUDenyAll {
 		t.Fatal("deny-all action must carry GPUDenyAll=true")
 	}
-	if len(action.GPUIndices) != 0 {
-		t.Fatalf("deny-all action must not carry gpu indices, got %v", action.GPUIndices)
+	// 旧版 agent 不认识 GPUDenyAll，只看 gpu_indices；必须带上不存在的哨兵编号，
+	// 让旧版拒绝全部真实设备，而不是把空列表当作解除限制。
+	if len(action.GPUIndices) != 1 || action.GPUIndices[0] != legacyGPUDenyAllSentinelIndex {
+		t.Fatalf("deny-all action must carry only the legacy sentinel index, got %v", action.GPUIndices)
 	}
 
 	// 重复下发同一策略应被去重。

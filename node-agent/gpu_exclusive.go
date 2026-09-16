@@ -183,7 +183,7 @@ func (a *NodeAgent) writeGPUExclusiveState(st gpuExclusiveState) error {
 		return err
 	}
 	// 0640：策略文件会暴露 GPU 分配情况，无需对普通用户可读。
-	return os.WriteFile(path, body, 0640)
+	return writePolicyStateFile(path, body)
 }
 
 func (a *NodeAgent) loadGPUExclusiveState() (gpuExclusiveState, bool, error) {

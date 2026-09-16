@@ -110,3 +110,43 @@ func TestGPUVisibilityMissingStateIsTrusted(t *testing.T) {
 		t.Fatalf("missing state must yield an empty map, got %v", allowMap)
 	}
 }
+
+// 旧版 agent 不认识 gpu_deny_all，只按 gpu_indices 计算允许集合；控制器附带的哨兵编号
+// 不对应任何真实设备，因此旧版也必须拒绝全部 GPU，而不是解除限制。
+func TestLegacyDenyAllSentinelDeniesEveryGPU(t *testing.T) {
+	allow := map[int]struct{}{}
+	for _, idx := range normalizeGPUVisibilityIndices([]int{65535}) {
+		allow[idx] = struct{}{}
+	}
+	if len(allow) != 1 {
+		t.Fatalf("sentinel index must survive normalization, got %v", allow)
+	}
+	if deny := denyByAllowSet([]int{0, 1, 2, 3, 4, 5, 6, 7}, allow); len(deny) != 8 {
+		t.Fatalf("sentinel allow set must deny every gpu, got deny=%v", deny)
+	}
+}
+
+func TestWritePolicyStateFileReplacesAtomicallyAndTightensMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gpu_visibility_state.json")
+	if err := os.WriteFile(path, []byte("{\"stale\":true}"), 0644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := writePolicyStateFile(path, []byte("{}")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil || string(body) != "{}" {
+		t.Fatalf("unexpected content %q err=%v", body, err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if mode := info.Mode().Perm(); mode != 0640 {
+		t.Fatalf("mode=%o, want 640", mode)
+	}
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("temporary files left behind: %v err=%v", entries, err)
+	}
+}

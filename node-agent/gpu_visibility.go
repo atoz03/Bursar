@@ -66,7 +66,35 @@ func (a *NodeAgent) writeGPUVisibilityState(st gpuVisibilityState) error {
 		return err
 	}
 	// 0640：策略文件会暴露哪些用户被限制了哪些 GPU，无需对普通用户可读。
-	return os.WriteFile(path, body, 0640)
+	return writePolicyStateFile(path, body)
+}
+
+// writePolicyStateFile 以「临时文件 + fsync + rename」原子替换 GPU 策略状态文件，
+// 避免磁盘写满或进程中断时留下截断的 JSON，使策略状态变得不可信而无法再更新。
+// 权限显式设为 0640，旧版本以 0644 创建的文件也会被收紧。
+func writePolicyStateFile(path string, body []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(body); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0640); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 func (a *NodeAgent) loadGPUVisibilityState() (gpuVisibilityState, bool, error) {
@@ -189,8 +217,9 @@ func (a *NodeAgent) setUserGPUVisibility(ctx context.Context, username string, g
 		return nil
 	}
 	normalized := normalizeGPUVisibilityIndices(gpuIndices)
-	if denyAll && len(normalized) > 0 {
-		return fmt.Errorf("完全不可见时不能同时指定 gpu_indices：user=%s", username)
+	if denyAll {
+		// 控制器会为旧版 agent 附带一个不存在的哨兵 GPU 编号；deny_all 优先，忽略 gpu_indices。
+		normalized = nil
 	}
 	st, ok, err := a.loadGPUVisibilityState()
 	if err != nil {
