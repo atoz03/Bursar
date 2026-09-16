@@ -459,7 +459,7 @@ FOR UPDATE`, jobID, nodeID).Scan(&status, &storedToken, &attempts, &maxAttempts)
 			return err
 		}
 		result.Status = strings.TrimSpace(status)
-		if status != "leased" || storedToken != deliveryToken {
+		if status != "leased" || !constantTimeTokenEqual(deliveryToken, storedToken) {
 			return nil
 		}
 		result.Accepted = true
