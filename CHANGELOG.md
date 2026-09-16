@@ -29,15 +29,22 @@ Notable changes are recorded here. Releases follow [Semantic Versioning](https:/
 - Queued node actions use the same normalised payload as immediately delivered ones.
 - An empty GPU allow-list was treated as "no restriction" at several layers; a corrupted agent policy state file now keeps existing restrictions instead of lifting them.
 - Leftover deployment-specific branding was removed from the interface demo.
+- An HA standby no longer re-sends balance alert emails copied from the primary's database.
 
 ### Security
 
+- Node security event details and suspicious-account summaries are HTML-escaped before rendering. Process command lines captured by mining detection could previously inject markup into an administrator's session.
+- A deny-all GPU visibility policy also carries a sentinel GPU index, so agents that predate `deny_all` hide every GPU instead of removing the restriction.
+- GPU policy state files are written atomically with mode `0640`, so an interrupted write can no longer leave a state file that blocks every later policy update.
+- Statistics routes reject date ranges longer than 1,830 days.
+- Node-scoped dashboard totals no longer include node-exclusive points or grants from nodes the viewer cannot see.
+- Operator scripts pass the admin token to `curl` on standard input instead of in process arguments.
 - Node action delivery tokens are compared in constant time.
 
 ### Upgrade notes
 
 - Migrations `0081`–`0086` run automatically at startup.
-- Roll out node agents before the controller. An older agent does not understand `deny_all` GPU policies or durable action receipts.
+- Roll out node agents before the controller. An older agent does not acknowledge durable account actions, so those actions fail once they reach their retry limit.
 
 ## [3.2.0] — 2026-08-14
 

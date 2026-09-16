@@ -265,7 +265,7 @@ CPU 计费使用保留型号名 `CPU_CORE`，按核分钟计价（100% CPU ≈ 1
 {"local_username":"alice","deny_all":true,"reason":"..."}
 ```
 
-`GET /api/admin/stats/daily` 返回运营看板使用的每日活动数据，仅包含调用者有权查看的节点。`from` 与 `to` 接受 RFC 3339 或 `YYYY-MM-DD`（仅日期的 `to` 包含当天）；默认范围为最近 30 天。
+`GET /api/admin/stats/daily` 返回运营看板使用的每日活动数据，仅包含调用者有权查看的节点。`from` 与 `to` 接受 RFC 3339 或 `YYYY-MM-DD`（仅日期的 `to` 包含当天）；默认范围为最近 30 天。所有统计路由都会拒绝超过 1830 天的区间。
 
 ### 机柜功率
 

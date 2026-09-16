@@ -100,7 +100,7 @@ Deduction order is **node-exclusive → carryover → general**. Node-exclusive 
 
 Every points operation is recorded with timestamp, operation, target, delta, and points type.
 
-**Low-balance email.** Mail settings holds a points warning threshold; until one is saved, the controller's `warning_threshold` applies, and `0` disables the alert. When a user's available points (general plus carryover, excluding node-exclusive points) cross from above the threshold to at or below it — through billing or a manual adjustment — one email is queued and delivered by the scheduler with retries. The alert re-arms once the balance rises above the threshold again.
+**Low-balance email.** Mail settings holds a points warning threshold; until one is saved, the controller's `warning_threshold` applies, and `0` disables the alert. When a user's available points (general plus carryover, excluding node-exclusive points) cross from above the threshold to at or below it — through billing or a manual adjustment — one email is queued and delivered by the scheduler with retries. The alert re-arms once the balance rises above the threshold again. A controller configured as an HA standby does not send these emails.
 
 ## Accounts and access
 

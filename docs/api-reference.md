@@ -265,7 +265,7 @@ Per-node routes cover detail, price, CPU limits, memory limits, GPU visibility, 
 {"local_username":"alice","deny_all":true,"reason":"..."}
 ```
 
-`GET /api/admin/stats/daily` returns per-day activity for the operations dashboard, limited to the nodes the caller may view. `from` and `to` accept RFC 3339 or `YYYY-MM-DD` (a date-only `to` is inclusive); the default range is the last 30 days.
+`GET /api/admin/stats/daily` returns per-day activity for the operations dashboard, limited to the nodes the caller may view. `from` and `to` accept RFC 3339 or `YYYY-MM-DD` (a date-only `to` is inclusive); the default range is the last 30 days. Every statistics route rejects a range longer than 1,830 days.
 
 ### Rack power
 
