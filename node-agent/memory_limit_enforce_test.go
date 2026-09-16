@@ -21,4 +21,3 @@ func TestIsSSHRelatedUserProcess(t *testing.T) {
 		}
 	}
 }
-
