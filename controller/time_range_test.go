@@ -1,8 +1,12 @@
 package main
 
 import (
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/gin-gonic/gin"
 )
 
 func TestEndOfDateForPostgresStaysInsideSelectedDay(t *testing.T) {
@@ -25,5 +29,27 @@ func TestParseUsageDateRangeUsesPostgresPrecision(t *testing.T) {
 	}
 	if to.Nanosecond() != 999999000 {
 		t.Fatalf("unexpected PostgreSQL end precision: %d", to.Nanosecond())
+	}
+}
+
+func TestParseStatsRangeRejectsUnboundedSpan(t *testing.T) {
+	setDefaultTimezone()
+	gin.SetMode(gin.TestMode)
+	parse := func(query string) error {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest("GET", "/api/admin/stats/daily?"+query, nil)
+		_, _, err := parseStatsRange(c, 30)
+		return err
+	}
+	tooOld := nowInBeijing().AddDate(-10, 0, 0).Format("2006-01-02")
+	if err := parse("from=" + tooOld); err == nil || !strings.Contains(err.Error(), "统计区间不能超过") {
+		t.Fatalf("a ten-year range must be rejected by the span limit, got %v", err)
+	}
+	from := nowInBeijing().AddDate(-1, 0, 0).Format("2006-01-02")
+	if err := parse("from=" + from); err != nil {
+		t.Fatalf("a one-year range must be accepted: %v", err)
+	}
+	if err := parse(""); err != nil {
+		t.Fatalf("the default range must be accepted: %v", err)
 	}
 }

@@ -11462,6 +11462,9 @@ func endOfDateForPostgres(t time.Time) time.Time {
 	return t.Add(24*time.Hour - time.Microsecond)
 }
 
+// maxStatsRangeDays 是统计接口允许的最大查询跨度（约 5 年）。
+const maxStatsRangeDays = 5 * 366
+
 func parseStatsRange(c *gin.Context, defaultDays int) (time.Time, time.Time, error) {
 	now := nowInBeijing()
 	from := now.AddDate(0, 0, -defaultDays)
@@ -11491,6 +11494,11 @@ func parseStatsRange(c *gin.Context, defaultDays int) (time.Time, time.Time, err
 	}
 	if to.Before(from) {
 		return time.Time{}, time.Time{}, fmt.Errorf("to 不能早于 from")
+	}
+	// 每日与月度统计会按区间逐日/逐月生成序列并与用户交叉联结，
+	// 必须限制跨度，避免 from=0001-01-01 之类的请求生成海量行拖垮数据库与控制器。
+	if to.Sub(from) > maxStatsRangeDays*24*time.Hour {
+		return time.Time{}, time.Time{}, fmt.Errorf("统计区间不能超过 %d 天", maxStatsRangeDays)
 	}
 	return from, to, nil
 }
