@@ -1,6 +1,6 @@
 name: Dependabot Auto Merge
 
-run-name: ${{ github.event.pull_request.title || format('Revalidate #{0} (attempt {1})', inputs.pr-number, inputs.attempt) }}
+run-name: "${{ github.event.pull_request.title || format('Revalidate #{0} (attempt {1})', inputs.pr-number, inputs.attempt) }}"
 
 on:
   pull_request:
