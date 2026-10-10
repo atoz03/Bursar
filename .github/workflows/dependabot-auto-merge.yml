@@ -1,20 +1,56 @@
 name: Dependabot Auto Merge
 
+run-name: ${{ github.event.pull_request.title || format('Revalidate #{0} (attempt {1})', inputs.pr-number, inputs.attempt) }}
+
 on:
   pull_request:
+  # The merge job dispatches this when the base branch moved under a validated
+  # update, so the update is revalidated against the new base. Merges made with
+  # GITHUB_TOKEN trigger no other event, and Dependabot only rebases on conflicts.
+  workflow_dispatch:
+    inputs:
+      pr-number:
+        description: Dependabot pull request to revalidate against the current base
+        required: true
+        type: number
+      head-sha:
+        description: Head commit already accepted as a patch/minor update
+        required: true
+        type: string
+      attempt:
+        description: Validation attempt number
+        default: 1
+        type: number
+
+env:
+  PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr-number }}
+  HEAD_SHA: ${{ github.event.pull_request.head.sha || inputs.head-sha }}
+  BASE_REF: ${{ github.event.pull_request.base.ref || github.ref_name }}
 
 jobs:
   validate:
-    if: github.actor == 'dependabot[bot]'
+    if: github.event_name == 'workflow_dispatch' || github.actor == 'dependabot[bot]'
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      base-sha: ${{ steps.base.outputs.sha }}
 
     steps:
-      - name: Checkout
+      - name: Checkout base
         uses: actions/checkout@v7
         with:
+          ref: ${{ env.BASE_REF }}
+          fetch-depth: 0
           persist-credentials: false
+
+      # Validate the tree the squash merge would produce on the base as it is
+      # now, and record that base so the merge job can refuse a stale result.
+      - name: Merge update into base
+        id: base
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          git -c user.name=validate -c user.email=validate@invalid merge --no-ff --no-commit "$HEAD_SHA"
 
       - name: Set up Go
         uses: actions/setup-go@v7
@@ -46,36 +82,63 @@ jobs:
         run: pnpm --dir web build
 
   merge:
-    if: github.actor == 'dependabot[bot]'
+    if: github.event_name == 'workflow_dispatch' || github.actor == 'dependabot[bot]'
     needs: validate
     runs-on: ubuntu-latest
     permissions:
+      actions: write
       contents: write
       pull-requests: write
 
     steps:
       - name: Dependabot metadata
         id: metadata
+        if: github.event_name == 'pull_request'
         uses: dependabot/fetch-metadata@v3
         with:
           github-token: "${{ secrets.GITHUB_TOKEN }}"
 
+      # A dispatched run carries a head commit that already passed the
+      # update-type check above; --match-head-commit pins the merge to it.
       - name: Merge validated patch/minor updates
         if: |
+          github.event_name == 'workflow_dispatch' ||
           steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
           steps.metadata.outputs.update-type == 'version-update:semver-minor'
         shell: bash
         run: |
-          current_base_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$PR_BASE_REF" --jq .object.sha)"
-          if [[ "$current_base_sha" != "$PR_BASE_SHA" ]]; then
-            gh pr update-branch --rebase "$PR_URL"
+          base_sha() {
+            gh api "repos/$GH_REPO/git/ref/heads/$BASE_REF" --jq .object.sha
+          }
+
+          pr="$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq '[.state, .head.sha, .user.login] | @tsv')"
+          IFS=$'\t' read -r state head_sha author <<<"$pr"
+          if [[ "$state" != "open" || "$head_sha" != "$HEAD_SHA" || "$author" != "dependabot[bot]" ]]; then
+            echo "::notice::Skipping #$PR_NUMBER: closed, superseded by a newer head commit, or not a Dependabot pull request."
             exit 0
           fi
 
-          gh pr merge --squash --match-head-commit "$PR_HEAD_SHA" "$PR_URL"
+          if [[ "$(base_sha)" == "$VALIDATED_BASE_SHA" ]]; then
+            if gh pr merge --squash --match-head-commit "$HEAD_SHA" "$PR_NUMBER"; then
+              exit 0
+            fi
+            if [[ "$(base_sha)" == "$VALIDATED_BASE_SHA" ]]; then
+              echo "::error::Merging #$PR_NUMBER failed although $BASE_REF did not move."
+              exit 1
+            fi
+          fi
+
+          if [[ ! "$ATTEMPT" =~ ^[0-9]+$ ]] || (( ATTEMPT >= MAX_ATTEMPTS )); then
+            echo "::error::$BASE_REF kept moving; giving up on #$PR_NUMBER after attempt $ATTEMPT."
+            exit 1
+          fi
+
+          echo "::notice::$BASE_REF moved past the validated commit; revalidating #$PR_NUMBER."
+          gh workflow run dependabot-auto-merge.yml --ref "$BASE_REF" \
+            -f "pr-number=$PR_NUMBER" -f "head-sha=$HEAD_SHA" -f "attempt=$((ATTEMPT + 1))"
         env:
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          VALIDATED_BASE_SHA: ${{ needs.validate.outputs.base-sha }}
+          ATTEMPT: ${{ inputs.attempt || 1 }}
+          MAX_ATTEMPTS: 10
+          GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
