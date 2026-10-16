@@ -19,13 +19,13 @@
     "@element-plus/icons-vue": "^2.3.2",
     "dayjs": "^1.11.23",
     "element-plus": "^2.14.7",
-    "vue": "^3.5.43",
-    "vue-router": "^5.3.1"
+    "vue": "^3.5.44",
+    "vue-router": "^5.4.0"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^6.0.9",
+    "@vitejs/plugin-vue": "^6.0.10",
     "typescript": "^6.0.3",
-    "vite": "^8.3.3",
-    "vue-tsc": "^3.3.12"
+    "vite": "^8.3.4",
+    "vue-tsc": "^3.3.13"
   }
 }
