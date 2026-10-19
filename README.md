@@ -57,6 +57,8 @@ The controller can run in single-port mode or expose a separate TLS-only interna
 | `database/` | PostgreSQL schema and ordered migrations |
 | `scripts/` | Build, install, deployment, backup, HA, and fleet utilities |
 | `config/` | Safe controller configuration example |
+| `systemd/` | systemd unit files for the controller and node agent |
+| `tools/` | Node-side helper scripts |
 
 ## Quick start for evaluation
 
