@@ -57,6 +57,8 @@ flowchart LR
 | `database/` | PostgreSQL Schema 和顺序迁移 |
 | `scripts/` | 构建、安装、部署、备份、HA 和批量运维工具 |
 | `config/` | 可公开使用的控制器配置示例 |
+| `systemd/` | 控制器与 Node Agent 的 systemd 单元文件 |
+| `tools/` | 节点侧辅助脚本 |
 
 ## 本地快速体验
 
